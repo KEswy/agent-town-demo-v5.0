@@ -5,7 +5,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import httpx
 from dotenv import load_dotenv
@@ -61,6 +61,18 @@ class LLMGeneration:
     raw_response_text: str = ""
     validation_attempts: list[dict[str, object]] = field(default_factory=list)
     validation_failure_id: str = ""
+    decision_intent: str = ""
+    decision_signal_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class LLMJsonGeneration:
+    data: dict[str, object]
+    used_llm: bool
+    provider: str
+    model: str
+    fallback_reason: str = ""
+    raw_response_text: str = ""
 
 
 class LLMClient:
@@ -88,12 +100,57 @@ class LLMClient:
         fallback_text: str,
         max_attempts: Optional[int] = None,
     ) -> LLMGeneration:
+        json_result = self._generate_json_object(
+            system_prompt,
+            context,
+            {"text": fallback_text},
+            max_attempts,
+            _validate_text_payload,
+        )
+        return LLMGeneration(
+            text=str(json_result.data.get("text", fallback_text)).strip() or fallback_text,
+            used_llm=json_result.used_llm,
+            provider=json_result.provider,
+            model=json_result.model,
+            fallback_reason=json_result.fallback_reason,
+            raw_response_text=json_result.raw_response_text,
+        )
+
+    def generate_json_object(
+        self,
+        system_prompt: str,
+        context: dict[str, object],
+        fallback_object: Optional[dict[str, object]] = None,
+        max_attempts: Optional[int] = None,
+    ) -> LLMJsonGeneration:
+        """Generate one JSON object without imposing a game-specific schema."""
+        return self._generate_json_object(
+            system_prompt,
+            context,
+            fallback_object or {},
+            max_attempts,
+        )
+
+    def _generate_json_object(
+        self,
+        system_prompt: str,
+        context: dict[str, object],
+        fallback_object: dict[str, object],
+        max_attempts: Optional[int],
+        validator: Optional[Callable[[dict[str, object]], None]] = None,
+    ) -> LLMJsonGeneration:
         if not self.settings.enabled:
-            return self._fallback(fallback_text, "LLM is disabled")
+            return self._json_fallback(fallback_object, "LLM is disabled")
         if self.settings.provider == "mock":
-            return self._fallback(fallback_text, "mock provider uses deterministic rule text")
+            return self._json_fallback(
+                fallback_object,
+                "mock provider uses deterministic rule text",
+            )
         if not self.settings.is_configured():
-            return self._fallback(fallback_text, "LLM provider is not fully configured")
+            return self._json_fallback(
+                fallback_object,
+                "LLM provider is not fully configured",
+            )
 
         attempts = (
             max(1, max_attempts)
@@ -110,13 +167,12 @@ class LLMClient:
                 content = _extract_response_content(response_data)
                 raw_response_text = content
                 parsed = _parse_json_object(content)
-                generated_text = str(parsed.get("text", "")).strip()
-                if not generated_text:
-                    raise ValueError("LLM JSON did not contain text")
-                if "\ufffd" in generated_text:
-                    raise ValueError("LLM text contained a replacement character")
-                return LLMGeneration(
-                    text=generated_text,
+                if _contains_replacement_character(parsed):
+                    raise ValueError("LLM JSON contained a replacement character")
+                if validator is not None:
+                    validator(parsed)
+                return LLMJsonGeneration(
+                    data=parsed,
                     used_llm=True,
                     provider=self.settings.provider,
                     model=self.settings.model,
@@ -136,8 +192,8 @@ class LLMClient:
                 if delay > 0:
                     time.sleep(delay)
 
-        return self._fallback(
-            fallback_text,
+        return self._json_fallback(
+            fallback_object,
             f"{last_error} after {attempts_made} attempt(s)",
             raw_response_text,
         )
@@ -178,14 +234,14 @@ class LLMClient:
             raise TypeError("LLM response must be a JSON object")
         return response_data
 
-    def _fallback(
+    def _json_fallback(
         self,
-        text: str,
+        data: dict[str, object],
         reason: str,
         raw_response_text: str = "",
-    ) -> LLMGeneration:
-        return LLMGeneration(
-            text=text,
+    ) -> LLMJsonGeneration:
+        return LLMJsonGeneration(
+            data=dict(data),
             used_llm=False,
             provider=self.settings.provider,
             model=self.settings.model,
@@ -234,6 +290,26 @@ def _parse_json_object(content: str) -> dict[str, object]:
     if not isinstance(parsed, dict):
         raise TypeError("LLM content must decode to a JSON object")
     return parsed
+
+
+def _validate_text_payload(payload: dict[str, object]) -> None:
+    generated_text = payload.get("text")
+    if not isinstance(generated_text, str) or not generated_text.strip():
+        raise ValueError("LLM JSON did not contain text")
+
+
+def _contains_replacement_character(value: object) -> bool:
+    if isinstance(value, str):
+        return "\ufffd" in value
+    if isinstance(value, dict):
+        return any(
+            _contains_replacement_character(key)
+            or _contains_replacement_character(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_replacement_character(item) for item in value)
+    return False
 
 
 def _env_bool(name: str, default: bool) -> bool:

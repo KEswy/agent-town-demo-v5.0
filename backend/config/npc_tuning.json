@@ -1,0 +1,173 @@
+{
+  "schema_version": "npc_tuning.v1",
+  "global_defaults": {
+    "reasoning_skill": 0.68,
+    "social_susceptibility": 0.45,
+    "decision_variance": 0.18,
+    "plan_consistency": 0.72,
+    "deception_susceptibility": 0.35,
+    "deception_strength": 0.4,
+    "team_coordination": 0.55,
+    "teammate_bus_pressure_threshold": 72,
+    "teammate_black_check_chance": 0.04,
+    "teammate_black_check_min_pressure": 85
+  },
+  "factions": {
+    "good": {
+      "social_susceptibility": 0.52,
+      "decision_variance": 0.24,
+      "deception_susceptibility": 0.52,
+      "deception_strength": 0.08,
+      "team_coordination": 0.25,
+      "teammate_bus_pressure_threshold": 100,
+      "teammate_black_check_chance": 0.0,
+      "teammate_black_check_min_pressure": 100
+    },
+    "werewolf": {
+      "reasoning_skill": 0.78,
+      "social_susceptibility": 0.31,
+      "decision_variance": 0.14,
+      "plan_consistency": 0.84,
+      "deception_susceptibility": 0.22,
+      "deception_strength": 0.82,
+      "team_coordination": 0.87,
+      "teammate_bus_pressure_threshold": 68,
+      "teammate_black_check_chance": 0.06,
+      "teammate_black_check_min_pressure": 84
+    }
+  },
+  "roles": {
+    "werewolf": {
+      "reasoning_skill": 0.8,
+      "plan_consistency": 0.86,
+      "deception_strength": 0.84,
+      "team_coordination": 0.9
+    },
+    "seer": {
+      "reasoning_skill": 0.79,
+      "social_susceptibility": 0.39,
+      "decision_variance": 0.16,
+      "plan_consistency": 0.79,
+      "deception_susceptibility": 0.38
+    },
+    "witch": {
+      "reasoning_skill": 0.72,
+      "social_susceptibility": 0.46,
+      "decision_variance": 0.2,
+      "plan_consistency": 0.74,
+      "deception_susceptibility": 0.47
+    },
+    "hunter": {
+      "reasoning_skill": 0.66,
+      "social_susceptibility": 0.4,
+      "decision_variance": 0.29,
+      "plan_consistency": 0.67,
+      "deception_susceptibility": 0.45
+    },
+    "guard": {
+      "reasoning_skill": 0.73,
+      "social_susceptibility": 0.43,
+      "decision_variance": 0.18,
+      "plan_consistency": 0.8,
+      "deception_susceptibility": 0.43
+    },
+    "villager": {
+      "reasoning_skill": 0.58,
+      "social_susceptibility": 0.61,
+      "decision_variance": 0.31,
+      "plan_consistency": 0.59,
+      "deception_susceptibility": 0.63
+    }
+  },
+  "npcs": {
+    "梅西": {
+      "reasoning_skill": 0.84,
+      "decision_variance": 0.1,
+      "plan_consistency": 0.88,
+      "team_coordination": 0.81
+    },
+    "C罗": {
+      "reasoning_skill": 0.73,
+      "social_susceptibility": 0.27,
+      "decision_variance": 0.28,
+      "plan_consistency": 0.7,
+      "deception_strength": 0.76
+    },
+    "周深": {
+      "reasoning_skill": 0.75,
+      "social_susceptibility": 0.57,
+      "deception_susceptibility": 0.61,
+      "deception_strength": 0.69
+    },
+    "梅长苏": {
+      "reasoning_skill": 0.95,
+      "social_susceptibility": 0.18,
+      "decision_variance": 0.06,
+      "plan_consistency": 0.95,
+      "deception_susceptibility": 0.16,
+      "deception_strength": 0.93,
+      "team_coordination": 0.94,
+      "teammate_bus_pressure_threshold": 62,
+      "teammate_black_check_chance": 0.08,
+      "teammate_black_check_min_pressure": 88
+    },
+    "塞尔达": {
+      "reasoning_skill": 0.74,
+      "decision_variance": 0.13,
+      "plan_consistency": 0.85,
+      "deception_strength": 0.38
+    },
+    "小骑士": {
+      "reasoning_skill": 0.7,
+      "social_susceptibility": 0.3,
+      "decision_variance": 0.09,
+      "plan_consistency": 0.86,
+      "team_coordination": 0.78
+    },
+    "大黄蜂": {
+      "reasoning_skill": 0.8,
+      "social_susceptibility": 0.24,
+      "decision_variance": 0.24,
+      "plan_consistency": 0.76,
+      "deception_strength": 0.8,
+      "teammate_bus_pressure_threshold": 58
+    },
+    "喜羊羊": {
+      "reasoning_skill": 0.87,
+      "decision_variance": 0.12,
+      "plan_consistency": 0.87,
+      "deception_strength": 0.86,
+      "team_coordination": 0.9,
+      "teammate_black_check_chance": 0.07,
+      "teammate_black_check_min_pressure": 86
+    },
+    "懒羊羊": {
+      "reasoning_skill": 0.48,
+      "social_susceptibility": 0.74,
+      "decision_variance": 0.4,
+      "plan_consistency": 0.44,
+      "deception_susceptibility": 0.72,
+      "deception_strength": 0.43,
+      "team_coordination": 0.61
+    },
+    "洛洛": {
+      "reasoning_skill": 0.9,
+      "social_susceptibility": 0.23,
+      "decision_variance": 0.09,
+      "plan_consistency": 0.9,
+      "deception_susceptibility": 0.22,
+      "deception_strength": 0.87,
+      "team_coordination": 0.91
+    },
+    "奇异博士": {
+      "reasoning_skill": 0.92,
+      "social_susceptibility": 0.2,
+      "decision_variance": 0.11,
+      "plan_consistency": 0.92,
+      "deception_susceptibility": 0.19,
+      "deception_strength": 0.9,
+      "team_coordination": 0.87,
+      "teammate_bus_pressure_threshold": 64
+    }
+  }
+}

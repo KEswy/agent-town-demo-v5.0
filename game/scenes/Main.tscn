@@ -1,22 +1,222 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene load_steps=19 format=3]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1_main_script"]
 [ext_resource type="PackedScene" path="res://scenes/Player.tscn" id="2_player_scene"]
 [ext_resource type="PackedScene" path="res://scenes/NPC.tscn" id="3_npc_scene"]
 [ext_resource type="PackedScene" path="res://scenes/DialogBox.tscn" id="4_dialog_scene"]
 [ext_resource type="FontFile" path="res://assets/fonts/NotoSansSC-Variable.ttf" id="5_main_font"]
+[ext_resource type="PackedScene" path="res://scenes/TownBackground.tscn" id="6_town_background"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_wolf_panel"]
-bg_color = Color(0.08, 0.1, 0.12, 0.9)
+bg_color = Color(1, 0.925, 0.58, 0.97)
 border_width_left = 1
 border_width_top = 1
 border_width_right = 1
 border_width_bottom = 1
-border_color = Color(0.66, 0.72, 0.8, 1)
-corner_radius_top_left = 8
-corner_radius_top_right = 8
-corner_radius_bottom_right = 8
-corner_radius_bottom_left = 8
+border_color = Color(0.2, 0.5, 0.66, 1)
+corner_radius_top_left = 14
+corner_radius_top_right = 14
+corner_radius_bottom_right = 14
+corner_radius_bottom_left = 14
+shadow_color = Color(0.04, 0.12, 0.18, 0.22)
+shadow_size = 8
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_phase_hud"]
+bg_color = Color(0.75, 0.91, 0.98, 0.97)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(1, 0.78, 0.24, 1)
+corner_radius_top_left = 16
+corner_radius_top_right = 16
+corner_radius_bottom_right = 16
+corner_radius_bottom_left = 16
+shadow_color = Color(0.04, 0.12, 0.18, 0.2)
+shadow_size = 8
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_identity"]
+bg_color = Color(1, 0.965, 0.78, 0.97)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.43, 0.73, 0.87, 1)
+corner_radius_top_left = 14
+corner_radius_top_right = 14
+corner_radius_bottom_right = 14
+corner_radius_bottom_left = 14
+shadow_color = Color(0.04, 0.12, 0.18, 0.18)
+shadow_size = 6
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_intel"]
+bg_color = Color(0.87, 0.96, 1, 0.98)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(1, 0.78, 0.24, 1)
+corner_radius_top_left = 16
+corner_radius_top_right = 16
+corner_radius_bottom_right = 16
+corner_radius_bottom_left = 16
+shadow_color = Color(0.04, 0.12, 0.18, 0.24)
+shadow_size = 10
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_setup"]
+bg_color = Color(0.97, 0.985, 0.99, 1)
+border_width_left = 3
+border_width_top = 3
+border_width_right = 3
+border_width_bottom = 3
+border_color = Color(1, 0.78, 0.24, 1)
+corner_radius_top_left = 20
+corner_radius_top_right = 20
+corner_radius_bottom_right = 20
+corner_radius_bottom_left = 20
+shadow_color = Color(0.02, 0.08, 0.12, 0.3)
+shadow_size = 14
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_light_control"]
+content_margin_left = 10.0
+content_margin_top = 6.0
+content_margin_right = 10.0
+content_margin_bottom = 6.0
+bg_color = Color(0.96, 0.985, 1, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.38, 0.65, 0.76, 1)
+corner_radius_top_left = 7
+corner_radius_top_right = 7
+corner_radius_bottom_right = 7
+corner_radius_bottom_left = 7
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_light_control_hover"]
+content_margin_left = 10.0
+content_margin_top = 6.0
+content_margin_right = 10.0
+content_margin_bottom = 6.0
+bg_color = Color(1, 0.94, 0.64, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.28, 0.56, 0.7, 1)
+corner_radius_top_left = 7
+corner_radius_top_right = 7
+corner_radius_bottom_right = 7
+corner_radius_bottom_left = 7
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_light_control_pressed"]
+content_margin_left = 10.0
+content_margin_top = 6.0
+content_margin_right = 10.0
+content_margin_bottom = 6.0
+bg_color = Color(0.7, 0.88, 0.96, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.18, 0.48, 0.64, 1)
+corner_radius_top_left = 7
+corner_radius_top_right = 7
+corner_radius_bottom_right = 7
+corner_radius_bottom_left = 7
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_light_control_disabled"]
+content_margin_left = 10.0
+content_margin_top = 6.0
+content_margin_right = 10.0
+content_margin_bottom = 6.0
+bg_color = Color(0.86, 0.88, 0.89, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.58, 0.62, 0.64, 1)
+corner_radius_top_left = 7
+corner_radius_top_right = 7
+corner_radius_bottom_right = 7
+corner_radius_bottom_left = 7
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_light_control_focus"]
+content_margin_left = 10.0
+content_margin_top = 6.0
+content_margin_right = 10.0
+content_margin_bottom = 6.0
+bg_color = Color(1, 1, 1, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.95, 0.65, 0.08, 1)
+corner_radius_top_left = 7
+corner_radius_top_right = 7
+corner_radius_bottom_right = 7
+corner_radius_bottom_left = 7
+
+[sub_resource type="Theme" id="Theme_light_ui"]
+default_font = ExtResource("5_main_font")
+default_font_size = 13
+Button/colors/font_color = Color(0, 0, 0, 1)
+Button/colors/font_disabled_color = Color(0, 0, 0, 1)
+Button/colors/font_focus_color = Color(0, 0, 0, 1)
+Button/colors/font_hover_color = Color(0, 0, 0, 1)
+Button/colors/font_hover_pressed_color = Color(0, 0, 0, 1)
+Button/colors/font_pressed_color = Color(0, 0, 0, 1)
+Button/styles/disabled = SubResource("StyleBoxFlat_light_control_disabled")
+Button/styles/focus = SubResource("StyleBoxFlat_light_control_focus")
+Button/styles/hover = SubResource("StyleBoxFlat_light_control_hover")
+Button/styles/normal = SubResource("StyleBoxFlat_light_control")
+Button/styles/pressed = SubResource("StyleBoxFlat_light_control_pressed")
+CheckButton/colors/font_color = Color(0, 0, 0, 1)
+CheckButton/colors/font_disabled_color = Color(0, 0, 0, 1)
+CheckButton/colors/font_focus_color = Color(0, 0, 0, 1)
+CheckButton/colors/font_hover_color = Color(0, 0, 0, 1)
+CheckButton/colors/font_hover_pressed_color = Color(0, 0, 0, 1)
+CheckButton/colors/font_pressed_color = Color(0, 0, 0, 1)
+Label/colors/font_color = Color(0, 0, 0, 1)
+LineEdit/colors/caret_color = Color(0, 0, 0, 1)
+LineEdit/colors/font_color = Color(0, 0, 0, 1)
+LineEdit/colors/font_placeholder_color = Color(0, 0, 0, 1)
+LineEdit/colors/font_uneditable_color = Color(0, 0, 0, 1)
+LineEdit/styles/focus = SubResource("StyleBoxFlat_light_control_focus")
+LineEdit/styles/normal = SubResource("StyleBoxFlat_light_control")
+LineEdit/styles/read_only = SubResource("StyleBoxFlat_light_control_disabled")
+OptionButton/colors/font_color = Color(0, 0, 0, 1)
+OptionButton/colors/font_disabled_color = Color(0, 0, 0, 1)
+OptionButton/colors/font_focus_color = Color(0, 0, 0, 1)
+OptionButton/colors/font_hover_color = Color(0, 0, 0, 1)
+OptionButton/colors/font_hover_pressed_color = Color(0, 0, 0, 1)
+OptionButton/colors/font_pressed_color = Color(0, 0, 0, 1)
+OptionButton/styles/disabled = SubResource("StyleBoxFlat_light_control_disabled")
+OptionButton/styles/focus = SubResource("StyleBoxFlat_light_control_focus")
+OptionButton/styles/hover = SubResource("StyleBoxFlat_light_control_hover")
+OptionButton/styles/normal = SubResource("StyleBoxFlat_light_control")
+OptionButton/styles/pressed = SubResource("StyleBoxFlat_light_control_pressed")
+PopupMenu/colors/font_color = Color(0, 0, 0, 1)
+PopupMenu/colors/font_disabled_color = Color(0, 0, 0, 1)
+PopupMenu/colors/font_hover_color = Color(0, 0, 0, 1)
+PopupMenu/styles/panel = SubResource("StyleBoxFlat_light_control")
+TabBar/colors/font_disabled_color = Color(0, 0, 0, 1)
+TabBar/colors/font_hovered_color = Color(0, 0, 0, 1)
+TabBar/colors/font_selected_color = Color(0, 0, 0, 1)
+TabBar/colors/font_unselected_color = Color(0, 0, 0, 1)
+TabBar/styles/tab_disabled = SubResource("StyleBoxFlat_light_control_disabled")
+TabBar/styles/tab_focus = SubResource("StyleBoxFlat_light_control_focus")
+TabBar/styles/tab_hovered = SubResource("StyleBoxFlat_light_control_hover")
+TabBar/styles/tab_selected = SubResource("StyleBoxFlat_light_control_pressed")
+TabBar/styles/tab_unselected = SubResource("StyleBoxFlat_light_control")
+TabContainer/styles/panel = SubResource("StyleBoxFlat_light_control")
+TextEdit/colors/caret_color = Color(0, 0, 0, 1)
+TextEdit/colors/font_color = Color(0, 0, 0, 1)
+TextEdit/colors/font_placeholder_color = Color(0, 0, 0, 1)
+TextEdit/colors/font_readonly_color = Color(0, 0, 0, 1)
+TextEdit/styles/focus = SubResource("StyleBoxFlat_light_control_focus")
+TextEdit/styles/normal = SubResource("StyleBoxFlat_light_control")
+TextEdit/styles/read_only = SubResource("StyleBoxFlat_light_control_disabled")
 
 [sub_resource type="Theme" id="Theme_main_cjk"]
 default_font = ExtResource("5_main_font")
@@ -25,18 +225,7 @@ default_font_size = 13
 [node name="Main" type="Node2D"]
 script = ExtResource("1_main_script")
 
-[node name="Ground" type="Polygon2D" parent="."]
-color = Color(0.32, 0.53, 0.35, 1)
-polygon = PackedVector2Array(-1600, -1200, 1600, -1200, 1600, 1200, -1600, 1200)
-
-[node name="Path" type="Polygon2D" parent="."]
-color = Color(0.66, 0.61, 0.43, 1)
-polygon = PackedVector2Array(-1600, -70, 1600, -70, 1600, 70, -1600, 70)
-
-[node name="MeetingSquare" type="Polygon2D" parent="."]
-position = Vector2(350, 0)
-color = Color(0.76, 0.72, 0.58, 1)
-polygon = PackedVector2Array(-170, -120, 0, -180, 170, -120, 210, 40, 110, 180, -110, 180, -210, 40)
+[node name="TownBackground" parent="." instance=ExtResource("6_town_background")]
 
 [node name="Player" parent="." instance=ExtResource("2_player_scene")]
 position = Vector2(350, 0)
@@ -118,35 +307,212 @@ dialog_text = "我是奇异博士。我会同时保留多种可能，直到证�
 wolf_character_id = 12
 body_color = Color(0.68, 0.18, 0.32, 1)
 
+[node name="HuaiHuai" parent="." instance=ExtResource("3_npc_scene")]
+position = Vector2(-170, 0)
+npc_name = "坏坏"
+dialog_text = "我是坏坏，点心屋的小恐龙。别怕，我的小尖牙只咬饼干；开心的、别扭的事都可以告诉我。"
+wolf_character_id = 0
+body_color = Color(0.49, 0.74, 0.4, 1)
+
+[node name="RanRan" parent="." instance=ExtResource("3_npc_scene")]
+position = Vector2(870, 0)
+npc_name = "然然"
+dialog_text = "我是然然，心情邮局的熊猫邮差。想寄存一个故事，或者整理一个小计划，都可以来找我。"
+wolf_character_id = 0
+body_color = Color(0.95, 0.93, 0.86, 1)
+
 [node name="UI" type="CanvasLayer" parent="."]
+
+[node name="PhaseHUD" type="Control" parent="UI"]
+layout_mode = 1
+anchors_preset = 10
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -270.0
+offset_top = 12.0
+offset_right = 270.0
+offset_bottom = 72.0
+grow_horizontal = 2
+theme = SubResource("Theme_light_ui")
+
+[node name="Panel" type="PanelContainer" parent="UI/PhaseHUD"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_phase_hud")
+
+[node name="Margin" type="MarginContainer" parent="UI/PhaseHUD/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 8
+
+[node name="Row" type="HBoxContainer" parent="UI/PhaseHUD/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="TitleLabel" type="Label" parent="UI/PhaseHUD/Panel/Margin/Row"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 17
+text = "RanRanHuaiHuaiKill"
+
+[node name="MenuSummaryLabel" type="Label" parent="UI/PhaseHUD/Panel/Margin/Row"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 15
+text = "等待开始"
+horizontal_alignment = 1
+vertical_alignment = 1
+text_overrun_behavior = 3
+
+[node name="RefreshStateButton" type="Button" parent="UI/PhaseHUD/Panel/Margin/Row"]
+custom_minimum_size = Vector2(40, 36)
+layout_mode = 2
+tooltip_text = "刷新当前游戏状态"
+disabled = true
+text = "↻"
+
+[node name="ReviewGameButton" type="Button" parent="UI/PhaseHUD/Panel/Margin/Row"]
+layout_mode = 2
+tooltip_text = "游戏结束后查看完整复盘"
+disabled = true
+text = "复盘"
+
+[node name="IntelToggleButton" type="Button" parent="UI/PhaseHUD/Panel/Margin/Row"]
+layout_mode = 2
+tooltip_text = "查看场上角色、公开记录和我的记录"
+disabled = true
+text = "情报"
+
+[node name="SetupToggleButton" type="Button" parent="UI/PhaseHUD/Panel/Margin/Row"]
+layout_mode = 2
+tooltip_text = "设置并开始新对局"
+text = "新对局"
+
+[node name="IdentityPanel" type="PanelContainer" parent="UI"]
+visible = false
+layout_mode = 1
+offset_left = 16.0
+offset_top = 16.0
+offset_right = 310.0
+offset_bottom = 184.0
+theme = SubResource("Theme_light_ui")
+theme_override_styles/panel = SubResource("StyleBoxFlat_identity")
+
+[node name="Margin" type="MarginContainer" parent="UI/IdentityPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 10
+
+[node name="PlayerIdentityBlock" type="VBoxContainer" parent="UI/IdentityPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="CaptionLabel" type="Label" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 11
+text = "我的身份"
+
+[node name="RoleLabel" type="Label" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 19
+text = "等待分配"
+autowrap_mode = 3
+
+[node name="WolfTeammatesLabel" type="Label" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock"]
+visible = false
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 12
+text = "狼队友：暂无"
+autowrap_mode = 3
+
+[node name="KeyInfoDivider" type="HSeparator" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock"]
+layout_mode = 2
+
+[node name="KeyInfoToggleButton" type="Button" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock"]
+custom_minimum_size = Vector2(0, 34)
+layout_mode = 2
+focus_mode = 0
+tooltip_text = "展开场上已经公开的身份、验人和技能声明"
+text = "关键公开信息 · 暂无  ▼"
+alignment = 0
+
+[node name="KeyInfoContentPanel" type="PanelContainer" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock"]
+visible = false
+custom_minimum_size = Vector2(0, 260)
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_styles/panel = SubResource("StyleBoxFlat_light_control")
+
+[node name="Margin" type="MarginContainer" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoContentPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 2
+theme_override_constants/margin_top = 2
+theme_override_constants/margin_right = 2
+theme_override_constants/margin_bottom = 2
+
+[node name="VBox" type="VBoxContainer" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoContentPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="SafetyLabel" type="Label" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoContentPanel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 10
+text = "◇ 公开说法（真假未确认） · ● 已确认公开动作"
+autowrap_mode = 3
+
+[node name="ScrollContainer" type="ScrollContainer" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoContentPanel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="KeyInfoLabel" type="Label" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoContentPanel/Margin/VBox/ScrollContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 12
+text = "暂无公开身份或技能声明。"
+autowrap_mode = 3
 
 [node name="WolfPanel" type="Control" parent="UI"]
 layout_mode = 1
 anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -536.0
-offset_top = 16.0
+offset_left = -456.0
+offset_top = 86.0
 offset_right = -16.0
-offset_bottom = 60.0
+offset_bottom = 132.0
 grow_horizontal = 0
 clip_contents = true
-theme = SubResource("Theme_main_cjk")
+theme = SubResource("Theme_light_ui")
 
 [node name="HeaderPanel" type="PanelContainer" parent="UI/WolfPanel"]
 layout_mode = 1
 anchors_preset = 10
 anchor_right = 1.0
-offset_bottom = 44.0
+offset_bottom = 46.0
 grow_horizontal = 2
 theme_override_styles/panel = SubResource("StyleBoxFlat_wolf_panel")
 
 [node name="HeaderMargin" type="MarginContainer" parent="UI/WolfPanel/HeaderPanel"]
 layout_mode = 2
-theme_override_constants/margin_left = 12
-theme_override_constants/margin_top = 4
-theme_override_constants/margin_right = 6
-theme_override_constants/margin_bottom = 4
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 5
+theme_override_constants/margin_right = 7
+theme_override_constants/margin_bottom = 5
 
 [node name="HeaderRow" type="HBoxContainer" parent="UI/WolfPanel/HeaderPanel/HeaderMargin"]
 layout_mode = 2
@@ -154,23 +520,16 @@ theme_override_constants/separation = 8
 
 [node name="TitleLabel" type="Label" parent="UI/WolfPanel/HeaderPanel/HeaderMargin/HeaderRow"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.98, 0.84, 0.45, 1)
-theme_override_font_sizes/font_size = 17
-text = "RanRanHuaiHuaiKill"
-
-[node name="MenuSummaryLabel" type="Label" parent="UI/WolfPanel/HeaderPanel/HeaderMargin/HeaderRow"]
-layout_mode = 2
 size_flags_horizontal = 3
-theme_override_colors/font_color = Color(0.76, 0.86, 0.95, 1)
-theme_override_font_sizes/font_size = 13
-text = "等待开始"
-horizontal_alignment = 2
-text_overrun_behavior = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 17
+text = "当前行动"
+vertical_alignment = 1
 
 [node name="ToggleButton" type="Button" parent="UI/WolfPanel/HeaderPanel/HeaderMargin/HeaderRow"]
-custom_minimum_size = Vector2(36, 36)
+custom_minimum_size = Vector2(38, 36)
 layout_mode = 2
-tooltip_text = "展开狼人杀面板"
+tooltip_text = "展开当前行动"
 text = "▼"
 
 [node name="ContentPanel" type="PanelContainer" parent="UI/WolfPanel"]
@@ -179,7 +538,7 @@ layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_top = 52.0
+offset_top = 54.0
 grow_horizontal = 2
 grow_vertical = 2
 theme_override_styles/panel = SubResource("StyleBoxFlat_wolf_panel")
@@ -199,136 +558,33 @@ theme_override_constants/margin_bottom = 12
 [node name="VBox" type="VBoxContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin"]
 layout_mode = 2
 size_flags_horizontal = 3
-theme_override_constants/separation = 8
-
-[node name="PlayerIdentityBlock" type="VBoxContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
-visible = false
-layout_mode = 2
-theme_override_constants/separation = 2
-
-[node name="RoleLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/PlayerIdentityBlock"]
-layout_mode = 2
-theme_override_colors/font_color = Color(0.98, 0.84, 0.45, 1)
-theme_override_font_sizes/font_size = 19
-text = "你的身份：等待分配"
-autowrap_mode = 3
-
-[node name="WolfTeammatesLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/PlayerIdentityBlock"]
-visible = false
-layout_mode = 2
-theme_override_colors/font_color = Color(0.95, 0.62, 0.62, 1)
-theme_override_font_sizes/font_size = 12
-text = "狼队友：暂无"
-autowrap_mode = 3
-
-[node name="PlayerActionHistoryBlock" type="VBoxContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
-visible = false
-layout_mode = 2
-theme_override_constants/separation = 4
-
-[node name="Title" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/PlayerActionHistoryBlock"]
-layout_mode = 2
-theme_override_colors/font_color = Color(0.62, 0.9, 0.86, 1)
-theme_override_font_sizes/font_size = 12
-text = "玩家行动记录"
-
-[node name="HistoryText" type="TextEdit" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/PlayerActionHistoryBlock"]
-custom_minimum_size = Vector2(0, 84)
-layout_mode = 2
-focus_mode = 0
-mouse_default_cursor_shape = 0
-theme_override_colors/font_readonly_color = Color(0.72, 0.8, 0.82, 1)
-theme_override_font_sizes/font_size = 11
-editable = false
-wrap_mode = 1
-text = "暂无行动记录。"
+theme_override_constants/separation = 9
 
 [node name="StatusLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.76, 0.86, 0.95, 1)
-theme_override_font_sizes/font_size = 13
-text = "后端状态：等待开始"
-autowrap_mode = 3
-
-[node name="PlayerNameRow" type="HBoxContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
-layout_mode = 2
-theme_override_constants/separation = 8
-
-[node name="PlayerNameInput" type="LineEdit" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/PlayerNameRow"]
-layout_mode = 2
-size_flags_horizontal = 3
-text = "玩家"
-placeholder_text = "玩家名"
-
-[node name="StartGameButton" type="Button" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/PlayerNameRow"]
-layout_mode = 2
-text = "开始游戏"
-
-[node name="PlayerRoleRow" type="HBoxContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
-layout_mode = 2
-theme_override_constants/separation = 8
-
-[node name="PlayerRoleLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/PlayerRoleRow"]
-layout_mode = 2
-text = "玩家身份"
-vertical_alignment = 1
-
-[node name="PlayerRoleOption" type="OptionButton" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/PlayerRoleRow"]
-layout_mode = 2
-size_flags_horizontal = 3
-tooltip_text = "默认随机；指定身份用于测试角色技能"
-
-[node name="LLMSettingsRow" type="HBoxContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
-layout_mode = 2
-theme_override_constants/separation = 8
-
-[node name="LLMEnabledToggle" type="CheckButton" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/LLMSettingsRow"]
-layout_mode = 2
-tooltip_text = "仅在后端已配置 LLM 时生效"
-text = "启用 LLM 表达"
-
-[node name="LLMSettingsHint" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/LLMSettingsRow"]
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_colors/font_color = Color(0.68, 0.74, 0.8, 1)
+theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 12
-text = "默认关闭"
-vertical_alignment = 1
-
-[node name="StateActionRow" type="HBoxContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
-layout_mode = 2
-theme_override_constants/separation = 8
-
-[node name="RefreshStateButton" type="Button" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/StateActionRow"]
-layout_mode = 2
-disabled = true
-text = "刷新状态"
-
-[node name="ReviewGameButton" type="Button" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/StateActionRow"]
-layout_mode = 2
-disabled = true
-text = "查看本局复盘"
+text = "系统状态：等待开始"
+autowrap_mode = 3
 
 [node name="GameInfoLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.94, 0.94, 0.9, 1)
+theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 14
-text = "点击开始后创建 12 人局。"
+text = "请从顶部“新对局”开始。"
 autowrap_mode = 3
 
 [node name="SheriffOverviewLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
 visible = false
 layout_mode = 2
-theme_override_colors/font_color = Color(0.98, 0.86, 0.52, 1)
-theme_override_colors/font_outline_color = Color(0.12, 0.1, 0.06, 1)
-theme_override_constants/outline_size = 2
-theme_override_font_sizes/font_size = 15
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 14
 text = "警上名单：暂无"
 autowrap_mode = 3
 
 [node name="NightActionLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.95, 0.78, 0.7, 1)
+theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 13
 text = "夜晚行动：开始游戏后可用"
 autowrap_mode = 3
@@ -359,7 +615,7 @@ text = "结算"
 
 [node name="HunterActionLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.96, 0.72, 0.34, 1)
+theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 13
 text = "猎人开枪：出局后可用"
 autowrap_mode = 3
@@ -385,7 +641,7 @@ text = "不开枪"
 
 [node name="SheriffActionLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.98, 0.84, 0.45, 1)
+theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 13
 text = "警长操作：第一夜结束后可用"
 autowrap_mode = 3
@@ -444,9 +700,117 @@ layout_mode = 2
 disabled = true
 text = "提交警上发言"
 
+[node name="BadgeFlowPanel" type="PanelContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
+visible = false
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_light_control")
+
+[node name="Margin" type="MarginContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 4
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 4
+theme_override_constants/margin_bottom = 4
+
+[node name="VBox" type="VBoxContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="HeaderRow" type="HBoxContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="TitleLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 14
+text = "警徽流"
+
+[node name="IncludeToggle" type="CheckButton" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_colors/font_hover_color = Color(0, 0, 0, 1)
+theme_override_colors/font_pressed_color = Color(0, 0, 0, 1)
+text = "随本次发言发布"
+
+[node name="CurrentLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 11
+text = "尚未发布警徽流。"
+autowrap_mode = 3
+
+[node name="FormGrid" type="GridContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox"]
+layout_mode = 2
+columns = 2
+theme_override_constants/h_separation = 8
+theme_override_constants/v_separation = 5
+
+[node name="PrimaryLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+text = "第一验人"
+
+[node name="PrimaryOption" type="OptionButton" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="SecondaryLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+text = "第二验人"
+
+[node name="SecondaryOption" type="OptionButton" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="GoodBadgeLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+text = "验出金水"
+
+[node name="GoodBadgeOption" type="OptionButton" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="WolfBadgeLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+text = "验出查杀"
+
+[node name="WolfBadgeOption" type="OptionButton" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="ReasonLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+text = "调整理由"
+
+[node name="ReasonOption" type="OptionButton" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="ReasonTargetLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+text = "理由对象"
+
+[node name="ReasonTargetOption" type="OptionButton" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="HintLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 10
+text = "勾选后，警徽流会与本次公开发言一起提交；不勾选不会改动已有警徽流。"
+autowrap_mode = 3
+
 [node name="DaySpeechLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.78, 0.91, 0.95, 1)
+theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 13
 text = "白天发言：开始游戏后可用"
 autowrap_mode = 3
@@ -487,7 +851,7 @@ text = "结束自由活动"
 
 [node name="VoteActionLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.86, 0.82, 0.98, 1)
+theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 13
 text = "白天投票：开始游戏后可用"
 autowrap_mode = 3
@@ -513,24 +877,276 @@ text = "投票并公布"
 
 [node name="VoteResultLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.88, 0.9, 0.98, 1)
+theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 13
 text = "票型：尚未公布"
 autowrap_mode = 3
 
-[node name="CharacterGrid" type="GridContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
+[node name="IntelPanel" type="Control" parent="UI"]
+visible = false
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -616.0
+offset_top = 86.0
+offset_right = -16.0
+offset_bottom = -16.0
+grow_horizontal = 0
+grow_vertical = 2
+theme = SubResource("Theme_light_ui")
+
+[node name="Panel" type="PanelContainer" parent="UI/IntelPanel"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_intel")
+
+[node name="Margin" type="MarginContainer" parent="UI/IntelPanel/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 14
+
+[node name="VBox" type="VBoxContainer" parent="UI/IntelPanel/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="HeaderRow" type="HBoxContainer" parent="UI/IntelPanel/Panel/Margin/VBox"]
+layout_mode = 2
+
+[node name="TitleLabel" type="Label" parent="UI/IntelPanel/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 19
+text = "对局情报"
+
+[node name="CloseButton" type="Button" parent="UI/IntelPanel/Panel/Margin/VBox/HeaderRow"]
+custom_minimum_size = Vector2(38, 34)
+layout_mode = 2
+text = "×"
+
+[node name="Tabs" type="TabContainer" parent="UI/IntelPanel/Panel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+current_tab = 0
+
+[node name="Roster" type="ScrollContainer" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs"]
+layout_mode = 2
+metadata/_tab_name = "场上角色"
+horizontal_scroll_mode = 0
+
+[node name="Margin" type="MarginContainer" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs/Roster"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/margin_left = 6
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 6
+theme_override_constants/margin_bottom = 8
+
+[node name="CharacterGrid" type="GridContainer" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs/Roster/Margin"]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/h_separation = 8
 theme_override_constants/v_separation = 8
-columns = 2
+columns = 3
 
-[node name="PublicLogLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
+[node name="PublicRecords" type="ScrollContainer" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs"]
+visible = false
 layout_mode = 2
-theme_override_colors/font_color = Color(0.78, 0.86, 0.78, 1)
-theme_override_font_sizes/font_size = 13
+metadata/_tab_name = "公开记录"
+horizontal_scroll_mode = 0
+
+[node name="Margin" type="MarginContainer" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs/PublicRecords"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 10
+
+[node name="PublicLogLabel" type="Label" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs/PublicRecords/Margin"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 14
 text = "公开日志：暂无"
 autowrap_mode = 3
+
+[node name="MyRecords" type="MarginContainer" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs"]
+visible = false
+layout_mode = 2
+metadata/_tab_name = "我的记录"
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 10
+
+[node name="PlayerActionHistoryBlock" type="VBoxContainer" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs/MyRecords"]
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Title" type="Label" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs/MyRecords/PlayerActionHistoryBlock"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 13
+text = "仅你可见的行动记录"
+
+[node name="HistoryText" type="TextEdit" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs/MyRecords/PlayerActionHistoryBlock"]
+custom_minimum_size = Vector2(0, 420)
+layout_mode = 2
+size_flags_vertical = 3
+focus_mode = 0
+mouse_default_cursor_shape = 0
+theme_override_colors/font_readonly_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 13
+editable = false
+wrap_mode = 1
+text = "暂无行动记录。"
+
+[node name="GameSetupOverlay" type="Control" parent="UI"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+theme = SubResource("Theme_light_ui")
+
+[node name="Shade" type="ColorRect" parent="UI/GameSetupOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.08, 0.22, 0.31, 0.58)
+
+[node name="Panel" type="PanelContainer" parent="UI/GameSetupOverlay"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -300.0
+offset_top = -205.0
+offset_right = 300.0
+offset_bottom = 205.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_setup")
+
+[node name="Margin" type="MarginContainer" parent="UI/GameSetupOverlay/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 28
+theme_override_constants/margin_top = 24
+theme_override_constants/margin_right = 28
+theme_override_constants/margin_bottom = 24
+
+[node name="VBox" type="VBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 13
+
+[node name="HeaderRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+
+[node name="TitleLabel" type="Label" parent="UI/GameSetupOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 25
+text = "开始一局狼人杀"
+
+[node name="CloseButton" type="Button" parent="UI/GameSetupOverlay/Panel/Margin/VBox/HeaderRow"]
+custom_minimum_size = Vector2(40, 36)
+layout_mode = 2
+tooltip_text = "先在小镇自由探索"
+text = "×"
+
+[node name="HintLabel" type="Label" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 14
+text = "创建 1 名玩家与 11 名 NPC 的十二人局。测试选项不会改变正式规则。"
+autowrap_mode = 3
+
+[node name="PlayerNameRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="Label" type="Label" parent="UI/GameSetupOverlay/Panel/Margin/VBox/PlayerNameRow"]
+custom_minimum_size = Vector2(92, 0)
+layout_mode = 2
+text = "玩家名字"
+vertical_alignment = 1
+
+[node name="PlayerNameInput" type="LineEdit" parent="UI/GameSetupOverlay/Panel/Margin/VBox/PlayerNameRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "玩家"
+placeholder_text = "玩家名"
+
+[node name="LLMSettingsRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="LLMEnabledToggle" type="CheckButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow"]
+layout_mode = 2
+tooltip_text = "仅在后端已配置 LLM 时生效"
+text = "启用 AI NPC 表达"
+
+[node name="LLMSettingsHint" type="Label" parent="UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 12
+text = "DeepSeek 未配置时自动使用规则文本"
+vertical_alignment = 1
+
+[node name="PlayerRoleRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="PlayerRoleLabel" type="Label" parent="UI/GameSetupOverlay/Panel/Margin/VBox/PlayerRoleRow"]
+custom_minimum_size = Vector2(92, 0)
+layout_mode = 2
+text = "测试身份"
+vertical_alignment = 1
+
+[node name="PlayerRoleOption" type="OptionButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/PlayerRoleRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+tooltip_text = "默认随机；指定身份仅用于测试角色技能"
+
+[node name="SetupStatusLabel" type="Label" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 13
+text = "准备好后开始游戏，也可以先关闭窗口探索小镇。"
+autowrap_mode = 3
+
+[node name="ActionRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+alignment = 2
+theme_override_constants/separation = 10
+
+[node name="ExploreButton" type="Button" parent="UI/GameSetupOverlay/Panel/Margin/VBox/ActionRow"]
+layout_mode = 2
+text = "先逛逛"
+
+[node name="StartGameButton" type="Button" parent="UI/GameSetupOverlay/Panel/Margin/VBox/ActionRow"]
+custom_minimum_size = Vector2(150, 42)
+layout_mode = 2
+text = "开始游戏"
 
 [node name="GameSummaryOverlay" type="Control" parent="UI"]
 visible = false

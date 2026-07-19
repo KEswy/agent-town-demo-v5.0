@@ -60,7 +60,9 @@ func _is_any_movement_key_physically_pressed() -> bool:
 
 func set_wolf_game_state(alive: bool, is_sheriff: bool, campaign_status: String = "") -> void:
 	character_sprite.modulate = Color(0.42, 0.42, 0.42, 0.62) if not alive else Color.WHITE
-	sheriff_badge.visible = alive and is_sheriff
+	# Keep showing the outgoing sheriff during BADGE_TRANSFER; the next backend
+	# state refresh moves the marker to the heir or hides it after destruction.
+	sheriff_badge.visible = is_sheriff
 	campaign_badge.visible = alive and campaign_status in ["candidate", "withdrawn"]
 	campaign_badge.modulate = (
 		Color(0.48, 0.52, 0.56, 1)
@@ -74,7 +76,7 @@ func set_menu_safe_area(menu_expanded: bool, menu_width: float) -> void:
 	if _camera_tween != null and _camera_tween.is_valid():
 		_camera_tween.kill()
 
-	var target_offset := Vector2(menu_width * 0.75, 0.0) if menu_expanded else Vector2.ZERO
+	var target_offset := Vector2(menu_width * 0.5, 0.0) if menu_expanded else Vector2.ZERO
 	_camera_tween = create_tween()
 	_camera_tween.set_trans(Tween.TRANS_QUAD)
 	_camera_tween.set_ease(Tween.EASE_OUT)

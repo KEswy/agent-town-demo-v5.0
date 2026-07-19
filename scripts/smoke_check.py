@@ -13,9 +13,15 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 BACKEND_DIR = ROOT_DIR / "backend"
 GAME_DIR = ROOT_DIR / "game"
+ROOT_README_FILE = ROOT_DIR / "README.md"
+BACKEND_README_FILE = BACKEND_DIR / "README.md"
+COMMANDS_FILE = ROOT_DIR / "COMMANDS.md"
+V3_ROADMAP_FILE = ROOT_DIR / "docs" / "V3_ROADMAP.md"
 MAIN_SCENE = "res://scenes/Main.tscn"
 MAIN_SCENE_FILE = GAME_DIR / "scenes" / "Main.tscn"
 MAIN_SCRIPT_FILE = GAME_DIR / "scripts" / "main.gd"
+TOWN_BACKGROUND_SCENE_FILE = GAME_DIR / "scenes" / "TownBackground.tscn"
+TOWN_BACKGROUND_SCRIPT_FILE = GAME_DIR / "scripts" / "town_background.gd"
 DIALOG_SCENE_FILE = GAME_DIR / "scenes" / "DialogBox.tscn"
 DIALOG_SCRIPT_FILE = GAME_DIR / "scripts" / "dialog_box.gd"
 DIALOG_FONT_FILE = GAME_DIR / "assets" / "fonts" / "NotoSansSC-Variable.ttf"
@@ -39,21 +45,31 @@ EXPECTED_CHARACTER_ASSETS = {
     "lazy_goat.svg",
     "luoluo.svg",
     "doctor_strange.svg",
+    "huaihuai.svg",
+    "ranran.svg",
 }
 PROJECT_FILE = GAME_DIR / "project.godot"
 KNOWLEDGE_FILE = BACKEND_DIR / "config" / "knowledge_base.json"
 NPC_PROFILES_FILE = BACKEND_DIR / "config" / "npc_profiles.json"
+NPC_TUNING_FILE = BACKEND_DIR / "config" / "npc_tuning.json"
 BACKEND_MAIN_FILE = BACKEND_DIR / "app" / "main.py"
+BACKEND_LLM_FILE = BACKEND_DIR / "app" / "llm.py"
+BACKEND_NPC_DECISION_FILE = BACKEND_DIR / "app" / "npc_decision.py"
+BACKEND_NPC_TUNING_FILE = BACKEND_DIR / "app" / "npc_tuning.py"
 BACKEND_VENV_PYTHON = BACKEND_DIR / ".venv" / "bin" / "python"
 MIN_KNOWLEDGE_COUNT = 100
 
 
 def main() -> int:
     checks = [
+        check_release_docs,
         check_json_files,
         check_backend_compiles,
         check_llm_adapter,
+        check_npc_decision_contracts,
+        check_npc_tuning,
         check_backend_search,
+        check_resident_chat,
         check_wolf_game_start,
         check_godot_ui_layout,
         check_godot_loads,
@@ -73,12 +89,44 @@ def main() -> int:
     return 0
 
 
+def check_release_docs() -> None:
+    required_files = [ROOT_README_FILE, BACKEND_README_FILE, COMMANDS_FILE, V3_ROADMAP_FILE]
+    missing_files = [str(path.relative_to(ROOT_DIR)) for path in required_files if not path.is_file()]
+    if missing_files:
+        raise SmokeCheckError("release docs missing: " + ", ".join(missing_files))
+
+    root_readme = ROOT_README_FILE.read_text(encoding="utf-8")
+    backend_readme = BACKEND_README_FILE.read_text(encoding="utf-8")
+    commands = COMMANDS_FILE.read_text(encoding="utf-8")
+    roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
+    release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
+
+    if not root_readme.startswith("# Agent Town Demo V2.0"):
+        raise SmokeCheckError("root README must identify the V2.0 release")
+    if release_url not in root_readme or release_url not in backend_readme:
+        raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
+    if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
+        raise SmokeCheckError("README files must link to the standalone V3 roadmap")
+    if "/Users/" in commands:
+        raise SmokeCheckError("COMMANDS.md must not contain a developer-specific absolute path")
+    if "# Agent Town V3 改进与开发路线表" not in roadmap:
+        raise SmokeCheckError("V3 roadmap title is missing")
+    if roadmap.count("| M") < 24:
+        raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
+
+    print("[OK] V2.0 release README and standalone V3 roadmap are synchronized.")
+
+
 def check_json_files() -> None:
     knowledge_items = load_json_list(KNOWLEDGE_FILE, "knowledge base")
     npc_profiles = load_json_list(NPC_PROFILES_FILE, "NPC profiles")
     expected_trigger_profiles = {
         "梅西", "C罗", "周深", "梅长苏", "塞尔达", "小骑士",
         "大黄蜂", "喜羊羊", "懒羊羊", "洛洛", "奇异博士",
+    }
+    expected_resident_profiles = {"坏坏", "然然"}
+    expected_profile_names = {
+        "Guide", "Archivist", *expected_trigger_profiles, *expected_resident_profiles,
     }
     trigger_profile_names = set()
     trigger_egg_ids = set()
@@ -99,11 +147,33 @@ def check_json_files() -> None:
         if not isinstance(item["keywords"], list):
             raise SmokeCheckError(f"knowledge item #{index} keywords must be a list")
 
+    profile_names = [str(item.get("npc_name", "")) for item in npc_profiles]
+    if len(profile_names) != len(set(profile_names)):
+        raise SmokeCheckError("NPC profiles contain duplicate names")
+    if set(profile_names) != expected_profile_names:
+        raise SmokeCheckError("NPC profiles must contain the two town residents and eleven wolf-game NPCs")
+    resident_profiles = {
+        str(item.get("npc_name", "")): item
+        for item in npc_profiles
+        if item.get("npc_name") in expected_resident_profiles
+    }
+    resident_visual_markers = {
+        "坏坏": ("小恐龙", "尾巴"),
+        "然然": ("熊猫", "邮差包"),
+    }
+    for resident_name, markers in resident_visual_markers.items():
+        resident = resident_profiles[resident_name]
+        resident_text = json.dumps(resident, ensure_ascii=False)
+        if not all(marker in resident_text for marker in markers):
+            raise SmokeCheckError(
+                f"resident NPC profile does not match the new visual identity: {resident_name}"
+            )
+
     for index, item in enumerate(npc_profiles, start=1):
         require_keys(item, {"npc_name", "role", "personality", "knowledge"}, f"NPC profile #{index}")
         if not isinstance(item["knowledge"], list):
             raise SmokeCheckError(f"NPC profile #{index} knowledge must be a list")
-        if item["npc_name"] not in {"Guide", "Archivist"}:
+        if item["npc_name"] in expected_trigger_profiles:
             require_keys(
                 item,
                 {"speech_style", "catchphrases", "easter_eggs", "trigger_easter_eggs"},
@@ -136,13 +206,35 @@ def check_json_files() -> None:
                 role_reveal_profiles.add(item["npc_name"])
                 if "{role}" not in trigger_egg["reply"]:
                     raise SmokeCheckError("role-reveal easter egg must contain the {role} placeholder")
+        elif item["npc_name"] in expected_resident_profiles:
+            require_keys(
+                item,
+                {"speech_style", "catchphrases", "easter_eggs", "trigger_easter_eggs", "use_llm_for_chat"},
+                f"resident NPC profile #{index}",
+            )
+            if (
+                not item["speech_style"]
+                or not item["catchphrases"]
+                or not item["easter_eggs"]
+                or item["trigger_easter_eggs"] != []
+                or item["use_llm_for_chat"] is not True
+            ):
+                raise SmokeCheckError(f"resident NPC profile #{index} chat data is incomplete")
 
     if trigger_profile_names != expected_trigger_profiles:
         raise SmokeCheckError("trigger easter eggs must cover all eleven wolf-game NPCs")
     if role_reveal_profiles != {"梅长苏"}:
         raise SmokeCheckError("only 梅长苏 may reveal a real role through a trigger easter egg")
 
-    for path in [KNOWLEDGE_FILE, NPC_PROFILES_FILE, BACKEND_MAIN_FILE]:
+    for path in [
+        KNOWLEDGE_FILE,
+        NPC_PROFILES_FILE,
+        NPC_TUNING_FILE,
+        BACKEND_MAIN_FILE,
+        BACKEND_LLM_FILE,
+        BACKEND_NPC_DECISION_FILE,
+        BACKEND_NPC_TUNING_FILE,
+    ]:
         if "\ufffd" in path.read_text(encoding="utf-8"):
             raise SmokeCheckError(f"Unicode replacement character found in {path.relative_to(ROOT_DIR)}")
 
@@ -151,11 +243,19 @@ def check_json_files() -> None:
 
 def check_backend_compiles() -> None:
     run_command(
-        [sys.executable, "-m", "py_compile", str(BACKEND_MAIN_FILE)],
+        [
+            sys.executable,
+            "-m",
+            "py_compile",
+            str(BACKEND_MAIN_FILE),
+            str(BACKEND_LLM_FILE),
+            str(BACKEND_NPC_DECISION_FILE),
+            str(BACKEND_NPC_TUNING_FILE),
+        ],
         cwd=ROOT_DIR,
-        fail_message="backend/app/main.py failed to compile",
+        fail_message="backend Python files failed to compile",
     )
-    print("[OK] Backend Python file compiles.")
+    print("[OK] Backend Python files compile.")
 
 
 def check_llm_adapter() -> None:
@@ -187,7 +287,18 @@ def success_handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("LLM request should include the configured model")
     return httpx.Response(
         200,
-        json={"choices": [{"message": {"content": '{"text":"自然生成的回答。"}'}}]},
+        json={
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"text":"自然生成的回答。","intent":"observe",'
+                            '"evidence_ids":[]}'
+                        )
+                    }
+                }
+            ]
+        },
     )
 
 settings = LLMSettings(
@@ -203,6 +314,17 @@ client = LLMClient(settings, transport=httpx.MockTransport(success_handler))
 result = client.generate_json_text("system", {"task": "test"}, fallback)
 if not result.used_llm or result.text != "自然生成的回答。":
     raise SystemExit("OpenAI-compatible adapter should parse JSON text")
+structured_result = client.generate_json_object(
+    "system",
+    {"task": "structured-test"},
+    {"intent": "fallback"},
+)
+if (
+    not structured_result.used_llm
+    or structured_result.data.get("intent") != "observe"
+    or structured_result.data.get("evidence_ids") != []
+):
+    raise SystemExit("LLM adapter should preserve a complete structured JSON object")
 status = client.status()
 if "api_key" in status or "test-key" in json.dumps(status):
     raise SystemExit("LLM status must never expose the API key")
@@ -268,6 +390,21 @@ malformed_result = malformed_client.generate_json_text("system", {}, fallback)
 if malformed_result.used_llm or malformed_result.text != fallback:
     raise SystemExit("invalid LLM JSON should use the rule fallback")
 
+def replacement_handler(_request: httpx.Request) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={"choices": [{"message": {"content": '{"text":"bad�text"}'}}]},
+    )
+
+replacement_client = LLMClient(settings, transport=httpx.MockTransport(replacement_handler))
+replacement_result = replacement_client.generate_json_object(
+    "system",
+    {},
+    {"text": fallback},
+)
+if replacement_result.used_llm or replacement_result.data != {"text": fallback}:
+    raise SystemExit("structured LLM JSON with replacement characters should use the fallback")
+
 def limited_handler(_request: httpx.Request) -> httpx.Response:
     return httpx.Response(429, json={"error": {"message": "rate limited"}})
 
@@ -284,6 +421,637 @@ print("LLM adapter smoke test passed")
         fail_message="LLM adapter smoke test failed",
     )
     print("[OK] LLM adapter success, mock, safety, and fallback paths work.")
+
+
+def check_npc_decision_contracts() -> None:
+    python_bin = BACKEND_VENV_PYTHON if BACKEND_VENV_PYTHON.exists() else Path(sys.executable)
+    smoke_code = r'''
+from copy import deepcopy
+
+from pydantic import ValidationError
+
+from app.main import normalize_public_speech_plan_payload
+from app.npc_decision import (
+    NPCDecisionContextV1,
+    PublicSpeechDecisionV1,
+    PublicSpeechPlanV2,
+    upgrade_public_speech_decision_v1,
+    validate_public_speech_decision,
+    validate_public_speech_plan,
+)
+
+context_payload = {
+    "schema_version": "npc_decision_context.v1",
+    "task": "public_speech",
+    "day": 1,
+    "phase": "DAY_MEETING",
+    "actor": {
+        "id": 2,
+        "name": "梅西",
+        "role": "seer",
+        "faction": "good",
+        "personality": {"logic": 0.8},
+        "speech_style": "简洁",
+        "catchphrases": ["先看逻辑"],
+    },
+    "public_logs": [{"id": "public-log:1", "content": "1号已经发言。"}],
+    "legal_knowledge": [
+        {
+            "id": "knowledge:self-role",
+            "title": "自身身份",
+            "content": "你是预言家。",
+            "visibility": "private",
+        }
+    ],
+    "private_memory": [
+        {
+            "id": "memory:2:1",
+            "title": "私有记忆",
+            "content": "昨晚查验了 3 号。",
+            "visibility": "private",
+        }
+    ],
+    "evidence": [
+        {
+            "id": "evidence:public:1",
+            "title": "公开发言",
+            "content": "3号公开表达过矛盾观点。",
+            "visibility": "public",
+        },
+        {
+            "id": "evidence:private:1",
+            "title": "私有线索",
+            "content": "不得公开引用。",
+            "visibility": "private",
+        },
+    ],
+    "decision_signals": [
+        {
+            "id": "signal:sheriff_signup:1:3",
+            "kind": "sheriff_signup",
+            "category": "fact",
+            "day": 1,
+            "phase": "SHERIFF_SIGNUP",
+            "summary": "第1天，3号C罗报名竞选警长。",
+            "actor_id": 3,
+        },
+        {
+            "id": "signal:low_information:1:DAY_MEETING:3",
+            "kind": "low_information_speech",
+            "category": "assessment",
+            "day": 1,
+            "phase": "DAY_MEETING",
+            "summary": "第1天，3号C罗的发言没有给出具体目标。",
+            "actor_id": 3,
+        },
+        {
+            "id": "signal:sheriff_withdraw:1:4",
+            "kind": "sheriff_withdraw",
+            "category": "fact",
+            "day": 1,
+            "phase": "SHERIFF_WITHDRAWAL",
+            "summary": "第1天，4号周深在警长竞选中退水。",
+            "actor_id": 4,
+        },
+    ],
+    "legal_targets": [
+        {"id": 3, "name": "C罗"},
+        {"id": 4, "name": "周深"},
+    ],
+    "claim_options": [
+        {
+            "id": "claim:seer-check:3",
+            "summary": "公布 3 号查验",
+            "required": False,
+            "facts": [
+                {"claim_type": "role", "claimed_role": "seer"},
+                {
+                    "claim_type": "seer_check",
+                    "claimed_role": "seer",
+                    "target_id": 3,
+                    "result": "werewolf",
+                },
+            ],
+        }
+    ],
+    "allowed_intents": ["observe", "pressure", "reveal"],
+}
+context = NPCDecisionContextV1.model_validate(context_payload)
+valid_payload = {
+    "schema_version": "public_speech.v1",
+    "intent": "pressure",
+    "target_id": 3,
+    "claim_option_ids": [],
+    "evidence_ids": ["evidence:public:1"],
+    "signal_ids": ["signal:sheriff_signup:1:3"],
+}
+valid_decision = PublicSpeechDecisionV1.model_validate(valid_payload)
+context_before_validation = context.model_dump_json()
+if validate_public_speech_decision(context, valid_decision):
+    raise SystemExit("a valid structured public-speech decision should pass")
+if context.model_dump_json() != context_before_validation:
+    raise SystemExit("decision validation must not mutate its rule context")
+
+two_signal_payload = deepcopy(valid_payload)
+two_signal_payload["evidence_ids"] = []
+two_signal_payload["signal_ids"] = [
+    "signal:sheriff_signup:1:3",
+    "signal:low_information:1:DAY_MEETING:3",
+]
+two_signal_decision = PublicSpeechDecisionV1.model_validate(two_signal_payload)
+if validate_public_speech_decision(context, two_signal_decision):
+    raise SystemExit("exactly two legal public signals should be accepted")
+
+for label, updates, expected_error in [
+    ("target", {"target_id": 99}, "target_not_allowed"),
+    (
+        "claim option",
+        {"claim_option_ids": ["claim:forged"]},
+        "claim_option_not_allowed",
+    ),
+    (
+        "private evidence",
+        {"evidence_ids": ["evidence:private:1"]},
+        "private_evidence_not_publishable",
+    ),
+    (
+        "unknown evidence",
+        {"evidence_ids": ["evidence:missing"]},
+        "evidence_not_allowed",
+    ),
+    (
+        "unknown signal",
+        {"signal_ids": ["signal:missing"]},
+        "signal_not_allowed",
+    ),
+    (
+        "duplicate signal",
+        {"signal_ids": ["signal:sheriff_signup:1:3"] * 2},
+        "duplicate_signal_id",
+    ),
+    (
+        "unrelated signal",
+        {"signal_ids": ["signal:sheriff_withdraw:1:4"]},
+        "signal_target_mismatch",
+    ),
+    (
+        "missing decision basis",
+        {"evidence_ids": [], "signal_ids": []},
+        "decision_basis_required",
+    ),
+    (
+        "observe without target",
+        {
+            "intent": "observe",
+            "target_id": None,
+            "evidence_ids": ["evidence:public:1"],
+            "signal_ids": [],
+        },
+        "target_required",
+    ),
+]:
+    payload = deepcopy(valid_payload)
+    payload.update(updates)
+    decision = PublicSpeechDecisionV1.model_validate(payload)
+    errors = validate_public_speech_decision(context, decision)
+    if not any(error.startswith(expected_error) for error in errors):
+        raise SystemExit(f"illegal {label} should be rejected: {errors}")
+
+for label, updates in [
+    ("extra text field", {"text": "策略阶段不得生成台词。"}),
+    ("extra field", {"unexpected": True}),
+    ("coerced target id", {"target_id": "3"}),
+    ("unknown intent", {"intent": "invent"}),
+    (
+        "more than two signals",
+        {
+            "signal_ids": [
+                "signal:sheriff_signup:1:3",
+                "signal:low_information:1:DAY_MEETING:3",
+                "signal:sheriff_withdraw:1:4",
+            ]
+        },
+    ),
+]:
+    payload = deepcopy(valid_payload)
+    payload.update(updates)
+    try:
+        PublicSpeechDecisionV1.model_validate(payload)
+    except (ValidationError, ValueError):
+        pass
+    else:
+        raise SystemExit(f"strict public-speech schema should reject {label}")
+
+duplicate_signal_context_payload = deepcopy(context_payload)
+duplicate_signal_context_payload["decision_signals"].append(
+    deepcopy(duplicate_signal_context_payload["decision_signals"][0])
+)
+duplicate_signal_context = NPCDecisionContextV1.model_validate(
+    duplicate_signal_context_payload
+)
+duplicate_context_errors = validate_public_speech_decision(
+    duplicate_signal_context,
+    valid_decision,
+)
+if not any(
+    error.startswith("duplicate_context_signal_id")
+    for error in duplicate_context_errors
+):
+    raise SystemExit("duplicate rule-context signal ids should be rejected")
+
+valid_v2_payload = {
+    "schema_version": "public_speech_plan.v2",
+    "intent": "pressure",
+    "primary_target_id": 3,
+    "secondary_target_id": 4,
+    "stance": "oppose",
+    "stance_target_id": 3,
+    "confidence": 76,
+    "signal_read": "raises_suspicion",
+    "question": {"target_id": 3, "topic": "action_motive"},
+    "verification": {"target_id": 4, "criterion": "vote_alignment"},
+    "provisional_vote_target_id": 3,
+    "tactic": "direct_pressure",
+    "claim_option_ids": [],
+    "evidence_ids": ["evidence:public:1"],
+    "signal_ids": ["signal:sheriff_signup:1:3"],
+}
+valid_v2_plan = PublicSpeechPlanV2.model_validate(valid_v2_payload)
+context_before_v2_validation = context.model_dump_json()
+if validate_public_speech_plan(context, valid_v2_plan):
+    raise SystemExit("a complete legal V2 public-speech plan should pass")
+if context.model_dump_json() != context_before_v2_validation:
+    raise SystemExit("V2 plan validation must not mutate its rule context")
+
+if normalize_public_speech_plan_payload(deepcopy(valid_v2_payload)) != valid_v2_payload:
+    raise SystemExit("a normal flat V2 plan must pass through normalization unchanged")
+
+legacy_fields_wrapper = {
+    "schema_version": "public_speech_plan.v2",
+    "fields": {
+        key: deepcopy(value)
+        for key, value in valid_v2_payload.items()
+        if key != "schema_version"
+    },
+}
+normalized_wrapper = normalize_public_speech_plan_payload(
+    deepcopy(legacy_fields_wrapper)
+)
+if normalized_wrapper != valid_v2_payload:
+    raise SystemExit("the exact legacy fields wrapper should normalize to a flat V2 plan")
+PublicSpeechPlanV2.model_validate(normalized_wrapper)
+
+for label, invalid_wrapper in [
+    (
+        "extra outer field",
+        {**deepcopy(legacy_fields_wrapper), "text": "must stay forbidden"},
+    ),
+    (
+        "extra inner field",
+        {
+            **deepcopy(legacy_fields_wrapper),
+            "fields": {
+                **deepcopy(legacy_fields_wrapper["fields"]),
+                "unexpected": "must stay forbidden",
+            },
+        },
+    ),
+]:
+    normalized_invalid_wrapper = normalize_public_speech_plan_payload(
+        invalid_wrapper
+    )
+    try:
+        PublicSpeechPlanV2.model_validate(normalized_invalid_wrapper)
+    except (ValidationError, ValueError):
+        pass
+    else:
+        raise SystemExit(f"legacy wrapper normalization must not hide an {label}")
+
+upgraded_v1_plan = upgrade_public_speech_decision_v1(
+    context,
+    valid_decision,
+    confidence=63,
+)
+if (
+    upgraded_v1_plan.schema_version != "public_speech_plan.v2"
+    or upgraded_v1_plan.primary_target_id != 3
+    or upgraded_v1_plan.provisional_vote_target_id != 3
+    or upgraded_v1_plan.confidence != 63
+    or validate_public_speech_plan(context, upgraded_v1_plan)
+):
+    raise SystemExit("a valid V1 decision should upgrade into a legal complete V2 plan")
+
+multi_check_context_payload = deepcopy(context_payload)
+multi_check_context_payload["claim_options"][0]["facts"].append(
+    {
+        "claim_type": "seer_check",
+        "claimed_role": "seer",
+        "target_id": 4,
+        "result": "good",
+    }
+)
+multi_check_context = NPCDecisionContextV1.model_validate(
+    multi_check_context_payload
+)
+multi_check_decision = PublicSpeechDecisionV1.model_validate(
+    {
+        "schema_version": "public_speech.v1",
+        "intent": "reveal",
+        "target_id": 4,
+        "claim_option_ids": ["claim:seer-check:3"],
+        "evidence_ids": [],
+        "signal_ids": [],
+    }
+)
+multi_check_plan = upgrade_public_speech_decision_v1(
+    multi_check_context,
+    multi_check_decision,
+)
+if (
+    multi_check_plan.primary_target_id != 3
+    or multi_check_plan.stance.value != "oppose"
+    or multi_check_plan.provisional_vote_target_id != 3
+    or validate_public_speech_plan(multi_check_context, multi_check_plan)
+):
+    raise SystemExit("multiple newly revealed checks should prioritize a black check consistently")
+
+good_check_context_payload = deepcopy(context_payload)
+good_check_context_payload["claim_options"][0]["facts"][1]["result"] = "good"
+good_check_context = NPCDecisionContextV1.model_validate(good_check_context_payload)
+good_check_decision = PublicSpeechDecisionV1.model_validate(
+    {
+        "schema_version": "public_speech.v1",
+        "intent": "reveal",
+        "target_id": 3,
+        "claim_option_ids": ["claim:seer-check:3"],
+        "evidence_ids": [],
+        "signal_ids": [],
+    }
+)
+good_check_plan = upgrade_public_speech_decision_v1(
+    good_check_context,
+    good_check_decision,
+)
+if (
+    good_check_plan.stance.value != "support"
+    or good_check_plan.stance_target_id != 3
+    or good_check_plan.provisional_vote_target_id is not None
+    or validate_public_speech_plan(good_check_context, good_check_plan)
+):
+    raise SystemExit("a revealed good check must support and avoid voting its target")
+
+for label, updates, expected_error in [
+    (
+        "duplicate primary and secondary targets",
+        {"secondary_target_id": 3},
+        "duplicate_plan_target",
+    ),
+    (
+        "question outside selected targets",
+        {"secondary_target_id": None, "question": {"target_id": 4, "topic": "stance"}},
+        "question_target_mismatch",
+    ),
+    (
+        "pressure with support stance",
+        {"stance": "support"},
+        "intent_stance_mismatch",
+    ),
+    (
+        "private evidence",
+        {"evidence_ids": ["evidence:private:1"]},
+        "private_evidence_not_publishable",
+    ),
+    (
+        "good actor using wolf tactic",
+        {"tactic": "wolf_frame_good"},
+        "wolf_tactic_forbidden",
+    ),
+    (
+        "illegal provisional vote",
+        {"provisional_vote_target_id": 99},
+        "target_not_allowed",
+    ),
+    (
+        "selected signal without interpretation",
+        {"signal_read": "none"},
+        "signal_read_mismatch",
+    ),
+]:
+    payload = deepcopy(valid_v2_payload)
+    payload.update(updates)
+    plan = PublicSpeechPlanV2.model_validate(payload)
+    errors = validate_public_speech_plan(context, plan)
+    if not any(error.startswith(expected_error) for error in errors):
+        raise SystemExit(f"illegal V2 {label} should be rejected: {errors}")
+
+for label, mutate in [
+    ("missing nullable field", lambda payload: payload.pop("secondary_target_id")),
+    ("extra publishable text", lambda payload: payload.update({"text": "不得生成台词"})),
+    ("coerced target id", lambda payload: payload.update({"primary_target_id": "3"})),
+    (
+        "more than three evidence ids",
+        lambda payload: payload.update(
+            {"evidence_ids": ["evidence:public:1"] * 4}
+        ),
+    ),
+]:
+    payload = deepcopy(valid_v2_payload)
+    mutate(payload)
+    try:
+        PublicSpeechPlanV2.model_validate(payload)
+    except (ValidationError, ValueError):
+        pass
+    else:
+        raise SystemExit(f"strict V2 public-speech schema should reject {label}")
+
+print("NPC decision contract smoke test passed")
+'''
+    run_command(
+        [str(python_bin), "-c", smoke_code],
+        cwd=BACKEND_DIR,
+        fail_message="NPC decision contract smoke test failed",
+    )
+    print("[OK] NPC V1/V2 decision schemas, upgrades, and allowlist validation work.")
+
+
+def check_npc_tuning() -> None:
+    python_bin = BACKEND_VENV_PYTHON if BACKEND_VENV_PYTHON.exists() else Path(sys.executable)
+    smoke_code = r'''
+from copy import deepcopy
+import json
+import tempfile
+from pathlib import Path
+
+from pydantic import ValidationError
+
+import app.main as main_module
+from app.main import GAME_STORE, GameStartRequest, start_wolf_game
+from app.npc_tuning import (
+    NPCTuningConfigV1,
+    load_npc_tuning,
+    resolve_npc_tuning,
+)
+
+npc_names = list(main_module.NPC_NAMES)
+default_config = load_npc_tuning(
+    Path("config/npc_tuning.json"),
+    npc_name_whitelist=npc_names,
+)
+if default_config.schema_version != "npc_tuning.v1":
+    raise SystemExit("the persisted NPC tuning config should use npc_tuning.v1")
+
+base_values = {
+    "reasoning_skill": 0.1,
+    "social_susceptibility": 0.1,
+    "decision_variance": 0.1,
+    "plan_consistency": 0.1,
+    "deception_susceptibility": 0.1,
+    "deception_strength": 0.1,
+    "team_coordination": 0.1,
+    "teammate_bus_pressure_threshold": 80,
+    "teammate_black_check_chance": 0.1,
+    "teammate_black_check_min_pressure": 80,
+}
+precedence_payload = {
+    "schema_version": "npc_tuning.v1",
+    "global_defaults": base_values,
+    "factions": {
+        "good": {"reasoning_skill": 0.2},
+        "werewolf": {"reasoning_skill": 0.25},
+    },
+    "roles": {
+        "werewolf": {},
+        "seer": {},
+        "witch": {},
+        "hunter": {},
+        "guard": {},
+        "villager": {"reasoning_skill": 0.3},
+    },
+    "npcs": {"梅西": {"reasoning_skill": 0.4}},
+}
+with tempfile.TemporaryDirectory() as temp_dir:
+    temp_path = Path(temp_dir) / "npc_tuning.json"
+    temp_path.write_text(
+        json.dumps(precedence_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    precedence_config = load_npc_tuning(
+        temp_path,
+        npc_name_whitelist=npc_names,
+    )
+
+    resolved_npc = resolve_npc_tuning(
+        precedence_config,
+        faction="good",
+        role="villager",
+        npc_name="梅西",
+        npc_name_whitelist=npc_names,
+    )
+    resolved_role = resolve_npc_tuning(
+        precedence_config,
+        faction="good",
+        role="villager",
+        npc_name="C罗",
+        npc_name_whitelist=npc_names,
+    )
+    resolved_faction = resolve_npc_tuning(
+        precedence_config,
+        faction="good",
+        role="seer",
+        npc_name="C罗",
+        npc_name_whitelist=npc_names,
+    )
+    resolved_global = resolve_npc_tuning(
+        precedence_config,
+        faction="werewolf",
+        role="werewolf",
+        npc_name="C罗",
+        npc_name_whitelist=npc_names,
+    )
+    if (
+        resolved_npc.reasoning_skill != 0.4
+        or resolved_role.reasoning_skill != 0.3
+        or resolved_faction.reasoning_skill != 0.2
+        or resolved_global.reasoning_skill != 0.25
+        or resolved_npc.plan_consistency != 0.1
+    ):
+        raise SystemExit("NPC tuning must resolve global < faction < role < NPC")
+
+    invalid_payloads = []
+    extra_payload = deepcopy(precedence_payload)
+    extra_payload["global_defaults"]["unknown_knob"] = 1
+    invalid_payloads.append(("unknown field", extra_payload))
+    range_payload = deepcopy(precedence_payload)
+    range_payload["global_defaults"]["reasoning_skill"] = 1.1
+    invalid_payloads.append(("out-of-range probability", range_payload))
+    unknown_npc_payload = deepcopy(precedence_payload)
+    unknown_npc_payload["npcs"] = {"不存在的NPC": {"reasoning_skill": 0.5}}
+    invalid_payloads.append(("unknown NPC", unknown_npc_payload))
+    for label, payload in invalid_payloads:
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        try:
+            load_npc_tuning(temp_path, npc_name_whitelist=npc_names)
+        except (ValidationError, ValueError):
+            pass
+        else:
+            raise SystemExit(f"strict tuning loader should reject {label}")
+
+try:
+    resolve_npc_tuning(
+        default_config,
+        faction="good",
+        role="werewolf",
+        npc_name="梅西",
+        npc_name_whitelist=npc_names,
+    )
+except ValueError:
+    pass
+else:
+    raise SystemExit("tuning resolution should reject faction/role mismatch")
+
+original_live_config = main_module.NPC_TUNING_CONFIG
+try:
+    old_response = start_wolf_game(
+        GameStartRequest(player_name="调参快照旧对局", enable_llm=False)
+    )
+    old_state = GAME_STORE[old_response.game_id]
+    old_actor = next(character for character in old_state.characters if character.name == "梅西")
+    old_snapshot = deepcopy(old_actor.strategy_tuning)
+    old_reasoning = main_module.get_character_strategy_tuning(old_actor).reasoning_skill
+
+    changed_payload = default_config.model_dump(mode="json")
+    changed_payload["npcs"]["梅西"]["reasoning_skill"] = 0.01
+    main_module.NPC_TUNING_CONFIG = NPCTuningConfigV1.model_validate(changed_payload)
+    new_response = start_wolf_game(
+        GameStartRequest(player_name="调参快照新对局", enable_llm=False)
+    )
+    new_state = GAME_STORE[new_response.game_id]
+    new_actor = next(character for character in new_state.characters if character.name == "梅西")
+    new_reasoning = main_module.get_character_strategy_tuning(new_actor).reasoning_skill
+    if new_reasoning != 0.01:
+        raise SystemExit("a changed tuning config should apply to a newly created game")
+    if (
+        old_actor.strategy_tuning != old_snapshot
+        or main_module.get_character_strategy_tuning(old_actor).reasoning_skill != old_reasoning
+        or old_reasoning == new_reasoning
+    ):
+        raise SystemExit("an existing game must retain its immutable NPC tuning snapshot")
+    if old_state.characters[0].strategy_tuning or new_state.characters[0].strategy_tuning:
+        raise SystemExit("the human player should not receive NPC strategy tuning")
+finally:
+    main_module.NPC_TUNING_CONFIG = original_live_config
+
+print("NPC tuning smoke test passed")
+'''
+    run_command(
+        [str(python_bin), "-c", smoke_code],
+        cwd=BACKEND_DIR,
+        fail_message="NPC tuning config and snapshot smoke test failed",
+    )
+    print("[OK] NPC tuning is strict, layered, and snapshotted per game.")
 
 
 def check_backend_search() -> None:
@@ -362,23 +1130,167 @@ print("backend search matched", len(cases), "cases")
     print("[OK] Backend knowledge search works.")
 
 
+def check_resident_chat() -> None:
+    python_bin = BACKEND_VENV_PYTHON if BACKEND_VENV_PYTHON.exists() else Path(sys.executable)
+    smoke_code = r'''
+import json
+import tempfile
+from pathlib import Path
+
+import httpx
+
+import app.main as main_module
+from app.llm import LLMClient, LLMGeneration, LLMSettings
+from app.main import ChatRequest, chat, validate_resident_chat_generation
+
+captured_contexts = []
+
+
+def resident_handler(request: httpx.Request) -> httpx.Response:
+    if not main_module.MEMORY_LOCK.acquire(blocking=False):
+        raise RuntimeError("resident LLM request must run outside MEMORY_LOCK")
+    main_module.MEMORY_LOCK.release()
+    request_payload = json.loads(request.content.decode("utf-8"))
+    context = json.loads(request_payload["messages"][1]["content"])
+    captured_contexts.append(context)
+    resident_name = context["resident"]["name"]
+    response_text = (
+        "我在呢，慢慢说就好。"
+        if resident_name == "坏坏"
+        else "好呀，我们从最有意思的一步开始！"
+    )
+    return httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "message": {"content": json.dumps({"text": response_text}, ensure_ascii=False)},
+                    "finish_reason": "stop",
+                }
+            ]
+        },
+    )
+
+
+settings = LLMSettings(
+    enabled=True,
+    provider="deepseek",
+    base_url="https://resident.invalid/v1",
+    api_key="test-key",
+    model="deepseek-chat",
+    max_retries=0,
+)
+
+with tempfile.TemporaryDirectory() as temp_dir:
+    main_module.MEMORY_FILE = Path(temp_dir) / "memory.json"
+    main_module.MEMORY_STORE.clear()
+    main_module.LLM_CLIENT = LLMClient(settings, transport=httpx.MockTransport(resident_handler))
+
+    first_bad = chat(ChatRequest(npc_name="坏坏", message="你好", player_id="player-a", game_phase="NIGHT"))
+    if not first_bad.llm_used or first_bad.llm_provider != "deepseek":
+        raise SystemExit("坏坏 should use configured DeepSeek chat")
+    if first_bad.memory_count != 1 or first_bad.relationship_level != "初次见面":
+        raise SystemExit("坏坏 should start an isolated long-term memory")
+    if captured_contexts[-1]["current_phase"] != "NIGHT":
+        raise SystemExit("resident chat context should include the current rule phase")
+    if "小恐龙" not in captured_contexts[-1]["resident"]["role"]:
+        raise SystemExit("坏坏 chat context should preserve the little-dinosaur identity")
+
+    first_ran = chat(ChatRequest(npc_name="然然", message="想做一个计划", player_id="player-a"))
+    if not first_ran.llm_used or first_ran.memory_count != 1:
+        raise SystemExit("然然 should use DeepSeek with memory separate from 坏坏")
+    if "熊猫" not in captured_contexts[-1]["resident"]["role"]:
+        raise SystemExit("然然 chat context should preserve the panda identity")
+
+    second_bad = chat(ChatRequest(npc_name="坏坏", message="还记得我吗", player_id="player-a"))
+    if second_bad.memory_count != 2 or len(captured_contexts[-1]["recent_conversations"]) != 1:
+        raise SystemExit("resident chat should pass recent same-resident memory to DeepSeek")
+    if captured_contexts[-1]["resident"]["participates_in_werewolf_game"] is not False:
+        raise SystemExit("resident context must explicitly exclude wolf-game participation")
+    if len(captured_contexts[-1]["recent_conversations"]) > main_module.RESIDENT_CHAT_MEMORY_LIMIT:
+        raise SystemExit("resident LLM context must stay bounded")
+
+    other_player = chat(ChatRequest(npc_name="坏坏", message="你好", player_id="player-b"))
+    if other_player.memory_count != 1:
+        raise SystemExit("resident memory should be isolated by player_id")
+
+    calls_before_guide = len(captured_contexts)
+    guide = chat(ChatRequest(npc_name="Guide", message="你好", player_id="player-a"))
+    if guide.llm_used or guide.llm_provider != "rule" or len(captured_contexts) != calls_before_guide:
+        raise SystemExit("ordinary profiles should keep deterministic /chat behavior")
+
+    main_module.LLM_CLIENT = LLMClient(LLMSettings(enabled=False, provider="deepseek"))
+    fallback = chat(ChatRequest(npc_name="然然", message="今天有点累", player_id="player-a"))
+    if fallback.llm_used or not fallback.llm_fallback_reason or fallback.memory_count != 2:
+        raise SystemExit("disabled resident LLM should fall back and still save memory")
+    if not fallback.reply or not main_module.MEMORY_FILE.exists():
+        raise SystemExit("resident fallback should be useful and persisted")
+    if "邮差包" not in fallback.reply:
+        raise SystemExit("然然 fallback should keep a small amount of panda-postal characterization")
+
+    persisted = json.loads(main_module.MEMORY_FILE.read_text(encoding="utf-8"))
+    if len(persisted.get("player-a::坏坏", [])) != 2:
+        raise SystemExit("坏坏 long-term memory was not persisted")
+    if len(persisted.get("player-a::然然", [])) != 2:
+        raise SystemExit("然然 long-term memory was not persisted")
+
+    natural_chat = validate_resident_chat_generation(
+        LLMGeneration(
+            text="我不参加这局狼人杀，不过可以陪你复盘公开规则。",
+            used_llm=True,
+            provider="deepseek",
+            model="deepseek-chat",
+        ),
+        "fallback",
+    )
+    if not natural_chat.used_llm:
+        raise SystemExit("resident validation must not reject natural game-related chat")
+    overlong_chat = validate_resident_chat_generation(
+        LLMGeneration(
+            text="太" * (main_module.RESIDENT_CHAT_MAX_LENGTH + 1),
+            used_llm=True,
+            provider="deepseek",
+            model="deepseek-chat",
+        ),
+        "fallback",
+    )
+    if overlong_chat.used_llm or overlong_chat.text != "fallback":
+        raise SystemExit("resident validation should safely reject structurally invalid output")
+
+print("resident chat smoke test passed")
+'''
+    run_command(
+        [str(python_bin), "-c", smoke_code],
+        cwd=BACKEND_DIR,
+        fail_message="resident DeepSeek chat and memory smoke test failed",
+    )
+    print("[OK] Resident DeepSeek chat, safe fallback, and isolated long-term memory work.")
+
+
 def check_wolf_game_start() -> None:
     python_bin = BACKEND_VENV_PYTHON if BACKEND_VENV_PYTHON.exists() else Path(sys.executable)
     smoke_code = """
 from collections import Counter
+import json
 from pathlib import Path
 
 from fastapi import HTTPException
 
 import app.main as main_module
-from app.llm import LLMGeneration
+from app.llm import LLMGeneration, LLMJsonGeneration
+from app.npc_decision import (
+    PublicPositionV1,
+    PublicSpeechIntent,
+    PublicSpeechPlanV2,
+    validate_public_speech_plan,
+)
 from app.main import DayMeetingState, EliminationState, GAME_STORE, GameStartRequest
-from app.main import HunterShotRequest
+from app.main import HunterShotRequest, HunterShotState
 from app.main import NightActionRequest, NightActionState, NightResolutionState, NightResolveRequest
 from app.main import EndFreeActivityRequest, NpcSpeechRequest
 from app.main import PlayerSpeechRequest
 from app.main import PlayerVoteRequest, PrivateChatRequest, PrivateConversationState
-from app.main import BadgeTransferRequest, SheriffElectionState, SheriffMeetingOrderRequest, SheriffNominationRequest
+from app.main import BadgeTransferRequest, SheriffElectionState, SheriffEventState, SheriffMeetingOrderRequest, SheriffNominationRequest
 from app.main import SheriffSignupRequest, SheriffSpeechRequest, SheriffVoteRequest
 from app.main import SheriffWithdrawalRequest, SpeechState, VoteState
 from app.main import build_public_decision_rag_context, end_free_activity
@@ -701,14 +1613,15 @@ if game_state.phase == "SHERIFF_NOMINATION":
 if game_state.phase != "FREE_ACTIVITY":
     raise SystemExit("completed meeting and sheriff nomination should enter FREE_ACTIVITY")
 if player.alive and player_speech_target is not None:
-    state_after_speech = get_wolf_game_state(response.game_id)
-    target_view = next(
-        character
-        for character in state_after_speech.characters
-        if character.id == player_speech_target.id
+    recorded_player_speech = next(
+        speech
+        for speech in game_state.speeches
+        if speech.day == game_state.day
+        and speech.is_player
+        and speech.phase == "DAY_MEETING"
     )
-    if target_view.suspicion_score <= 0:
-        raise SystemExit("mentioned character should expose a positive suspicion score")
+    if recorded_player_speech.focus_target_id != player_speech_target.id:
+        raise SystemExit("a player's public accusation should retain its public focus target")
 
 free_activity_response = end_free_activity(EndFreeActivityRequest(game_id=response.game_id))
 if not free_activity_response.success or game_state.phase != "VOTE":
@@ -797,6 +1710,15 @@ def make_rule_test_game(roles):
         character.camp = "werewolf" if role == "werewolf" else "good"
         character.alive = True
         character.memory_summary = ""
+        character.strategy_tuning = (
+            {}
+            if character.is_player
+            else main_module.resolve_current_npc_tuning(
+                character.name,
+                character.camp,
+                character.role,
+            ).model_dump(mode="json")
+        )
     initialize_social_state(game_state.characters)
     game_state.day = 1
     game_state.phase = "NIGHT"
@@ -810,6 +1732,7 @@ def make_rule_test_game(roles):
     game_state.night_resolutions = []
     game_state.hunter_shots = []
     game_state.public_claims = []
+    game_state.badge_flows = []
     game_state.public_logs = []
     game_state.sheriff_id = None
     game_state.sheriff_election = SheriffElectionState(completed=True)
@@ -831,6 +1754,1224 @@ def make_rule_test_game(roles):
     player = game_state.characters[0]
     game_state.player_private_info = main_module.build_player_private_info_dict(game_state)
     return game_state
+
+seat_boundary_state = make_rule_test_game([])
+seat_boundary_parse = main_module.parse_player_speech(
+    seat_boundary_state,
+    "12号查杀。",
+)
+if seat_boundary_parse.mentioned_characters != [12]:
+    raise SystemExit("seat 12 references must not also match seat 2")
+seat_boundary_checks = [
+    claim
+    for claim in seat_boundary_parse.claims
+    if claim.get("claim_type") == "seer_check"
+]
+if len(seat_boundary_checks) != 1 or seat_boundary_checks[0].get("target_id") != 12:
+    raise SystemExit("seat 12 black-check parsing must produce exactly one target")
+
+# Badge-flow submission is atomic with a first public seer claim. An invalid
+# structured flow must be rejected before any role claim, speech, log, or
+# meeting progress is committed.
+atomic_badge_flow_state = make_rule_test_game(
+    ["villager", "villager", "villager", "villager"]
+)
+atomic_badge_flow_state.phase = "DAY_MEETING"
+atomic_badge_flow_state.badge_destroyed = False
+atomic_badge_flow_state.sheriff_id = 1
+atomic_badge_flow_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[1],
+    sheriff_id=1,
+)
+try:
+    submit_player_speech(
+        PlayerSpeechRequest(
+            game_id=atomic_badge_flow_state.game_id,
+            character_id=1,
+            speech="我是预言家，先把警徽流说清楚。",
+            temporary_nomination_target_id=4,
+            badge_flow=main_module.BadgeFlowInput(
+                primary_target_id=2,
+                secondary_target_id=3,
+                good_badge_target_id=4,
+                werewolf_badge_target_id=3,
+            ),
+        )
+    )
+    raise SystemExit("an invalid first seer badge flow should be rejected")
+except HTTPException as exc:
+    if exc.status_code != 400:
+        raise
+if (
+    atomic_badge_flow_state.public_claims
+    or atomic_badge_flow_state.badge_flows
+    or atomic_badge_flow_state.speeches
+    or atomic_badge_flow_state.public_logs
+    or atomic_badge_flow_state.meeting.current_index != 0
+    or atomic_badge_flow_state.meeting.temporary_nomination_target_id is not None
+):
+    raise SystemExit("a rejected badge flow must not leave a partial claim, log, or nomination")
+
+# Role aliases and whitespace are resolved before the flow is committed. The
+# final role claim in the same request is authoritative, while a conflicting
+# final non-seer claim rejects the whole request without leaving partial state.
+for seer_alias_text in ["我是好人，我跳预言家", "我 是 预言家"]:
+    alias_badge_flow_state = make_rule_test_game(
+        ["villager", "villager", "villager", "villager"]
+    )
+    alias_badge_flow_state.phase = "DAY_MEETING"
+    alias_badge_flow_state.badge_destroyed = False
+    alias_badge_flow_state.meeting = DayMeetingState(
+        day=1,
+        direction="clockwise",
+        order=[1],
+    )
+    alias_badge_flow_input = main_module.BadgeFlowInput(
+        primary_target_id=2,
+        secondary_target_id=3,
+        good_badge_target_id=2,
+        werewolf_badge_target_id=3,
+    )
+    submit_player_speech(
+        PlayerSpeechRequest(
+            game_id=alias_badge_flow_state.game_id,
+            character_id=1,
+            speech=seer_alias_text,
+            badge_flow=alias_badge_flow_input,
+        )
+    )
+    alias_role_claims = [
+        claim
+        for claim in alias_badge_flow_state.public_claims
+        if claim.character_id == 1 and claim.claim_type == "role"
+    ]
+    if (
+        len(alias_role_claims) != 1
+        or alias_role_claims[0].claimed_role != "seer"
+        or len(alias_badge_flow_state.badge_flows) != 1
+    ):
+        raise SystemExit(
+            "seer aliases and spaced role claims must atomically publish only the final seer role and flow"
+        )
+
+conflicting_badge_flow_state = make_rule_test_game(
+    ["villager", "villager", "villager", "villager"]
+)
+conflicting_badge_flow_state.phase = "DAY_MEETING"
+conflicting_badge_flow_state.badge_destroyed = False
+conflicting_badge_flow_state.sheriff_id = 1
+conflicting_badge_flow_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[1],
+    sheriff_id=1,
+)
+try:
+    submit_player_speech(
+        PlayerSpeechRequest(
+            game_id=conflicting_badge_flow_state.game_id,
+            character_id=1,
+            speech="我是预言家，我是村民",
+            temporary_nomination_target_id=4,
+            badge_flow=main_module.BadgeFlowInput(
+                primary_target_id=2,
+                secondary_target_id=3,
+                good_badge_target_id=2,
+                werewolf_badge_target_id=3,
+            ),
+        )
+    )
+    raise SystemExit("a final villager claim must reject a same-request badge flow")
+except HTTPException as exc:
+    if exc.status_code != 400:
+        raise
+if (
+    conflicting_badge_flow_state.public_claims
+    or conflicting_badge_flow_state.badge_flows
+    or conflicting_badge_flow_state.speeches
+    or conflicting_badge_flow_state.public_logs
+    or conflicting_badge_flow_state.meeting.current_index != 0
+    or conflicting_badge_flow_state.meeting.temporary_nomination_target_id is not None
+):
+    raise SystemExit(
+        "a conflicting final role claim must roll back claims, logs, nomination, speech, and badge flow"
+    )
+
+# Free-form badge-flow wording is never authoritative. Contradictory targets
+# and branches are removed and replaced by the Python projection, including
+# the exact night on which this flow becomes effective.
+canonical_submission_state = make_rule_test_game(
+    ["villager", "villager", "villager", "villager", "villager", "villager", "villager", "villager", "villager"]
+)
+canonical_submission_state.phase = "DAY_MEETING"
+canonical_submission_state.badge_destroyed = False
+canonical_submission_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[1],
+)
+canonical_submission_input = main_module.BadgeFlowInput(
+    primary_target_id=2,
+    secondary_target_id=3,
+    good_badge_target_id=2,
+    werewolf_badge_target_id=3,
+)
+submit_player_speech(
+    PlayerSpeechRequest(
+        game_id=canonical_submission_state.game_id,
+        character_id=1,
+        speech=(
+            "我是预言家。我的警徽流先验8号，再验9号；"
+            "金水时警徽给8号，查杀时警徽给9号。"
+        ),
+        badge_flow=canonical_submission_input,
+    )
+)
+canonical_submission_speech = canonical_submission_state.speeches[-1].speech
+expected_canonical_submission = main_module.build_badge_flow_input_speech_text(
+    canonical_submission_state,
+    canonical_submission_input,
+)
+if (
+    expected_canonical_submission not in canonical_submission_speech
+    or "第2夜生效" not in canonical_submission_speech
+    or "8号" in canonical_submission_speech
+    or "9号" in canonical_submission_speech
+    or canonical_submission_speech.count("金水时警徽给") != 1
+    or canonical_submission_speech.count("查杀时警徽给") != 1
+):
+    raise SystemExit(
+        "stored speech must retain only canonical badge-flow targets, branches, and effective night"
+    )
+
+# Every revision remains in history and applies to the next numbered night.
+# Looking up night 2 after a day-2 revision must still return day 1's v1.
+badge_flow_history_state = make_rule_test_game(
+    ["villager", "seer", "villager", "villager", "villager"]
+)
+badge_flow_claimant = badge_flow_history_state.characters[1]
+main_module.register_public_claims(
+    badge_flow_history_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=badge_flow_claimant.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="badge_flow_history_true",
+        )
+    ],
+)
+badge_flow_v1 = main_module.publish_badge_flow(
+    badge_flow_history_state,
+    badge_flow_claimant,
+    main_module.BadgeFlowInput(
+        primary_target_id=3,
+        secondary_target_id=4,
+        good_badge_target_id=3,
+        werewolf_badge_target_id=4,
+    ),
+)
+badge_flow_history_state.day = 2
+badge_flow_history_state.phase = "DAY_MEETING"
+badge_flow_v2 = main_module.publish_badge_flow(
+    badge_flow_history_state,
+    badge_flow_claimant,
+    main_module.BadgeFlowInput(
+        primary_target_id=4,
+        secondary_target_id=5,
+        good_badge_target_id=4,
+        werewolf_badge_target_id=5,
+        revision_reason="higher_value",
+        reason_target_id=4,
+    ),
+)
+if (
+    badge_flow_v1.version != 1
+    or badge_flow_v1.effective_night_day != 2
+    or badge_flow_v1.active
+    or badge_flow_v2.version != 2
+    or badge_flow_v2.effective_night_day != 3
+    or not badge_flow_v2.active
+):
+    raise SystemExit("badge-flow revisions must preserve version history and next-night scope")
+if main_module.get_badge_flow_for_night(
+    badge_flow_history_state,
+    badge_flow_claimant.id,
+    2,
+) is not badge_flow_v1:
+    raise SystemExit("night 2 must keep using the flow that was public before night 2")
+if main_module.get_badge_flow_for_night(
+    badge_flow_history_state,
+    badge_flow_claimant.id,
+    3,
+) is not badge_flow_v2:
+    raise SystemExit("night 3 must use the day-2 badge-flow revision")
+canonical_badge_flow_text = main_module.build_badge_flow_input_speech_text(
+    badge_flow_history_state,
+    main_module.BadgeFlowInput(
+        primary_target_id=4,
+        secondary_target_id=5,
+        good_badge_target_id=4,
+        werewolf_badge_target_id=5,
+        revision_reason="higher_value",
+        reason_target_id=4,
+    ),
+)
+canonical_badge_flow_parse = main_module.parse_player_speech(
+    badge_flow_history_state,
+    canonical_badge_flow_text,
+)
+if (
+    any(
+        claim.get("claim_type") == "seer_check"
+        for claim in canonical_badge_flow_parse.claims
+    )
+    or canonical_badge_flow_parse.accusations
+):
+    raise SystemExit("canonical badge-flow branches must not be parsed as completed checks or accusations")
+
+# Fact-based revision labels are legal only when the corresponding public fact
+# already exists. Rejection is mutation-free; adding the public elimination or
+# role claim then makes the same revision reason legal.
+def make_fact_revision_state():
+    state = make_rule_test_game(
+        ["villager", "seer", "villager", "villager", "villager"]
+    )
+    claimant = state.characters[1]
+    main_module.register_public_claims(
+        state,
+        [
+            main_module.PublicClaimState(
+                day=1,
+                character_id=claimant.id,
+                claim_type="role",
+                claimed_role="seer",
+                source="fact_revision_claim",
+            )
+        ],
+    )
+    main_module.publish_badge_flow(
+        state,
+        claimant,
+        main_module.BadgeFlowInput(
+            primary_target_id=3,
+            secondary_target_id=4,
+            good_badge_target_id=3,
+            werewolf_badge_target_id=4,
+        ),
+    )
+    return state, claimant
+
+elimination_revision_state, elimination_revision_claimant = make_fact_revision_state()
+elimination_logs_before = list(elimination_revision_state.public_logs)
+try:
+    main_module.publish_badge_flow(
+        elimination_revision_state,
+        elimination_revision_claimant,
+        main_module.BadgeFlowInput(
+            primary_target_id=4,
+            secondary_target_id=5,
+            good_badge_target_id=4,
+            werewolf_badge_target_id=5,
+            revision_reason="target_eliminated",
+            reason_target_id=3,
+        ),
+    )
+    raise SystemExit("target_eliminated must require a public elimination fact")
+except HTTPException as exc:
+    if exc.status_code != 400:
+        raise
+if (
+    len(elimination_revision_state.badge_flows) != 1
+    or elimination_revision_state.public_logs != elimination_logs_before
+):
+    raise SystemExit("a missing elimination fact must reject the revision without mutation")
+elimination_revision_state.characters[2].alive = False
+elimination_revision_state.eliminations.append(
+    EliminationState(
+        day=1,
+        character_id=3,
+        cause="exiled",
+        source_action="day_vote",
+        source_actor_ids=[],
+        source_target_id=3,
+    )
+)
+accepted_elimination_revision = main_module.publish_badge_flow(
+    elimination_revision_state,
+    elimination_revision_claimant,
+    main_module.BadgeFlowInput(
+        primary_target_id=4,
+        secondary_target_id=5,
+        good_badge_target_id=4,
+        werewolf_badge_target_id=5,
+        revision_reason="target_eliminated",
+        reason_target_id=3,
+    ),
+)
+if accepted_elimination_revision.version != 2:
+    raise SystemExit("a public elimination fact should authorize target_eliminated revision")
+
+role_revision_state, role_revision_claimant = make_fact_revision_state()
+role_logs_before = list(role_revision_state.public_logs)
+try:
+    main_module.publish_badge_flow(
+        role_revision_state,
+        role_revision_claimant,
+        main_module.BadgeFlowInput(
+            primary_target_id=4,
+            secondary_target_id=5,
+            good_badge_target_id=4,
+            werewolf_badge_target_id=5,
+            revision_reason="role_reveal",
+            reason_target_id=3,
+        ),
+    )
+    raise SystemExit("role_reveal must require a public role-claim fact")
+except HTTPException as exc:
+    if exc.status_code != 400:
+        raise
+if len(role_revision_state.badge_flows) != 1 or role_revision_state.public_logs != role_logs_before:
+    raise SystemExit("a missing role-reveal fact must reject the revision without mutation")
+main_module.register_public_claims(
+    role_revision_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=3,
+            claim_type="role",
+            claimed_role="hunter",
+            source="public_role_reveal",
+        )
+    ],
+)
+accepted_role_revision = main_module.publish_badge_flow(
+    role_revision_state,
+    role_revision_claimant,
+    main_module.BadgeFlowInput(
+        primary_target_id=4,
+        secondary_target_id=5,
+        good_badge_target_id=4,
+        werewolf_badge_target_id=5,
+        revision_reason="role_reveal",
+        reason_target_id=3,
+    ),
+)
+if accepted_role_revision.version != 2:
+    raise SystemExit("a public role claim should authorize role_reveal revision")
+
+# A true NPC seer treats the public flow as a strong but soft preference. It
+# follows an otherwise equal primary target, may override it for much stronger
+# legal evidence, and never repeats an already completed check while another
+# unchecked target exists.
+night_badge_flow_state = make_rule_test_game(
+    [
+        "villager", "seer", "villager", "villager", "villager", "villager",
+        "villager", "villager", "villager", "villager", "werewolf", "werewolf",
+    ]
+)
+night_badge_seer = night_badge_flow_state.characters[1]
+main_module.register_public_claims(
+    night_badge_flow_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=night_badge_seer.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="night_badge_flow_true",
+        )
+    ],
+)
+main_module.publish_badge_flow(
+    night_badge_flow_state,
+    night_badge_seer,
+    main_module.BadgeFlowInput(
+        primary_target_id=3,
+        secondary_target_id=4,
+        good_badge_target_id=3,
+        werewolf_badge_target_id=4,
+    ),
+)
+night_badge_flow_state.day = 2
+night_badge_flow_state.phase = "NIGHT"
+if main_module.choose_npc_night_target(
+    night_badge_flow_state,
+    night_badge_seer,
+    "seer_check",
+) != 3:
+    raise SystemExit("an otherwise equal NPC seer should prefer its public primary flow target")
+night_badge_seer.suspicion["5"] = 100
+main_module.register_public_claims(
+    night_badge_flow_state,
+    [
+        main_module.PublicClaimState(
+            day=2,
+            character_id=5,
+            claim_type="role",
+            claimed_role="hunter",
+            source="public_high_value_change",
+        )
+    ],
+)
+if main_module.choose_npc_night_target(
+    night_badge_flow_state,
+    night_badge_seer,
+    "seer_check",
+) != 5:
+    raise SystemExit("stronger legal evidence must be able to override the soft badge-flow preference")
+night_badge_flow_state.night_actions = [
+    NightActionState(
+        day=1,
+        actor_id=night_badge_seer.id,
+        action_type="seer_check",
+        target_id=3,
+    )
+]
+if main_module.choose_npc_night_target(
+    night_badge_flow_state,
+    night_badge_seer,
+    "seer_check",
+) == 3:
+    raise SystemExit("an NPC seer must not repeat a checked flow target while unchecked targets exist")
+
+# Merely revising a flow is neutral. A reason that the public state can verify
+# may add a small amount of story credibility, without proving the claimant.
+badge_flow_credibility_state = make_rule_test_game(
+    ["villager", "seer", "villager", "villager", "villager", "villager"]
+)
+badge_flow_credibility_claimant = badge_flow_credibility_state.characters[1]
+main_module.register_public_claims(
+    badge_flow_credibility_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=badge_flow_credibility_claimant.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="badge_flow_credibility",
+        )
+    ],
+)
+main_module.publish_badge_flow(
+    badge_flow_credibility_state,
+    badge_flow_credibility_claimant,
+    main_module.BadgeFlowInput(
+        primary_target_id=3,
+        secondary_target_id=4,
+        good_badge_target_id=3,
+        werewolf_badge_target_id=4,
+    ),
+)
+initial_flow_adjustment = main_module.get_public_badge_flow_credibility_adjustment(
+    badge_flow_credibility_state,
+    badge_flow_credibility_claimant.id,
+)
+main_module.publish_badge_flow(
+    badge_flow_credibility_state,
+    badge_flow_credibility_claimant,
+    main_module.BadgeFlowInput(
+        primary_target_id=4,
+        secondary_target_id=5,
+        good_badge_target_id=4,
+        werewolf_badge_target_id=5,
+        revision_reason="higher_value",
+        reason_target_id=4,
+    ),
+)
+neutral_revision_adjustment = main_module.get_public_badge_flow_credibility_adjustment(
+    badge_flow_credibility_state,
+    badge_flow_credibility_claimant.id,
+)
+if neutral_revision_adjustment < initial_flow_adjustment:
+    raise SystemExit("changing a badge flow must not lose credibility by itself")
+badge_flow_credibility_state.day = 2
+badge_flow_credibility_state.characters[3].alive = False
+badge_flow_credibility_state.eliminations.append(
+    EliminationState(
+        day=2,
+        character_id=4,
+        cause="exiled",
+        source_action="day_vote",
+        source_actor_ids=[],
+        source_target_id=4,
+    )
+)
+main_module.publish_badge_flow(
+    badge_flow_credibility_state,
+    badge_flow_credibility_claimant,
+    main_module.BadgeFlowInput(
+        primary_target_id=5,
+        secondary_target_id=6,
+        good_badge_target_id=5,
+        werewolf_badge_target_id=6,
+        revision_reason="target_eliminated",
+        reason_target_id=4,
+    ),
+)
+verified_revision_adjustment = main_module.get_public_badge_flow_credibility_adjustment(
+    badge_flow_credibility_state,
+    badge_flow_credibility_claimant.id,
+)
+if verified_revision_adjustment <= neutral_revision_adjustment:
+    raise SystemExit("a publicly verifiable badge-flow revision reason should add a small credibility bonus")
+
+# Badge transfer inference exists only for the exact branch published for the
+# matching night. Daytime transfer and an unlisted recipient remain ordinary
+# transfer facts, and no unrelated non-recipient receives an inferred result.
+badge_transfer_flow_state = make_rule_test_game(
+    ["villager", "seer", "villager", "villager", "villager", "villager"]
+)
+badge_transfer_claimant = badge_transfer_flow_state.characters[1]
+main_module.register_public_claims(
+    badge_transfer_flow_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=badge_transfer_claimant.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="badge_transfer_flow",
+        )
+    ],
+)
+transfer_flow = main_module.publish_badge_flow(
+    badge_transfer_flow_state,
+    badge_transfer_claimant,
+    main_module.BadgeFlowInput(
+        primary_target_id=3,
+        secondary_target_id=4,
+        good_badge_target_id=3,
+        werewolf_badge_target_id=4,
+    ),
+)
+badge_transfer_flow_state.day = 2
+badge_transfer_flow_state.sheriff_id = badge_transfer_claimant.id
+badge_transfer_flow_state.badge_destroyed = False
+main_module.apply_badge_transfer(
+    badge_transfer_flow_state,
+    badge_transfer_claimant,
+    3,
+    continuation="after_vote",
+)
+after_vote_transfer = badge_transfer_flow_state.sheriff_events[-1]
+if (
+    after_vote_transfer.badge_flow_version is not None
+    or main_module.get_badge_transfer_flow_inference(
+        badge_transfer_flow_state,
+        after_vote_transfer,
+    ) is not None
+):
+    raise SystemExit("a daytime badge transfer must not encode a next-night badge-flow result")
+main_module.apply_badge_transfer(
+    badge_transfer_flow_state,
+    badge_transfer_claimant,
+    3,
+    continuation="after_night",
+)
+matching_night_transfer = badge_transfer_flow_state.sheriff_events[-1]
+matching_inference = main_module.get_badge_transfer_flow_inference(
+    badge_transfer_flow_state,
+    matching_night_transfer,
+)
+if (
+    matching_inference is None
+    or matching_inference[0].version != transfer_flow.version
+    or matching_inference[1:] != (3, "good")
+):
+    raise SystemExit("a matching after-night transfer should express exactly its published good branch")
+main_module.apply_badge_transfer(
+    badge_transfer_flow_state,
+    badge_transfer_claimant,
+    5,
+    continuation="after_night",
+)
+unlisted_night_transfer = badge_transfer_flow_state.sheriff_events[-1]
+if (
+    unlisted_night_transfer.badge_flow_version is not None
+    or main_module.get_badge_transfer_flow_inference(
+        badge_transfer_flow_state,
+        unlisted_night_transfer,
+    ) is not None
+    or main_module.get_matching_badge_flow_transfer_result(
+        badge_transfer_flow_state,
+        transfer_flow,
+        5,
+    )
+):
+    raise SystemExit("an unlisted badge recipient must not be forced into either badge-flow branch")
+badge_consistency_signals = [
+    signal
+    for signal in main_module.build_public_decision_signals(
+        badge_transfer_flow_state
+    )
+    if signal.kind == "badge_flow_consistency"
+]
+if (
+    len(badge_consistency_signals) != 1
+    or badge_consistency_signals[0].target_id != 3
+    or any(signal.target_id in {5, 6} for signal in badge_consistency_signals)
+):
+    raise SystemExit("ordinary non-recipients must not receive inferred good-or-wolf badge-flow labels")
+
+# Hidden truth and internal claim source do not alter the public flow, state
+# view, key-intel projection, or selectable decision signal.
+def build_public_badge_projection(claimant_role, claim_source):
+    state = make_rule_test_game(
+        ["villager", claimant_role, "villager", "villager", "villager"]
+    )
+    claimant = state.characters[1]
+    main_module.register_public_claims(
+        state,
+        [
+            main_module.PublicClaimState(
+                day=1,
+                character_id=claimant.id,
+                claim_type="role",
+                claimed_role="seer",
+                source=claim_source,
+            )
+        ],
+    )
+    main_module.publish_badge_flow(
+        state,
+        claimant,
+        main_module.BadgeFlowInput(
+            primary_target_id=3,
+            secondary_target_id=4,
+            good_badge_target_id=3,
+            werewolf_badge_target_id=4,
+        ),
+    )
+    return (
+        [item.model_dump(mode="json") for item in main_module.build_badge_flow_views(state)],
+        [
+            item.model_dump(mode="json")
+            for item in main_module.build_public_intel_views(state)
+            if item.kind == "badge_flow"
+        ],
+        [
+            item.model_dump(mode="json")
+            for item in main_module.build_public_decision_signals(state)
+            if item.kind == "badge_flow"
+        ],
+    )
+
+true_badge_projection = build_public_badge_projection("seer", "true_role")
+fake_badge_projection = build_public_badge_projection("werewolf", "wolf_fake_seer")
+if true_badge_projection != fake_badge_projection:
+    raise SystemExit("true and fake seers must have identical public badge-flow projections")
+if any(
+    hidden_key in json.dumps(true_badge_projection, ensure_ascii=False)
+    for hidden_key in ["source", "camp", "true_role", "wolf_fake_seer"]
+):
+    raise SystemExit("public badge-flow projections must not expose hidden role provenance")
+
+# Player speech is conservatively reduced to a quotable public_position.v1:
+# positive stance, negative stance, and provisional vote are all distinct.
+player_position_state = make_rule_test_game(
+    ["villager", "villager", "villager", "villager"]
+)
+main_module.register_public_claims(
+    player_position_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=2,
+            claim_type="role",
+            claimed_role="seer",
+            source="position_card_claim",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=3,
+            claim_type="role",
+            claimed_role="seer",
+            source="position_card_claim",
+        ),
+    ],
+)
+position_speech_text = "我信2号，不信3号，今天暂时投4号。"
+position_parse = main_module.parse_player_speech(
+    player_position_state,
+    position_speech_text,
+)
+if (
+    position_parse.supported_ids != [2]
+    or position_parse.opposed_ids != [3]
+    or position_parse.vote_intent_target_id != 4
+):
+    raise SystemExit("player position parsing must keep support, opposition, and provisional vote separate")
+player_position_state.phase = "DAY_MEETING"
+player_position_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[1],
+)
+submit_player_speech(
+    PlayerSpeechRequest(
+        game_id=player_position_state.game_id,
+        character_id=1,
+        speech=position_speech_text,
+    )
+)
+stored_position = player_position_state.speeches[-1].public_position
+if (
+    stored_position is None
+    or stored_position.schema_version != "public_position.v1"
+    or stored_position.seer_support_id != 2
+    or stored_position.seer_oppose_id != 3
+    or stored_position.provisional_vote_target_id != 4
+):
+    raise SystemExit("a formal player speech must persist a complete public_position.v1 card")
+position_summary = main_module.render_public_position_summary(
+    player_position_state,
+    stored_position,
+)
+if not all(marker in position_summary for marker in ["站2号", "不站3号", "暂票4号"]):
+    raise SystemExit("the public position summary must retain both sides and the provisional vote")
+position_signals = [
+    signal
+    for signal in main_module.build_public_decision_signals(player_position_state)
+    if signal.kind == "public_position" and signal.actor_id == 1
+]
+if len(position_signals) != 1 or position_summary not in position_signals[0].summary:
+    raise SystemExit("public_position.v1 must be available as one concise public decision signal")
+
+# Public decision RAG may quote only the concise position card. The original
+# long-form speech remains stored for display but is not supplied as evidence.
+rag_position_state = make_rule_test_game(
+    ["villager", "villager", "villager", "villager"]
+)
+rag_position = PublicPositionV1(
+    speaker_id=2,
+    day=1,
+    phase="DAY_MEETING",
+    suspected_target_ids=[3],
+    provisional_vote_target_id=3,
+)
+rag_position_summary = main_module.render_public_position_summary(
+    rag_position_state,
+    rag_position,
+)
+rag_long_speech_marker = "LONG_ORIGINAL_SPEECH_MUST_NOT_ENTER_PUBLIC_RAG_7f31"
+rag_position_state.speeches = [
+    SpeechState(
+        day=1,
+        character_id=2,
+        name=rag_position_state.characters[1].name,
+        speech=(
+            f"{rag_long_speech_marker}：这是一段刻意保留的很长原始发言，"
+            "只能用于游戏展示，不能作为后续 NPC 的逐字引用材料。"
+        ),
+        is_player=False,
+        public_position=rag_position,
+    )
+]
+rag_position_contexts = build_public_decision_rag_context(
+    rag_position_state,
+    rag_position_state.characters[3],
+    rag_position_state.characters[2],
+    "公开发言",
+)
+rag_public_contexts = [
+    item for item in rag_position_contexts if item.get("kind") == "public"
+]
+if (
+    len(rag_public_contexts) != 1
+    or rag_public_contexts[0].get("content") != rag_position_summary
+    or rag_long_speech_marker in json.dumps(rag_position_contexts, ensure_ascii=False)
+):
+    raise SystemExit(
+        "public decision RAG must expose only public_position summaries, never long original speech"
+    )
+
+# Negated language must not manufacture an accusation, support, or vote. A
+# direct distrust statement may still become opposition, and mixed clauses
+# preserve only the genuinely accused target.
+not_suspicious_parse = main_module.parse_player_speech(
+    player_position_state,
+    "不怀疑3号",
+)
+if (
+    not_suspicious_parse.accusations
+    or not_suspicious_parse.supported_ids
+    or not_suspicious_parse.opposed_ids
+    or not_suspicious_parse.vote_intent_target_id is not None
+):
+    raise SystemExit("'不怀疑3号' must not create suspicion, support, opposition, or vote")
+not_trusting_parse = main_module.parse_player_speech(
+    player_position_state,
+    "不太相信3号",
+)
+if (
+    not_trusting_parse.accusations
+    or not_trusting_parse.supported_ids
+    or not_trusting_parse.opposed_ids != [3]
+    or not_trusting_parse.vote_intent_target_id is not None
+):
+    raise SystemExit("'不太相信3号' may record opposition but must not become suspicion, support, or vote")
+not_voting_parse = main_module.parse_player_speech(
+    player_position_state,
+    "不会投3号",
+)
+if (
+    not_voting_parse.accusations
+    or not_voting_parse.supported_ids
+    or not_voting_parse.opposed_ids
+    or not_voting_parse.vote_intent_target_id is not None
+):
+    raise SystemExit("'不会投3号' must not create suspicion, support, opposition, or vote")
+mixed_suspicion_parse = main_module.parse_player_speech(
+    player_position_state,
+    "不怀疑3号、怀疑4号",
+)
+mixed_accused_ids = [
+    accusation.get("target_id")
+    for accusation in mixed_suspicion_parse.accusations
+]
+mixed_suspicion_position = main_module.build_public_position(
+    player_position_state,
+    player_position_state.characters[0],
+    "DAY_MEETING",
+    parsed=mixed_suspicion_parse,
+)
+if mixed_accused_ids != [4] or mixed_suspicion_position.suspected_target_ids != [4]:
+    raise SystemExit("mixed negated and positive suspicion must retain only target 4")
+
+explicit_suspicion_state = make_rule_test_game(
+    ["villager", "villager", "villager", "villager"]
+)
+explicit_suspicion_state.phase = "DAY_MEETING"
+explicit_suspicion_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[1],
+)
+submit_player_speech(
+    PlayerSpeechRequest(
+        game_id=explicit_suspicion_state.game_id,
+        character_id=1,
+        speech="3号可疑。",
+    )
+)
+explicit_suspicion_position = explicit_suspicion_state.speeches[-1].public_position
+if (
+    explicit_suspicion_position is None
+    or 3 not in explicit_suspicion_position.suspected_target_ids
+):
+    raise SystemExit("an explicit player accusation must enter public_position suspected targets")
+
+counterclaim_state = make_rule_test_game(
+    ["villager", "seer", "werewolf", "werewolf"]
+)
+counterclaim_state.phase = "DAY_MEETING"
+counterclaim_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[2],
+)
+counterclaim_state.public_claims = [
+    main_module.PublicClaimState(
+        day=1,
+        character_id=3,
+        claim_type="role",
+        claimed_role="seer",
+        source="counterclaim_smoke",
+    )
+]
+counterclaim_claims = [
+    main_module.PublicClaimState(
+        day=1,
+        character_id=2,
+        claim_type="role",
+        claimed_role="seer",
+        source="counterclaim_smoke",
+    ),
+    main_module.PublicClaimState(
+        day=1,
+        character_id=2,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=4,
+        result="werewolf",
+        source="counterclaim_smoke",
+    ),
+]
+counterclaim_context = main_module.build_public_speech_decision_context(
+    counterclaim_state,
+    counterclaim_state.characters[1],
+    [],
+    counterclaim_claims,
+)
+if PublicSpeechIntent.COUNTERCLAIM not in counterclaim_context.allowed_intents:
+    raise SystemExit("a true seer facing a competing seer claim should be allowed to counterclaim")
+counterclaim_plan = PublicSpeechPlanV2.model_validate(
+    {
+        "schema_version": "public_speech_plan.v2",
+        "intent": "counterclaim",
+        "primary_target_id": 3,
+        "secondary_target_id": 4,
+        "stance": "oppose",
+        "stance_target_id": 3,
+        "confidence": 90,
+        "signal_read": "none",
+        "question": {"target_id": 3, "topic": "claim_basis"},
+        "verification": {"target_id": 3, "criterion": "claim_consistency"},
+        "provisional_vote_target_id": 4,
+        "tactic": "role_counterclaim",
+        "claim_option_ids": [counterclaim_context.claim_options[0].id],
+        "evidence_ids": [],
+        "signal_ids": [],
+    }
+)
+if validate_public_speech_plan(counterclaim_context, counterclaim_plan):
+    raise SystemExit("a competing-claimant primary plus checked secondary should form a legal counterclaim plan")
+
+decision_context_state = make_rule_test_game(
+    [
+        "villager", "werewolf", "werewolf", "werewolf", "werewolf",
+        "seer", "villager",
+    ]
+)
+decision_context_state.phase = "DAY_MEETING"
+decision_context_state.public_logs = ["1号玩家已公开发言。"]
+decision_context_state.night_actions = [
+    NightActionState(day=1, actor_id=6, action_type="seer_check", target_id=3),
+]
+decision_context_state.characters[1].memory_summary = "狼人2号的专属私有记忆。"
+decision_context_state.characters[5].memory_summary = "预言家6号的专属私有记忆。"
+decision_context_state.characters[6].memory_summary = "村民7号的专属私有记忆。"
+decision_context_state.characters[11].alive = False
+decision_rag_context = [
+    {
+        "kind": "public",
+        "title": "公开证据",
+        "content": "只包含场上已公开的发言。",
+        "safe_to_show": True,
+    },
+    {
+        "kind": "private",
+        "title": "私有证据",
+        "content": "不得公开引用的内部线索。",
+        "safe_to_show": False,
+    },
+]
+
+def build_test_decision_context(speaker_id):
+    decision_context_state.meeting = DayMeetingState(
+        day=1,
+        direction="clockwise",
+        order=[speaker_id],
+    )
+    return main_module.build_public_speech_decision_context(
+        decision_context_state,
+        decision_context_state.characters[speaker_id - 1],
+        decision_rag_context,
+        [],
+    )
+
+wolf_decision_context = build_test_decision_context(2)
+seer_decision_context = build_test_decision_context(6)
+villager_decision_context = build_test_decision_context(7)
+for context, expected_role, own_memory in [
+    (wolf_decision_context, "werewolf", "狼人2号的专属私有记忆"),
+    (seer_decision_context, "seer", "预言家6号的专属私有记忆"),
+    (villager_decision_context, "villager", "村民7号的专属私有记忆"),
+]:
+    if context.phase != "DAY_MEETING" or context.actor.role != expected_role:
+        raise SystemExit("decision context should include the current phase and true actor role")
+    if not context.public_logs or "已公开发言" not in context.public_logs[0].content:
+        raise SystemExit("decision context should include recent public logs")
+    private_memory_text = "\\n".join(item.content for item in context.private_memory)
+    if own_memory not in private_memory_text or "专属私有记忆" not in private_memory_text:
+        raise SystemExit("decision context should include only the actor's private memory")
+    other_memory_markers = {
+        "werewolf": ["预言家6号", "村民7号"],
+        "seer": ["狼人2号", "村民7号"],
+        "villager": ["狼人2号", "预言家6号"],
+    }[expected_role]
+    if any(marker in private_memory_text for marker in other_memory_markers):
+        raise SystemExit("decision context leaked another character's private memory")
+    legal_target_ids = {target.id for target in context.legal_targets}
+    if context.actor.id in legal_target_ids or 12 in legal_target_ids:
+        raise SystemExit("decision context targets must exclude the actor and dead characters")
+
+wolf_knowledge_ids = {item.id for item in wolf_decision_context.legal_knowledge}
+if {f"private:wolf_teammate:{character_id}" for character_id in [3, 4, 5]} - wolf_knowledge_ids:
+    raise SystemExit("an NPC wolf should know exactly its legal wolf-team identities")
+if 3 in {target.id for target in wolf_decision_context.legal_targets}:
+    raise SystemExit("a low-pressure wolf teammate should not be a legal public target")
+seer_knowledge_ids = {item.id for item in seer_decision_context.legal_knowledge}
+if "private:seer_check:1:3" not in seer_knowledge_ids:
+    raise SystemExit("an NPC seer should receive its own checked result as legal knowledge")
+villager_knowledge_ids = {item.id for item in villager_decision_context.legal_knowledge}
+if any(
+    item_id.startswith(("private:wolf_teammate:", "private:seer_check:"))
+    for item_id in villager_knowledge_ids
+):
+    raise SystemExit("an ordinary villager decision context must not contain hidden role knowledge")
+if not any(item.visibility == "private" for item in villager_decision_context.evidence):
+    raise SystemExit("decision context should preserve evidence visibility for legality checks")
+
+signal_state = make_rule_test_game(
+    [
+        "villager", "werewolf", "werewolf", "werewolf", "werewolf",
+        "seer", "villager", "villager", "villager", "villager",
+        "villager", "guard",
+    ]
+)
+signal_state.day = 2
+signal_state.phase = "DAY_MEETING"
+signal_state.sheriff_election = SheriffElectionState(
+    day=1,
+    candidates=[3, 4],
+    withdrawn=[4],
+    votes=[VoteState(day=1, voter_id=5, target_id=3, reason="")],
+    completed=True,
+)
+signal_state.sheriff_events = [
+    SheriffEventState(day=1, event_type="skip_signup", actor_id=1),
+    SheriffEventState(day=1, event_type="elected", actor_id=3),
+    SheriffEventState(
+        day=1,
+        event_type="badge_transfer",
+        actor_id=3,
+        target_id=6,
+    ),
+]
+signal_state.votes = [
+    VoteState(day=1, voter_id=7, target_id=8, reason="隐藏的投票理由不应进入信号。"),
+]
+signal_state.eliminations = [
+    EliminationState(
+        day=1,
+        character_id=9,
+        cause="witch_poison",
+        source_action="witch_poison",
+        source_actor_ids=[12],
+        source_target_id=9,
+    ),
+]
+signal_state.characters[8].alive = False
+signal_state.pending_first_night_eliminations = [
+    EliminationState(
+        day=2,
+        character_id=10,
+        cause="night_kill",
+        source_action="werewolf_kill",
+        source_actor_ids=[2, 3],
+        source_target_id=10,
+    ),
+]
+signal_state.first_night_result_pending = True
+signal_state.speeches = [
+    SpeechState(
+        day=2,
+        character_id=11,
+        name=signal_state.characters[10].name,
+        speech="我没什么信息，先过吧。",
+        is_player=False,
+        evidence_titles=["已检索但没有形成实际贡献的资料"],
+    ),
+    SpeechState(
+        day=2,
+        character_id=12,
+        name=signal_state.characters[11].name,
+        speech="我重点怀疑4号，他退水后的解释前后不一致。",
+        is_player=False,
+        focus_target_id=4,
+    ),
+]
+signal_state.public_claims = [
+    main_module.PublicClaimState(
+        day=2,
+        character_id=11,
+        claim_type="role",
+        claimed_role="villager",
+        source="earlier_public_phase",
+    ),
+]
+signal_suspicion_before = [dict(character.suspicion) for character in signal_state.characters]
+
+def build_signal_context(speaker_id):
+    signal_state.meeting = DayMeetingState(
+        day=2,
+        direction="clockwise",
+        order=[speaker_id],
+    )
+    return main_module.build_public_speech_decision_context(
+        signal_state,
+        signal_state.characters[speaker_id - 1],
+        [],
+        [],
+    )
+
+signal_contexts = [
+    build_signal_context(2),
+    build_signal_context(6),
+    build_signal_context(7),
+]
+serialized_signal_lists = [
+    [item.model_dump(mode="json") for item in context.decision_signals]
+    for context in signal_contexts
+]
+if not serialized_signal_lists[0] or not all(
+    items == serialized_signal_lists[0] for items in serialized_signal_lists[1:]
+):
+    raise SystemExit("public decision signals must be identical for every actor role")
+signal_kinds = {item["kind"] for item in serialized_signal_lists[0]}
+expected_signal_kinds = {
+    "sheriff_signup", "sheriff_skip_signup", "sheriff_withdraw",
+    "sheriff_continue", "sheriff_vote", "sheriff_elected", "badge_transfer",
+    "exile_vote", "public_elimination", "low_information_speech",
+}
+if expected_signal_kinds - signal_kinds:
+    raise SystemExit("public action signals should cover election, votes, elimination, and low-information speech")
+signal_payload_text = json.dumps(serialized_signal_lists[0], ensure_ascii=False)
+for hidden_marker in [
+    "witch_poison", "werewolf_kill", "隐藏的投票理由",
+    "signal:public_elimination:2:10",
+]:
+    if hidden_marker in signal_payload_text:
+        raise SystemExit("public decision signals leaked a hidden action source or pending result")
+if "夜间结果公布时出局" not in signal_payload_text:
+    raise SystemExit("a published night elimination should use a public-safe cause summary")
+signal_ids = {item["id"] for item in serialized_signal_lists[0]}
+if {
+    "signal:sheriff_skip_signup:1:2",
+    "signal:sheriff_continue:1:3",
+} - signal_ids:
+    raise SystemExit("NPC non-candidates and active candidates should receive public signup-state signals")
+night_elimination_signal = next(
+    item
+    for item in serialized_signal_lists[0]
+    if item["kind"] == "public_elimination" and item["actor_id"] == 9
+)
+hidden_source_name = main_module.format_full_character_name(signal_state.characters[11])
+if (
+    night_elimination_signal["phase"] != "NIGHT_RESULT"
+    or hidden_source_name in night_elimination_signal["summary"]
+):
+    raise SystemExit("a night elimination signal must omit its hidden source actor")
+low_information_signal_payload = next(
+    item
+    for item in serialized_signal_lists[0]
+    if item["kind"] == "low_information_speech" and item["actor_id"] == 11
+)
+if low_information_signal_payload["category"] != "assessment":
+    raise SystemExit("low-information speech must remain an assessment, not an identity fact")
+if any(
+    item["category"] != "fact"
+    for item in serialized_signal_lists[0]
+    if item["kind"] != "low_information_speech"
+):
+    raise SystemExit("authoritative public actions should remain fact signals")
+if [dict(character.suspicion) for character in signal_state.characters] != signal_suspicion_before:
+    raise SystemExit("building low-information assessments must not mutate suspicion")
 
 saved_first_night_state = make_rule_test_game(
     ["witch", "villager", "werewolf", "villager", "seer", "hunter", "guard"]
@@ -957,6 +3098,12 @@ if candidate_voters:
 class StubLLMClient:
     def __init__(self):
         self.public_attempts = 0
+        self.public_contexts = []
+        self.expression_contexts = []
+        self.selected_target_id = None
+        self.selected_signal_id = None
+        self.gameplay_snapshots = []
+        self.snapshotter = None
 
     def status(self):
         return {
@@ -967,15 +3114,71 @@ class StubLLMClient:
             "base_url": "",
         }
 
+    def generate_json_object(
+        self,
+        _system_prompt,
+        context,
+        _fallback_object=None,
+        max_attempts=None,
+    ):
+        self.public_attempts += 1
+        self.public_contexts.append(dict(context))
+        if self.snapshotter is not None:
+            self.gameplay_snapshots.append(self.snapshotter())
+        target = context["legal_targets"][0]
+        public_evidence = next(
+            (
+                item
+                for item in context.get("evidence", [])
+                if item.get("visibility") == "public"
+            ),
+            None,
+        )
+        public_signal = next(
+            item
+            for item in context.get("decision_signals", [])
+            if item.get("kind") == "sheriff_elected"
+        )
+        data = {
+            "schema_version": "public_speech_plan.v2",
+            "intent": "pressure",
+            "primary_target_id": target["id"],
+            "secondary_target_id": None,
+            "stance": "oppose",
+            "stance_target_id": target["id"],
+            "confidence": 72,
+            "signal_read": "raises_suspicion",
+            "question": {
+                "target_id": target["id"],
+                "topic": "action_motive",
+            },
+            "verification": {
+                "target_id": target["id"],
+                "criterion": "response_quality",
+            },
+            "provisional_vote_target_id": target["id"],
+            "tactic": "direct_pressure",
+            "claim_option_ids": [],
+            "evidence_ids": [public_evidence["id"]] if public_evidence else [],
+            "signal_ids": [public_signal["id"]],
+        }
+        if self.public_attempts == 1:
+            data.pop("schema_version")
+        if self.public_attempts > 1:
+            self.selected_target_id = target["id"]
+            self.selected_signal_id = public_signal["id"]
+        return LLMJsonGeneration(
+            data=data,
+            used_llm=True,
+            provider="stub",
+            model="stub-model",
+            raw_response_text=json.dumps(data, ensure_ascii=False),
+        )
+
     def generate_json_text(self, _system_prompt, context, fallback_text, max_attempts=None):
-        if context.get("task") == "rewrite_public_speech":
-            self.public_attempts += 1
-            target = context.get("focus_target") or {}
-            target_name = target.get("name", "目标")
-            if self.public_attempts == 1:
-                text = "结合公开证据，我暂时保留意见。"
-            else:
-                text = f"结合公开证据，我会继续观察{target_name}的解释。"
+        if context.get("task") == "public_speech_voice_prefix":
+            self.expression_contexts.append(dict(context))
+            text = "先把话说明白"
         else:
             text = fallback_text.replace("我会", "我会认真地", 1)
         return LLMGeneration(
@@ -983,6 +3186,7 @@ class StubLLMClient:
             used_llm=True,
             provider="stub",
             model="stub-model",
+            raw_response_text=json.dumps({"text": text}, ensure_ascii=False),
         )
 
 original_llm_client = main_module.LLM_CLIENT
@@ -992,16 +3196,43 @@ try:
     recovered_validation_log_path.unlink(missing_ok=True)
     main_module.LLM_VALIDATION_LOG_FILE = recovered_validation_log_path
     llm_game_state = make_rule_test_game(
-        ["villager", "villager", "werewolf", "seer", "guard", "villager"]
+        [
+            "villager", "werewolf", "werewolf", "werewolf", "werewolf",
+            "seer", "guard",
+        ]
     )
     llm_game_state.llm_enabled = True
     llm_game_state.phase = "DAY_MEETING"
+    llm_game_state.public_logs = ["结构化决策测试的公开日志。"]
+    llm_game_state.sheriff_election = SheriffElectionState(
+        day=1,
+        candidates=[3, 4],
+        withdrawn=[4],
+        completed=True,
+    )
+    llm_game_state.sheriff_events = [
+        SheriffEventState(day=1, event_type="elected", actor_id=3),
+    ]
+    llm_game_state.characters[1].memory_summary = (
+        "PRIVATE_STRATEGY_TOKEN：狼队内部计划。\\n"
+        "NIGHT_RAW_TOKEN：夜间行动原文。\\n"
+        "CHAT_RAW_TOKEN：私聊原文。"
+    )
     llm_game_state.meeting = DayMeetingState(
         day=1,
         direction="clockwise",
         order=[2, 1] + list(range(3, 13)),
     )
     stub_llm_client = StubLLMClient()
+    def llm_gameplay_snapshot():
+        return (
+            len(llm_game_state.speeches),
+            len(llm_game_state.public_claims),
+            tuple(llm_game_state.public_logs),
+            llm_game_state.characters[1].memory_summary,
+        )
+    gameplay_state_before_llm = llm_gameplay_snapshot()
+    stub_llm_client.snapshotter = llm_gameplay_snapshot
     main_module.LLM_CLIENT = stub_llm_client
     llm_speech_response = generate_npc_speech(
         NpcSpeechRequest(game_id=llm_game_state.game_id, character_id=2)
@@ -1011,7 +3242,105 @@ try:
     if llm_speech_response.speech.llm_provider != "stub":
         raise SystemExit("NPC speech should expose the active LLM provider")
     if stub_llm_client.public_attempts != 2:
-        raise SystemExit("invalid NPC speech should receive one validation correction retry")
+        raise SystemExit("a structured plan missing schema_version should receive one correction retry")
+    if stub_llm_client.gameplay_snapshots != [
+        gameplay_state_before_llm,
+        gameplay_state_before_llm,
+    ]:
+        raise SystemExit("a rejected structured decision must not mutate gameplay state before retry")
+    decision_call_context = stub_llm_client.public_contexts[0]
+    if (
+        decision_call_context.get("phase") != "DAY_MEETING"
+        or decision_call_context.get("actor", {}).get("role") != "werewolf"
+        or decision_call_context.get("actor", {}).get("faction") != "werewolf"
+        or not decision_call_context.get("private_memory")
+        or not decision_call_context.get("public_logs")
+        or len(decision_call_context.get("decision_signals", [])) < 2
+    ):
+        raise SystemExit("structured DAY_MEETING calls should receive the complete actor context")
+    output_contract = decision_call_context.get("output_contract", {})
+    if (
+        output_contract.get("schema_version") != "public_speech_plan.v2"
+        or output_contract.get("format") != "flat_json_object"
+        or "fields" in output_contract
+        or "schema_version" not in output_contract.get("required_root_keys", [])
+        or output_contract.get("flat_json_example", {}).get("schema_version")
+        != "public_speech_plan.v2"
+    ):
+        raise SystemExit("the strategy prompt should request the complete V2 speech plan contract")
+    retry_feedback = stub_llm_client.public_contexts[1].get("validation_feedback", {})
+    if (
+        "schema_version" not in retry_feedback.get("required_root_keys", [])
+        or "fields" not in retry_feedback.get("forbidden_root_keys", [])
+        or "根级" not in retry_feedback.get("instruction", "")
+    ):
+        raise SystemExit("a schema retry should explicitly request every plan field at the JSON root")
+    stored_legacy_upgrade = llm_game_state.speeches[-1].decision_plan
+    if (
+        stored_legacy_upgrade.get("schema_version") != "public_speech_plan.v2"
+        or stored_legacy_upgrade.get("primary_target_id") != stub_llm_client.selected_target_id
+        or stored_legacy_upgrade.get("provisional_vote_target_id") != stub_llm_client.selected_target_id
+    ):
+        raise SystemExit("an accepted flat V2 mock strategy should be stored without a wrapper")
+    strategy_context_text = json.dumps(decision_call_context, ensure_ascii=False)
+    if (
+        "PRIVATE_STRATEGY_TOKEN" not in strategy_context_text
+        or "private:wolf_teammate:" not in strategy_context_text
+    ):
+        raise SystemExit("the private strategy call should receive actor-scoped hidden knowledge")
+    if len(stub_llm_client.expression_contexts) != 1:
+        raise SystemExit(
+            "an accepted strategy should receive one separate voice-prefix call: "
+            f"got {len(stub_llm_client.expression_contexts)}"
+        )
+    expression_context = stub_llm_client.expression_contexts[0]
+    expression_context_text = json.dumps(expression_context, ensure_ascii=False)
+    if any(
+        key in expression_context
+        for key in [
+            "actor", "legal_knowledge", "private_memory", "evidence",
+            "decision_signals", "legal_targets", "claim_options", "allowed_intents",
+            "focus_target", "rule_text", "public_evidence", "public_plan",
+            "selected_public_signals", "recent_public_logs",
+        ]
+    ):
+        raise SystemExit("the voice-prefix call must not receive fact-bearing strategy fields")
+    if any(key in expression_context.get("speaker", {}) for key in ["role", "faction"]):
+        raise SystemExit("the voice-prefix speaker must not expose role or faction")
+    if any(
+        marker in expression_context_text
+        for marker in [
+            "PRIVATE_STRATEGY_TOKEN", "NIGHT_RAW_TOKEN", "CHAT_RAW_TOKEN",
+            "private:wolf_teammate:",
+        ]
+    ):
+        raise SystemExit("the voice-prefix call leaked wolf-team, night, or private-chat text")
+    if (
+        expression_context.get("task") != "public_speech_voice_prefix"
+        or expression_context.get("phase") != "DAY_MEETING"
+        or expression_context.get("speaker", {}).get("id") != 2
+        or not expression_context.get("output_contract")
+    ):
+        raise SystemExit("the voice-prefix call should receive only safe voice metadata")
+    selected_signal_summaries = {
+        item.get("summary")
+        for item in decision_call_context.get("decision_signals", [])
+        if item.get("id") == stub_llm_client.selected_signal_id
+    }
+    if any(summary in expression_context_text for summary in selected_signal_summaries):
+        raise SystemExit("the voice-prefix call must not receive even selected game facts")
+    if not selected_signal_summaries or not all(
+        summary.rstrip("。") in llm_speech_response.speech.speech
+        for summary in selected_signal_summaries
+    ):
+        raise SystemExit("the Python-rendered speech should preserve the selected signal summary")
+    if not all(
+        marker in llm_speech_response.speech.speech
+        for marker in ["重点压力位", "我具体问", "不符合", "暂定票"]
+    ):
+        raise SystemExit(
+            "the Python-rendered V2 body must preserve stance, question, verification, and provisional vote"
+        )
     if not recovered_validation_log_path.exists():
         raise SystemExit("a rejected draft should be logged even when a later validation succeeds")
 
@@ -1040,9 +3369,10 @@ finally:
     main_module.LLM_VALIDATION_LOG_FILE = original_recovered_validation_log_path
     recovered_validation_log_path.unlink(missing_ok=True)
 
-class AlwaysInvalidLLMClient:
+class AlwaysInvalidStructuredLLMClient:
     def __init__(self):
         self.attempts = 0
+        self.rejection_cases = []
 
     def status(self):
         return {
@@ -1053,40 +3383,144 @@ class AlwaysInvalidLLMClient:
             "base_url": "",
         }
 
-    def generate_json_text(self, _system_prompt, _context, _fallback_text, max_attempts=None):
+    def generate_json_object(
+        self,
+        _system_prompt,
+        context,
+        _fallback_object=None,
+        max_attempts=None,
+    ):
         self.attempts += 1
-        return LLMGeneration(
-            text="我是狼人，我的狼队友是C罗。",
+        legal_target = context["legal_targets"][0]
+        public_evidence = next(
+            item for item in context["evidence"]
+            if item["visibility"] == "public"
+        )
+        private_evidence = next(
+            item for item in context["evidence"]
+            if item["visibility"] == "private"
+        )
+        data = {
+            "schema_version": "public_speech.v1",
+            "intent": "pressure",
+            "target_id": legal_target["id"],
+            "claim_option_ids": [],
+            "evidence_ids": [public_evidence["id"]],
+            "signal_ids": [],
+        }
+        if self.attempts == 1:
+            data["target_id"] = 999
+            self.rejection_cases.append("illegal_target")
+        elif self.attempts == 2:
+            data["claim_option_ids"] = ["claim:forged"]
+            self.rejection_cases.append("illegal_claim")
+        else:
+            data["evidence_ids"] = [private_evidence["id"]]
+            self.rejection_cases.append("private_evidence")
+        return LLMJsonGeneration(
+            data=data,
             used_llm=True,
             provider="stub",
             model="stub-model",
+            raw_response_text=json.dumps(data, ensure_ascii=False),
         )
 
 validation_failure_state = make_rule_test_game(
     ["villager", "villager", "werewolf", "seer", "guard", "witch", "hunter"]
 )
 validation_failure_state.llm_enabled = True
-always_invalid_client = AlwaysInvalidLLMClient()
+validation_failure_state.phase = "DAY_MEETING"
+validation_failure_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[2],
+)
+validation_failure_speaker = validation_failure_state.characters[1]
+validation_failure_target = validation_failure_state.characters[0]
+validation_failure_speaker.memory_summary = "校验失败前的私有记忆。"
+validation_failure_state.speeches = [
+    SpeechState(
+        day=1,
+        character_id=validation_failure_target.id,
+        name=validation_failure_target.name,
+        speech="我没什么信息，先过吧。",
+        is_player=True,
+    ),
+]
+validation_failure_rag = [
+    {
+        "kind": "public",
+        "title": "可公开证据",
+        "content": "1号的公开发言可供观察。",
+        "safe_to_show": True,
+    },
+    {
+        "kind": "private",
+        "title": "私有证据",
+        "content": "这条证据不得公开引用。",
+        "safe_to_show": False,
+    },
+]
+always_invalid_client = AlwaysInvalidStructuredLLMClient()
 validation_log_path = Path("/tmp/agent-town-llm-validation-smoke.jsonl")
 original_validation_log_path = main_module.LLM_VALIDATION_LOG_FILE
 try:
     validation_log_path.unlink(missing_ok=True)
     main_module.LLM_VALIDATION_LOG_FILE = validation_log_path
     main_module.LLM_CLIENT = always_invalid_client
-    failed_generation = main_module.generate_validated_llm_rewrite(
-        "只改写措辞并返回 JSON。",
-        {
-            "task": "rewrite_public_speech",
-            "speaker": {"id": 2, "name": "梅西"},
-            "rule_text": "我会继续观察1号玩家的发言。",
-        },
-        "我会继续观察1号玩家的发言。",
+    gameplay_before_failed_plan = (
+        list(validation_failure_state.speeches),
+        list(validation_failure_state.public_claims),
+        list(validation_failure_state.public_logs),
+        validation_failure_speaker.memory_summary,
+    )
+    (
+        failed_target,
+        failed_claims,
+        failed_rag_context,
+        failed_generation,
+        failed_plan,
+    ) = main_module.generate_structured_public_speech_plan(
         validation_failure_state,
-        required_target=validation_failure_state.characters[0],
-        public_text=True,
+        validation_failure_speaker,
+        False,
+        validation_failure_target,
+        validation_failure_rag,
+        [],
     )
     if failed_generation.used_llm or always_invalid_client.attempts != 5:
-        raise SystemExit("invalid DeepSeek rewrites should receive exactly five validation attempts")
+        raise SystemExit("invalid structured decisions should receive exactly five validation attempts")
+    if set(always_invalid_client.rejection_cases) != {
+        "illegal_target",
+        "illegal_claim",
+        "private_evidence",
+    }:
+        raise SystemExit("structured validation should exercise target, claim, and evidence allowlists")
+    if (
+        failed_target is None
+        or failed_target.id != validation_failure_target.id
+        or failed_plan.schema_version != "public_speech_plan.v2"
+        or failed_plan.primary_target_id != validation_failure_target.id
+        or failed_claims
+        or len(failed_rag_context) != 1
+        or not failed_rag_context[0].get("safe_to_show")
+    ):
+        raise SystemExit("five invalid structured attempts should return the deterministic rule plan")
+    if (
+        not failed_generation.decision_signal_ids
+        or "信息量" not in failed_generation.text
+        or validation_failure_target.name not in failed_generation.text
+        or main_module.is_empty_pass_public_speech(failed_generation.text)
+    ):
+        raise SystemExit("five failed strategies should fall back to a concrete signal-grounded speech")
+    gameplay_after_failed_plan = (
+        list(validation_failure_state.speeches),
+        list(validation_failure_state.public_claims),
+        list(validation_failure_state.public_logs),
+        validation_failure_speaker.memory_summary,
+    )
+    if gameplay_after_failed_plan != gameplay_before_failed_plan:
+        raise SystemExit("structured validation failure must not write gameplay facts before commit")
     if not failed_generation.validation_failure_id:
         raise SystemExit("five failed validations should create a visible audit id")
     failure_view = main_module.build_llm_validation_failure_view(
@@ -1095,21 +3529,528 @@ try:
     )
     if failure_view is None or len(failure_view.attempts) != 5:
         raise SystemExit("validation failure view should expose all five attempts")
-    if not all("狼队友" in attempt.text for attempt in failure_view.attempts):
-        raise SystemExit("debug in-game validation audit should expose every rejected raw output")
+    if not all(
+        attempt.text == "[LLM 原始输出已隐藏]"
+        for attempt in failure_view.attempts
+    ):
+        raise SystemExit("an in-game validation audit should hide every raw strategy output")
+    if not all(attempt.sensitive for attempt in failure_view.attempts):
+        raise SystemExit("every rejected private-context strategy JSON should be marked sensitive")
     full_failure_view = main_module.build_llm_validation_failure_view(
         validation_failure_state,
         failed_generation.validation_failure_id,
         reveal_sensitive=True,
     )
-    if full_failure_view is None or not any("狼队友" in attempt.text for attempt in full_failure_view.attempts):
-        raise SystemExit("post-game validation audit should retain the original DeepSeek output")
+    if full_failure_view is None or not any(
+        "claim:forged" in attempt.text for attempt in full_failure_view.attempts
+    ):
+        raise SystemExit("post-game validation audit should retain the original strategy JSON")
     if not validation_log_path.exists():
         raise SystemExit("validation failures should also be written to the backend JSONL log")
+    raw_validation_log = validation_log_path.read_text(encoding="utf-8")
+    for expected_raw_detail in ["target_not_allowed: 999", "claim:forged", "evidence:2"]:
+        if expected_raw_detail not in raw_validation_log:
+            raise SystemExit("the server-side log should retain structured rejection details")
+    validation_log_records = [
+        json.loads(line)
+        for line in raw_validation_log.splitlines()
+        if line.strip()
+    ]
+    if not validation_log_records or any(
+        record.get("validator_version") != main_module.LLM_VALIDATOR_VERSION
+        or not record.get("recorded_at")
+        for record in validation_log_records
+    ):
+        raise SystemExit("validation log records should identify their validator version and time")
 finally:
     main_module.LLM_CLIENT = original_llm_client
     main_module.LLM_VALIDATION_LOG_FILE = original_validation_log_path
     validation_log_path.unlink(missing_ok=True)
+
+class IntentStructuredLLMClient:
+    def __init__(self, intent, target_id, expression_text):
+        self.intent = intent
+        self.target_id = target_id
+        self.expression_text = expression_text
+        self.strategy_calls = 0
+        self.expression_calls = 0
+
+    def generate_json_object(
+        self,
+        _system_prompt,
+        context,
+        _fallback_object=None,
+        max_attempts=None,
+    ):
+        self.strategy_calls += 1
+        if self.target_id not in {item["id"] for item in context["legal_targets"]}:
+            raise AssertionError("intent test target should be legal")
+        data = {
+            "schema_version": "public_speech.v1",
+            "intent": self.intent,
+            "target_id": self.target_id,
+            "claim_option_ids": [],
+            "evidence_ids": [
+                item["id"]
+                for item in context.get("evidence", [])
+                if item.get("visibility") == "public"
+            ][:1],
+            "signal_ids": [],
+        }
+        return LLMJsonGeneration(
+            data=data,
+            used_llm=True,
+            provider="stub",
+            model="stub-model",
+            raw_response_text=json.dumps(data, ensure_ascii=False),
+        )
+
+    def generate_json_text(
+        self,
+        _system_prompt,
+        context,
+        _fallback_text,
+        max_attempts=None,
+    ):
+        if context.get("task") != "public_speech_voice_prefix":
+            raise AssertionError("intent test should only call the public voice layer")
+        self.expression_calls += 1
+        return LLMGeneration(
+            text="先把逻辑说清",
+            used_llm=True,
+            provider="stub",
+            model="stub-model",
+            raw_response_text=json.dumps(
+                {"text": "先把逻辑说清"},
+                ensure_ascii=False,
+            ),
+        )
+
+def run_structured_intent_update(intent, expression_text):
+    state = make_rule_test_game(
+        [
+            "villager", "villager", "villager", "villager",
+            "werewolf", "werewolf", "werewolf", "werewolf",
+            "seer", "witch", "hunter", "guard",
+        ]
+    )
+    state.llm_enabled = True
+    state.phase = "DAY_MEETING"
+    state.meeting = DayMeetingState(
+        day=1,
+        direction="clockwise",
+        order=[2],
+    )
+    speaker = state.characters[1]
+    target = state.characters[2]
+    listener = state.characters[3]
+    listener.suspicion[str(target.id)] = 20
+    parsed_expression = main_module.parse_player_speech(state, expression_text)
+    client = IntentStructuredLLMClient(intent, target.id, expression_text)
+    main_module.LLM_CLIENT = client
+    try:
+        response = generate_npc_speech(
+            NpcSpeechRequest(game_id=state.game_id, character_id=speaker.id)
+        )
+    finally:
+        main_module.LLM_CLIENT = original_llm_client
+    if client.strategy_calls != 1 or client.expression_calls != 1:
+        raise SystemExit("structured intent should use one strategy and one voice-prefix call")
+    if (
+        target.name not in response.speech.speech
+        or "先把逻辑说清" not in response.speech.speech
+    ):
+        raise SystemExit("structured intent speech should combine voice with Python-rendered facts")
+    return parsed_expression, listener.suspicion.get(str(target.id), 0)
+
+defend_text = "我不怀疑3号C罗，别急着推他。"
+defend_parsed, suspicion_after_defend = run_structured_intent_update(
+    "defend",
+    defend_text,
+)
+if defend_parsed.accusations:
+    raise SystemExit("explicitly defending target 3 must not be parsed as an accusation")
+if not 0 <= suspicion_after_defend < 20:
+    raise SystemExit("structured defend intent should lower listener suspicion")
+
+_natural_defend_parsed, suspicion_after_natural_defend = run_structured_intent_update(
+    "defend",
+    "目前3号C罗的公开信息还不足以直接定性，我暂时不赞成把他推成焦点。",
+)
+if suspicion_after_natural_defend != suspicion_after_defend:
+    raise SystemExit("natural defend wording should keep the structured defend intent")
+
+_pressure_parsed, suspicion_after_pressure = run_structured_intent_update(
+    "pressure",
+    "3号C罗，先回答我的问题：你的验人逻辑是什么？犹豫只会暴露破绽。",
+)
+if suspicion_after_pressure <= 20:
+    raise SystemExit("natural pressure wording should keep the structured pressure intent")
+
+class LowInformationRetryLLMClient:
+    def __init__(self, target_id, grounded_text):
+        self.target_id = target_id
+        self.grounded_text = grounded_text
+        self.strategy_calls = 0
+        self.expression_calls = 0
+        self.selected_signal_id = ""
+
+    def generate_json_object(
+        self,
+        _system_prompt,
+        context,
+        _fallback_object=None,
+        max_attempts=None,
+    ):
+        self.strategy_calls += 1
+        signal = next(
+            item
+            for item in context.get("decision_signals", [])
+            if item.get("kind") == "low_information_speech"
+            and item.get("actor_id") == self.target_id
+        )
+        self.selected_signal_id = signal["id"]
+        data = {
+            "schema_version": "public_speech.v1",
+            "intent": "pressure",
+            "target_id": self.target_id,
+            "claim_option_ids": [],
+            "evidence_ids": [],
+            "signal_ids": [self.selected_signal_id],
+        }
+        return LLMJsonGeneration(
+            data=data,
+            used_llm=True,
+            provider="stub",
+            model="stub-model",
+            raw_response_text=json.dumps(data, ensure_ascii=False),
+        )
+
+    def generate_json_text(
+        self,
+        _system_prompt,
+        context,
+        _fallback_text,
+        max_attempts=None,
+    ):
+        if context.get("task") != "public_speech_voice_prefix":
+            raise AssertionError("low-information test should use the voice-prefix layer")
+        self.expression_calls += 1
+        text = (
+            f"我今天投{self.target_id}号"
+            if self.expression_calls == 1
+            else "先把细节说清"
+        )
+        return LLMGeneration(
+            text=text,
+            used_llm=True,
+            provider="stub",
+            model="stub-model",
+            raw_response_text=json.dumps({"text": text}, ensure_ascii=False),
+        )
+
+low_information_state = make_rule_test_game(
+    [
+        "villager", "villager", "villager", "villager",
+        "werewolf", "werewolf", "werewolf", "werewolf",
+        "seer", "witch", "hunter", "guard",
+    ]
+)
+low_information_state.llm_enabled = True
+low_information_state.phase = "DAY_MEETING"
+low_information_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[2],
+)
+low_information_speaker = low_information_state.characters[1]
+low_information_target = low_information_state.characters[2]
+low_information_listener = low_information_state.characters[3]
+low_information_listener.suspicion[str(low_information_target.id)] = 20
+low_information_state.speeches = [
+    SpeechState(
+        day=1,
+        character_id=low_information_target.id,
+        name=low_information_target.name,
+        speech="我没什么信息，先过吧。",
+        is_player=False,
+    ),
+]
+low_information_baseline_state = low_information_state.model_copy(deep=True)
+grounded_low_information_text = (
+    "3号C罗，你上一轮发言信息量偏低，没有给出具体目标；"
+    "现在请明确站边，我会结合你后续票型判断。"
+)
+low_information_client = LowInformationRetryLLMClient(
+    low_information_target.id,
+    grounded_low_information_text,
+)
+low_information_log_path = Path("/tmp/agent-town-low-information-smoke.jsonl")
+original_low_information_log_path = main_module.LLM_VALIDATION_LOG_FILE
+try:
+    low_information_log_path.unlink(missing_ok=True)
+    main_module.LLM_VALIDATION_LOG_FILE = low_information_log_path
+    main_module.LLM_CLIENT = low_information_client
+    low_information_response = generate_npc_speech(
+        NpcSpeechRequest(
+            game_id=low_information_state.game_id,
+            character_id=low_information_speaker.id,
+        )
+    )
+finally:
+    main_module.LLM_CLIENT = original_llm_client
+    main_module.LLM_VALIDATION_LOG_FILE = original_low_information_log_path
+    low_information_log_path.unlink(missing_ok=True)
+low_information_baseline_state.speeches.append(
+    low_information_state.speeches[-1].model_copy(deep=True)
+)
+low_information_baseline_speaker = low_information_baseline_state.characters[1]
+low_information_baseline_target = low_information_baseline_state.characters[2]
+low_information_baseline_listener = low_information_baseline_state.characters[3]
+main_module.apply_structured_public_speech_updates(
+    low_information_baseline_state,
+    low_information_baseline_speaker,
+    PublicSpeechIntent.PRESSURE,
+    low_information_baseline_target,
+)
+expected_low_information_suspicion = (
+    low_information_baseline_listener.suspicion.get(
+        str(low_information_baseline_target.id),
+        0,
+    )
+)
+if (
+    low_information_client.strategy_calls != 1
+    or low_information_client.expression_calls != 2
+):
+    raise SystemExit("an empty-pass expression should be rejected once and then retried")
+if (
+    "先把细节说清" not in low_information_response.speech.speech
+    or low_information_target.name not in low_information_response.speech.speech
+    or main_module.is_empty_pass_public_speech(low_information_response.speech.speech)
+):
+    raise SystemExit("the recovered voice prefix should keep a concrete Python-rendered contribution")
+if low_information_state.speeches[-1].decision_signal_ids != [
+    low_information_client.selected_signal_id
+]:
+    raise SystemExit("accepted public speech should retain its selected signal id for audit")
+if (
+    low_information_listener.suspicion.get(str(low_information_target.id), 0)
+    != expected_low_information_suspicion
+):
+    raise SystemExit("a low-information assessment should not add suspicion beyond pressure intent")
+
+fallback_signal_state = make_rule_test_game(
+    [
+        "villager", "villager", "villager", "villager",
+        "werewolf", "werewolf", "werewolf", "werewolf",
+        "seer", "witch", "hunter", "guard",
+    ]
+)
+fallback_signal_state.phase = "DAY_MEETING"
+fallback_signal_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[2],
+)
+fallback_signal_state.speeches = [
+    SpeechState(
+        day=1,
+        character_id=3,
+        name=fallback_signal_state.characters[2].name,
+        speech="我没什么信息，先过吧。",
+        is_player=False,
+    ),
+]
+fallback_signal_speaker = fallback_signal_state.characters[1]
+fallback_signal_context = main_module.build_public_speech_decision_context(
+    fallback_signal_state,
+    fallback_signal_speaker,
+    [],
+    [],
+)
+fallback_signal_decision = main_module.build_public_speech_fallback_decision(
+    fallback_signal_context,
+    None,
+    "",
+)
+fallback_signal_errors = main_module.validate_public_speech_plan(
+    fallback_signal_context,
+    fallback_signal_decision,
+)
+if fallback_signal_errors:
+    raise SystemExit(f"rule fallback should remain a legal structured decision: {fallback_signal_errors}")
+fallback_signal_target = main_module.get_character(
+    fallback_signal_state,
+    fallback_signal_decision.primary_target_id,
+)
+fallback_selected_signals = [
+    signal
+    for signal in fallback_signal_context.decision_signals
+    if signal.id in fallback_signal_decision.signal_ids
+]
+fallback_signal_text = main_module.build_structured_public_speech_rule_text(
+    fallback_signal_state,
+    fallback_signal_speaker,
+    False,
+    fallback_signal_decision,
+    fallback_signal_target,
+    None,
+    [],
+    fallback_selected_signals,
+)
+if (
+    fallback_signal_decision.primary_target_id != 3
+    or not fallback_signal_decision.signal_ids
+    or not all(
+        main_module.text_preserves_public_signal(
+            fallback_signal_text,
+            signal,
+            fallback_signal_state,
+        )
+        for signal in fallback_selected_signals
+    )
+    or not main_module.text_mentions_character(
+        fallback_signal_text,
+        fallback_signal_target,
+    )
+    or not any(
+        marker in fallback_signal_text
+        for marker in ["解释", "明确", "站边", "票型", "验证", "检验"]
+    )
+    or main_module.is_empty_pass_public_speech(fallback_signal_text)
+):
+    raise SystemExit("rule fallback should target the low-information speaker and make a concrete follow-up")
+
+class RoleOnlyRevealLLMClient:
+    def __init__(self):
+        self.strategy_attempts = 0
+        self.expression_calls = 0
+
+    def generate_json_object(
+        self,
+        _system_prompt,
+        context,
+        _fallback_object=None,
+        max_attempts=None,
+    ):
+        self.strategy_attempts += 1
+        claim_option_id = context["claim_options"][0]["id"]
+        data = {
+            "schema_version": "public_speech.v1",
+            "intent": "reveal",
+            "target_id": 3 if self.strategy_attempts == 1 else None,
+            "claim_option_ids": [claim_option_id],
+            "evidence_ids": [],
+            "signal_ids": [],
+        }
+        return LLMJsonGeneration(
+            data=data,
+            used_llm=True,
+            provider="stub",
+            model="stub-model",
+            raw_response_text=json.dumps(data, ensure_ascii=False),
+        )
+
+    def generate_json_text(
+        self,
+        _system_prompt,
+        context,
+        fallback_text,
+        max_attempts=None,
+    ):
+        if context.get("task") != "public_speech_voice_prefix":
+            raise AssertionError("role-only reveal should use the public voice layer")
+        self.expression_calls += 1
+        return LLMGeneration(
+            text="这次我说清楚",
+            used_llm=True,
+            provider="stub",
+            model="stub-model",
+            raw_response_text=json.dumps({"text": "这次我说清楚"}, ensure_ascii=False),
+        )
+
+role_only_state = make_rule_test_game(
+    ["villager", "hunter", "villager", "werewolf", "seer", "witch", "guard"]
+)
+role_only_state.llm_enabled = True
+role_only_state.phase = "DAY_MEETING"
+role_only_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[2],
+)
+role_only_speaker = role_only_state.characters[1]
+role_only_fallback_target = role_only_state.characters[2]
+role_only_claims = [
+    main_module.PublicClaimState(
+        day=1,
+        character_id=role_only_speaker.id,
+        claim_type="role",
+        claimed_role="hunter",
+        source="role_only_smoke",
+    )
+]
+role_only_context = main_module.build_public_speech_decision_context(
+    role_only_state,
+    role_only_speaker,
+    [],
+    role_only_claims,
+)
+role_only_rule_fallback = main_module.build_public_speech_fallback_decision(
+    role_only_context,
+    role_only_fallback_target,
+    "",
+)
+if (
+    role_only_rule_fallback.intent.value != "reveal"
+    or role_only_rule_fallback.primary_target_id is not None
+    or not role_only_rule_fallback.claim_option_ids
+):
+    raise SystemExit("a role-only rule fallback must reveal with target_id null")
+
+role_only_client = RoleOnlyRevealLLMClient()
+role_only_log_path = Path("/tmp/agent-town-role-only-reveal-smoke.jsonl")
+original_role_only_log_path = main_module.LLM_VALIDATION_LOG_FILE
+try:
+    role_only_log_path.unlink(missing_ok=True)
+    main_module.LLM_VALIDATION_LOG_FILE = role_only_log_path
+    main_module.LLM_CLIENT = role_only_client
+    (
+        role_only_target,
+        selected_role_only_claims,
+        _role_only_rag,
+        role_only_generation,
+        role_only_plan,
+    ) = main_module.generate_structured_public_speech_plan(
+        role_only_state,
+        role_only_speaker,
+        False,
+        role_only_fallback_target,
+        [],
+        role_only_claims,
+    )
+    if (
+        role_only_client.strategy_attempts != 2
+        or role_only_client.expression_calls != 1
+        or role_only_target is not None
+        or role_only_plan.schema_version != "public_speech_plan.v2"
+        or role_only_plan.primary_target_id is not None
+        or selected_role_only_claims != role_only_claims
+        or not role_only_generation.used_llm
+        or role_only_generation.decision_intent != "reveal"
+    ):
+        raise SystemExit("role-only reveal should reject a target then accept target_id null")
+    if (
+        not role_only_log_path.exists()
+        or "role-only reveal must use primary_target_id null"
+        not in role_only_log_path.read_text(encoding="utf-8")
+    ):
+        raise SystemExit("role-only non-null target rejection should be audited")
+finally:
+    main_module.LLM_CLIENT = original_llm_client
+    main_module.LLM_VALIDATION_LOG_FILE = original_role_only_log_path
+    role_only_log_path.unlink(missing_ok=True)
 
 meeting_influence_state = make_rule_test_game(
     ["villager", "villager", "werewolf", "villager", "guard", "seer"]
@@ -1363,6 +4304,112 @@ if player_claim_view.claimed_role != "seer":
     raise SystemExit("player public role claim should appear in the character view")
 if not any("称验3号 C罗为狼人" in label for label in player_claim_view.public_claims):
     raise SystemExit("player claimed check should appear as a neutral public label")
+player_claim_public_intel = get_wolf_game_state(player_claim_state.game_id).public_intel
+if not any(
+    item.kind == "role"
+    and item.claimed_role == "seer"
+    and "公开跳预言家" in item.display_text
+    for item in player_claim_public_intel
+):
+    raise SystemExit("the public-intel view should expose a neutral seer claim")
+if not any(
+    item.kind == "seer_check"
+    and item.target_id == 3
+    and item.result == "werewolf"
+    and "查杀" in item.display_text
+    for item in player_claim_public_intel
+):
+    raise SystemExit("the public-intel view should expose the claimed seer result")
+if any(
+    "source" in item.model_dump()
+    or "role" in item.model_dump()
+    or "camp" in item.model_dump()
+    for item in player_claim_public_intel
+):
+    raise SystemExit("public-intel entries must not expose claim origin or hidden truth")
+public_intel_before_source_change = [
+    item.model_dump(mode="json") for item in player_claim_public_intel
+]
+for claim in player_claim_state.public_claims:
+    claim.source = "wolf_fake_seer"
+public_intel_after_source_change = [
+    item.model_dump(mode="json")
+    for item in get_wolf_game_state(player_claim_state.game_id).public_intel
+]
+if public_intel_before_source_change != public_intel_after_source_change:
+    raise SystemExit("public-intel projection must be invariant to hidden claim source")
+
+power_intel_state = make_rule_test_game(
+    ["villager", "witch", "guard", "hunter", "villager", "werewolf"]
+)
+main_module.register_public_claims(
+    power_intel_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=2,
+            claim_type="role",
+            claimed_role="witch",
+            source="true_role",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=2,
+            claim_type="witch_save",
+            claimed_role="witch",
+            target_id=5,
+            source="night_1",
+        ),
+        main_module.PublicClaimState(
+            day=2,
+            character_id=2,
+            claim_type="witch_poison",
+            claimed_role="witch",
+            target_id=6,
+            source="night_2",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=3,
+            claim_type="role",
+            claimed_role="guard",
+            source="true_role",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=3,
+            claim_type="guard_success",
+            claimed_role="guard",
+            target_id=5,
+            source="night_1",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=4,
+            claim_type="role",
+            claimed_role="hunter",
+            source="true_role",
+        ),
+    ],
+)
+power_intel_state.hunter_shots.append(
+    HunterShotState(day=2, hunter_id=4, target_id=5, trigger="exile")
+)
+power_public_intel = get_wolf_game_state(power_intel_state.game_id).public_intel
+power_public_text = "\\n".join(item.display_text for item in power_public_intel)
+for expected_public_text in [
+    "2号 梅西公开跳女巫",
+    "2号 梅西声称用解药救了5号 梅长苏",
+    "2号 梅西声称用毒药毒了6号 塞尔达",
+    "3号 C罗公开跳守卫",
+    "3号 C罗声称守护5号 梅长苏成功",
+    "4号 周深公开跳猎人",
+    "4号 周深开枪带走5号 梅长苏",
+]:
+    if expected_public_text not in power_public_text:
+        raise SystemExit("public-intel accordion data is missing: " + expected_public_text)
+if not any(item.category == "confirmed_action" for item in power_public_intel):
+    raise SystemExit("confirmed hunter actions should be distinct from unverified claims")
 
 true_seer_claim_state = make_rule_test_game(
     ["villager", "seer", "werewolf", "guard", "witch", "hunter"]
@@ -1458,14 +4505,47 @@ wolf_check_wolf_state = make_rule_test_game(
     ["villager", "werewolf", "seer", "werewolf", "werewolf", "werewolf"]
 )
 wolf_check_wolf_state.wolf_fake_seer_id = 2
-for listener in wolf_check_wolf_state.characters[5:]:
-    listener.suspicion["4"] = 10
+wolf_check_wolf_state.speeches = [
+    SpeechState(
+        day=1,
+        character_id=character.id,
+        name=character.name,
+        speech="我公开把4号放进压力位。",
+        is_player=character.is_player,
+        decision_intent="pressure",
+        focus_target_id=4,
+    )
+    for character in wolf_check_wolf_state.characters
+    if character.id != 4
+][:9]
+if main_module.get_public_suspicion_score(wolf_check_wolf_state, 4) < (
+    main_module.get_character_strategy_tuning(
+        wolf_check_wolf_state.characters[1]
+    ).teammate_black_check_min_pressure
+):
+    raise SystemExit("wolf-checks-wolf regression must exceed the tuned pressure threshold")
 wolf_check_target = main_module.choose_fake_seer_check(
     wolf_check_wolf_state,
     wolf_check_wolf_state.characters[1],
 )
-if wolf_check_target != (4, "werewolf") or not wolf_check_wolf_state.wolf_checked_wolf_used:
-    raise SystemExit("a pressured wolf teammate should enable the once-per-game wolf-checks-wolf strategy")
+if wolf_check_target != (4, "werewolf") or wolf_check_wolf_state.wolf_checked_wolf_used:
+    raise SystemExit("planning a wolf-checks-wolf option must not consume it before commit")
+main_module.register_public_claims(
+    wolf_check_wolf_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=2,
+            claim_type="seer_check",
+            claimed_role="seer",
+            target_id=4,
+            result="werewolf",
+            source="wolf_fake_seer",
+        )
+    ],
+)
+if not wolf_check_wolf_state.wolf_checked_wolf_used:
+    raise SystemExit("committing a wolf-checks-wolf claim should consume the strategy")
 
 witch_claim_state = make_rule_test_game(
     ["villager", "villager", "witch", "werewolf", "villager", "seer", "guard", "hunter"]
@@ -1505,9 +4585,19 @@ if guard_claim_types != {"role", "guard_success"}:
 hunter_claim_state = make_rule_test_game(
     ["villager", "villager", "hunter", "werewolf", "villager", "seer", "witch", "guard"]
 )
-for observer in hunter_claim_state.characters:
-    if not observer.is_player and observer.id != 3:
-        observer.suspicion["3"] = 10
+hunter_claim_state.speeches = [
+    SpeechState(
+        day=1,
+        character_id=character.id,
+        name=character.name,
+        speech="我公开质疑3号。",
+        is_player=character.is_player,
+        decision_intent="pressure",
+        focus_target_id=3,
+    )
+    for character in hunter_claim_state.characters
+    if character.id != 3
+][:5]
 hunter_claims = main_module.plan_npc_public_claims(
     hunter_claim_state,
     hunter_claim_state.characters[2],
@@ -1663,20 +4753,1721 @@ low_pressure_focus = main_module.choose_speech_focus_target(wolf_team_state, wol
 if low_pressure_focus is None or low_pressure_focus.role == "werewolf":
     raise SystemExit("NPC wolf should avoid exposing a low-pressure teammate")
 high_pressure_teammate = wolf_team_state.characters[2]
-for observer in wolf_team_state.characters:
-    if observer.is_player or observer.id == high_pressure_teammate.id:
-        continue
-    observer.suspicion[str(high_pressure_teammate.id)] = 20
+public_pressure_speakers = [
+    character
+    for character in wolf_team_state.characters
+    if character.id != high_pressure_teammate.id
+][:7]
+wolf_team_state.speeches = [
+    SpeechState(
+        day=1,
+        character_id=character.id,
+        name=character.name,
+        speech=f"我公开质疑{high_pressure_teammate.id}号。",
+        is_player=character.is_player,
+        decision_intent="pressure",
+        focus_target_id=high_pressure_teammate.id,
+    )
+    for character in public_pressure_speakers
+]
+designated_bus_ids = main_module.get_designated_wolf_bus_actor_ids(
+    wolf_team_state,
+    high_pressure_teammate,
+)
+if len(designated_bus_ids) != 1:
+    raise SystemExit("moderate public pressure should designate exactly one wolf bus actor")
+designated_bus_wolf = main_module.get_character(
+    wolf_team_state,
+    next(iter(designated_bus_ids)),
+)
+non_designated_wolf = next(
+    character
+    for character in wolf_team_state.characters
+    if character.role == "werewolf"
+    and not character.is_player
+    and character.id not in designated_bus_ids
+    and character.id != high_pressure_teammate.id
+)
 if not main_module.should_wolf_sell_teammate(
     wolf_team_state,
-    wolf_speaker,
+    designated_bus_wolf,
     high_pressure_teammate,
 ):
     raise SystemExit("NPC wolf should allow a strategic sell under high public pressure")
-if main_module.choose_speech_focus_target(wolf_team_state, wolf_speaker).id != high_pressure_teammate.id:
+if main_module.choose_speech_focus_target(
+    wolf_team_state,
+    designated_bus_wolf,
+).id != high_pressure_teammate.id:
     raise SystemExit("NPC wolf speech should focus the high-pressure teammate when selling")
-if main_module.choose_npc_vote_target(wolf_team_state, wolf_speaker) != high_pressure_teammate.id:
-    raise SystemExit("NPC wolf vote should be able to sell the high-pressure teammate")
+wolf_bus_strategy = main_module.choose_wolf_team_vote_strategy(
+    wolf_team_state,
+    "exile",
+)
+if wolf_bus_strategy != "bus":
+    raise SystemExit("high public teammate pressure should select the wolf bus strategy")
+wolf_bus_strategy_before_ballot = wolf_bus_strategy
+wolf_team_state.votes.append(
+    VoteState(
+        day=wolf_team_state.day,
+        voter_id=designated_bus_wolf.id,
+        target_id=high_pressure_teammate.id,
+        reason="current round generation-order regression",
+    )
+)
+if main_module.choose_wolf_team_vote_strategy(wolf_team_state, "exile") != wolf_bus_strategy_before_ballot:
+    raise SystemExit("wolf strategy selection must ignore current-round ballot generation order")
+wolf_team_state.votes.pop()
+
+designated_bus_probabilities = main_module.build_npc_exile_vote_probabilities(
+    wolf_team_state,
+    designated_bus_wolf,
+)
+non_designated_probabilities = main_module.build_npc_exile_vote_probabilities(
+    wolf_team_state,
+    non_designated_wolf,
+)
+if abs(sum(designated_bus_probabilities.values()) - 1.0) > 1e-9:
+    raise SystemExit("wolf exile-vote probabilities must normalize to one")
+if list(designated_bus_probabilities) != sorted(designated_bus_probabilities):
+    raise SystemExit("wolf exile-vote probabilities must use canonical candidate order")
+if designated_bus_probabilities.get(high_pressure_teammate.id, 0.0) <= 0.0:
+    raise SystemExit("a designated wolf bus target must retain positive vote probability")
+if non_designated_probabilities.get(high_pressure_teammate.id, 0.0) <= 0.0:
+    raise SystemExit("ordinary wolf teammates must remain legal with non-zero probability")
+if (
+    designated_bus_probabilities[high_pressure_teammate.id]
+    <= non_designated_probabilities[high_pressure_teammate.id]
+):
+    raise SystemExit("the designated bus actor should weight the pressured teammate more heavily")
+reversed_bus_probabilities = main_module.build_npc_exile_vote_probabilities(
+    wolf_team_state,
+    designated_bus_wolf,
+    list(reversed(list(designated_bus_probabilities))),
+)
+if designated_bus_probabilities != reversed_bus_probabilities:
+    raise SystemExit("exile-vote probabilities must be invariant to candidate input order")
+first_replayed_bus_choice = main_module.choose_npc_vote_target(
+    wolf_team_state,
+    designated_bus_wolf,
+)
+second_replayed_bus_choice = main_module.choose_npc_vote_target(
+    wolf_team_state,
+    designated_bus_wolf,
+)
+if first_replayed_bus_choice != second_replayed_bus_choice:
+    raise SystemExit("the same game id must replay the same sampled exile ballot")
+if main_module.choose_speech_focus_target(
+    wolf_team_state,
+    non_designated_wolf,
+).id == high_pressure_teammate.id:
+    raise SystemExit("a non-designated wolf must not automatically join the public bus")
+
+strong_evidence_probabilities = main_module.build_softmax_vote_probabilities(
+    {high_pressure_teammate.id: 180.0, 5: 0.0},
+    main_module.get_character_strategy_tuning(designated_bus_wolf),
+)
+if strong_evidence_probabilities[high_pressure_teammate.id] <= 0.99:
+    raise SystemExit("overwhelming legal evidence should still allow vote convergence")
+if strong_evidence_probabilities != main_module.build_softmax_vote_probabilities(
+    {5: 0.0, high_pressure_teammate.id: 180.0},
+    main_module.get_character_strategy_tuning(designated_bus_wolf),
+):
+    raise SystemExit("softmax vote construction must be independent of score insertion order")
+bus_plan = PublicSpeechPlanV2.model_validate(
+    {
+        "schema_version": "public_speech_plan.v2",
+        "intent": "pressure",
+        "primary_target_id": high_pressure_teammate.id,
+        "secondary_target_id": None,
+        "stance": "oppose",
+        "stance_target_id": high_pressure_teammate.id,
+        "confidence": 75,
+        "signal_read": "none",
+        "question": {
+            "target_id": high_pressure_teammate.id,
+            "topic": "response_to_pressure",
+        },
+        "verification": {
+            "target_id": high_pressure_teammate.id,
+            "criterion": "vote_alignment",
+        },
+        "provisional_vote_target_id": high_pressure_teammate.id,
+        "tactic": "wolf_bus_teammate",
+        "claim_option_ids": [],
+        "evidence_ids": [],
+        "signal_ids": [],
+    }
+)
+if main_module.validate_wolf_coordination_plan(
+    wolf_team_state,
+    designated_bus_wolf,
+    bus_plan,
+):
+    raise SystemExit("the designated wolf's high-pressure bus plan should be legal")
+if not main_module.validate_wolf_coordination_plan(
+    wolf_team_state,
+    non_designated_wolf,
+    bus_plan,
+):
+    raise SystemExit("a non-designated wolf's LLM bus plan must be rejected")
+
+wolf_strategy_baseline_state = make_rule_test_game(
+    [
+        "villager", "werewolf", "werewolf", "werewolf", "werewolf",
+        "seer", "witch", "hunter", "guard", "villager", "villager", "villager",
+    ]
+)
+original_wolf_strategy_game_id = wolf_strategy_baseline_state.game_id
+observed_low_pressure_strategies = set()
+for seed_index in range(1, 121):
+    wolf_strategy_baseline_state.game_id = "wolf_strategy_" + ("x" * seed_index)
+    observed_low_pressure_strategies.add(
+        main_module.choose_wolf_team_vote_strategy(
+            wolf_strategy_baseline_state,
+            "exile",
+        )
+    )
+wolf_strategy_baseline_state.game_id = original_wolf_strategy_game_id
+if not {"consolidate", "split_cover"}.issubset(observed_low_pressure_strategies):
+    raise SystemExit("low-pressure wolf teams must reach both consolidation and split-cover branches")
+
+wolf_deep_hook_state = make_rule_test_game(
+    [
+        "villager", "werewolf", "werewolf", "werewolf", "werewolf",
+        "seer", "witch", "hunter", "guard", "villager", "villager", "villager",
+    ]
+)
+deep_hook_actor = wolf_deep_hook_state.characters[1]
+deep_hook_teammate = wolf_deep_hook_state.characters[2]
+wolf_deep_hook_state.speeches = [
+    SpeechState(
+        day=1,
+        character_id=deep_hook_actor.id,
+        name=deep_hook_actor.name,
+        speech=f"我公开怀疑{deep_hook_teammate.id}号。",
+        is_player=False,
+        phase="DAY_MEETING",
+        focus_target_id=deep_hook_teammate.id,
+        decision_intent="pressure",
+        public_position=PublicPositionV1(
+            speaker_id=deep_hook_actor.id,
+            day=1,
+            phase="DAY_MEETING",
+            suspected_target_ids=[deep_hook_teammate.id],
+            provisional_vote_target_id=deep_hook_teammate.id,
+            confidence=72,
+        ),
+    )
+]
+if main_module.choose_wolf_team_vote_strategy(wolf_deep_hook_state, "exile") != "deep_hook":
+    raise SystemExit("a wolf's existing public teammate pressure should select deep-hook continuity")
+
+wolf_rescue_state = make_rule_test_game(
+    [
+        "villager", "werewolf", "werewolf", "werewolf", "werewolf",
+        "seer", "witch", "hunter", "guard", "villager", "villager", "villager",
+    ]
+)
+rescue_teammate = wolf_rescue_state.characters[2]
+wolf_rescue_state.speeches = [
+    SpeechState(
+        day=1,
+        character_id=character.id,
+        name=character.name,
+        speech=f"我质疑{rescue_teammate.id}号。",
+        is_player=character.is_player,
+        phase="DAY_MEETING",
+        focus_target_id=rescue_teammate.id,
+        decision_intent="pressure",
+    )
+    for character in wolf_rescue_state.characters
+    if character.id != rescue_teammate.id
+][:4]
+if main_module.choose_wolf_team_vote_strategy(wolf_rescue_state, "exile") != "rescue":
+    raise SystemExit("moderate public teammate pressure should select the wolf rescue branch")
+
+wolf_abandon_state = make_rule_test_game(
+    [
+        "villager", "werewolf", "werewolf", "werewolf", "werewolf",
+        "seer", "witch", "hunter", "guard", "villager", "villager", "villager",
+    ]
+)
+abandoned_fake_seer = wolf_abandon_state.characters[1]
+competing_true_seer = wolf_abandon_state.characters[5]
+wolf_abandon_state.wolf_fake_seer_id = abandoned_fake_seer.id
+main_module.register_public_claims(
+    wolf_abandon_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=abandoned_fake_seer.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="wolf_abandon_fake",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=competing_true_seer.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="wolf_abandon_true",
+        ),
+    ],
+)
+wolf_abandon_state.speeches = [
+    SpeechState(
+        day=1,
+        character_id=character.id,
+        name=character.name,
+        speech=f"我不信{abandoned_fake_seer.id}号。",
+        is_player=character.is_player,
+        phase="DAY_MEETING",
+        focus_target_id=abandoned_fake_seer.id,
+        decision_intent="pressure",
+    )
+    for character in wolf_abandon_state.characters
+    if character.id != abandoned_fake_seer.id
+][:5]
+if main_module.choose_wolf_team_vote_strategy(wolf_abandon_state, "exile") != "abandon_fake_seer":
+    raise SystemExit("a collapsing contested fake seer should reach the abandon branch")
+
+black_check_story_state = make_rule_test_game(
+    [
+        "villager", "werewolf", "werewolf", "seer", "werewolf",
+        "witch", "hunter", "guard", "villager", "villager",
+        "villager", "villager",
+    ]
+)
+black_check_story_state.phase = "DAY_MEETING"
+black_check_story_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[3],
+)
+fake_seer_wolf = black_check_story_state.characters[1]
+black_checked_wolf = black_check_story_state.characters[2]
+true_seer_candidate = black_check_story_state.characters[3]
+other_wolf = black_check_story_state.characters[4]
+for actor in [fake_seer_wolf, black_checked_wolf, other_wolf]:
+    actor.strategy_tuning = main_module.resolve_current_npc_tuning(
+        actor.name,
+        actor.camp,
+        actor.role,
+    ).model_dump(mode="json")
+black_check_story_state.wolf_fake_seer_id = fake_seer_wolf.id
+black_check_story_state.public_claims = [
+    main_module.PublicClaimState(
+        day=1,
+        character_id=fake_seer_wolf.id,
+        claim_type="role",
+        claimed_role="seer",
+        source="wolf_story_smoke",
+    ),
+    main_module.PublicClaimState(
+        day=1,
+        character_id=fake_seer_wolf.id,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=black_checked_wolf.id,
+        result="werewolf",
+        source="wolf_story_smoke",
+    ),
+]
+if main_module.choose_npc_sheriff_vote_target(
+    black_check_story_state,
+    black_checked_wolf,
+    [fake_seer_wolf.id, true_seer_candidate.id],
+) != true_seer_candidate.id:
+    raise SystemExit("a black-checked wolf must not elect the teammate who sacrificed them")
+if main_module.choose_speech_focus_target(
+    black_check_story_state,
+    black_checked_wolf,
+).id != fake_seer_wolf.id:
+    raise SystemExit("the black-checked wolf's later speech must challenge the fake-seer teammate")
+(
+    story_target,
+    _story_claims,
+    _story_rag,
+    story_generation,
+    story_plan,
+) = main_module.generate_structured_public_speech_plan(
+    black_check_story_state,
+    black_checked_wolf,
+    False,
+    fake_seer_wolf,
+    [],
+    [],
+)
+if (
+    story_target is None
+    or story_target.id != fake_seer_wolf.id
+    or story_plan.primary_target_id != fake_seer_wolf.id
+    or story_plan.provisional_vote_target_id != fake_seer_wolf.id
+    or story_plan.stance.value != "oppose"
+    or story_plan.tactic.value != "wolf_distance_teammate"
+    or fake_seer_wolf.name not in story_generation.text
+):
+    raise SystemExit("the fallback strategy must keep the wolf sacrifice story coherent")
+if main_module.choose_npc_vote_target(
+    black_check_story_state,
+    black_checked_wolf,
+) != fake_seer_wolf.id:
+    raise SystemExit("the black-checked wolf's exile vote must oppose the sacrificing teammate")
+if main_module.choose_npc_vote_target(
+    black_check_story_state,
+    fake_seer_wolf,
+) != black_checked_wolf.id:
+    raise SystemExit("the fake seer must vote the wolf teammate it publicly black-checked")
+story_vote_reason = main_module.build_npc_vote_reason(
+    black_check_story_state,
+    black_checked_wolf,
+    fake_seer_wolf,
+    None,
+)
+if "查杀" not in story_vote_reason or "反投" not in story_vote_reason:
+    raise SystemExit("the coherent wolf vote should have a public-story reason")
+fake_seer_wolf.alive = False
+if main_module.choose_npc_badge_heir(
+    black_check_story_state,
+    fake_seer_wolf,
+) == black_checked_wolf.id:
+    raise SystemExit("the sacrificed wolf must not receive the fake seer's badge")
+fake_seer_wolf.alive = True
+black_checked_wolf.alive = False
+if main_module.choose_npc_badge_heir(
+    black_check_story_state,
+    black_checked_wolf,
+) == fake_seer_wolf.id:
+    raise SystemExit("the black-checked wolf sheriff must not return the badge to its accuser")
+black_checked_wolf.alive = True
+
+public_pressure_state = make_rule_test_game(
+    [
+        "villager", "seer", "villager", "werewolf", "werewolf",
+        "witch", "hunter", "guard", "villager", "villager",
+        "werewolf", "villager",
+    ]
+)
+private_seer = public_pressure_state.characters[1]
+private_check_target = public_pressure_state.characters[2]
+baseline_public_pressure = main_module.get_public_suspicion_score(
+    public_pressure_state,
+    private_check_target.id,
+)
+public_pressure_state.night_actions = [
+    NightActionState(
+        day=1,
+        actor_id=private_seer.id,
+        action_type="seer_check",
+        target_id=private_check_target.id,
+    ),
+]
+private_seer.suspicion[str(private_check_target.id)] = 100
+public_pressure_state.characters[4].suspicion[str(private_check_target.id)] = 80
+if main_module.get_public_suspicion_score(
+    public_pressure_state,
+    private_check_target.id,
+) != baseline_public_pressure:
+    raise SystemExit("public pressure must not aggregate private suspicion or a seer's hidden check")
+public_pressure_state.public_claims.append(
+    main_module.PublicClaimState(
+        day=1,
+        character_id=private_seer.id,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=private_check_target.id,
+        result="werewolf",
+        source="public_pressure_smoke",
+    )
+)
+claim_public_pressure = main_module.get_public_suspicion_score(
+    public_pressure_state,
+    private_check_target.id,
+)
+if claim_public_pressure <= baseline_public_pressure:
+    raise SystemExit("a public black-check claim should change public pressure")
+public_pressure_state.speeches.append(
+    SpeechState(
+        day=1,
+        character_id=5,
+        name=public_pressure_state.characters[4].name,
+        speech=f"我重点质疑{private_check_target.id}号。",
+        is_player=False,
+        decision_intent="pressure",
+        focus_target_id=private_check_target.id,
+    )
+)
+speech_public_pressure = main_module.get_public_suspicion_score(
+    public_pressure_state,
+    private_check_target.id,
+)
+if speech_public_pressure <= claim_public_pressure:
+    raise SystemExit("a public pressure speech should change public pressure")
+public_pressure_state.sheriff_events.append(
+    SheriffEventState(
+        day=1,
+        event_type="nomination",
+        actor_id=4,
+        target_id=private_check_target.id,
+        detail="警长公开归票。",
+    )
+)
+if main_module.get_public_suspicion_score(
+    public_pressure_state,
+    private_check_target.id,
+) <= speech_public_pressure:
+    raise SystemExit("a public sheriff action should change public pressure")
+
+seer_gold_vote_state = make_rule_test_game(
+    [
+        "villager", "seer", "villager", "werewolf", "werewolf",
+        "witch", "hunter", "guard", "villager", "villager",
+        "werewolf", "villager",
+    ]
+)
+true_seer_voter = seer_gold_vote_state.characters[1]
+known_good_target = seer_gold_vote_state.characters[2]
+alternative_wolf_target = seer_gold_vote_state.characters[3]
+seer_gold_vote_state.night_actions = [
+    NightActionState(
+        day=1,
+        actor_id=true_seer_voter.id,
+        action_type="seer_check",
+        target_id=known_good_target.id,
+    ),
+]
+true_seer_voter.suspicion[str(known_good_target.id)] = 200
+true_seer_voter.suspicion[str(alternative_wolf_target.id)] = 50
+seer_vote_probabilities = main_module.build_npc_exile_vote_probabilities(
+    seer_gold_vote_state,
+    true_seer_voter,
+)
+if known_good_target.id in seer_vote_probabilities:
+    raise SystemExit("a true seer's privately checked good target must be excluded from legal ballots")
+if max(seer_vote_probabilities, key=seer_vote_probabilities.get) != alternative_wolf_target.id:
+    raise SystemExit("the true seer should rank another suspicious legal target above alternatives")
+
+deception_vote_state = make_rule_test_game(
+    [
+        "villager", "werewolf", "villager", "seer", "werewolf",
+        "witch", "hunter", "guard", "villager", "villager",
+        "werewolf", "werewolf",
+    ]
+)
+fake_claimant = deception_vote_state.characters[1]
+framed_good = deception_vote_state.characters[2]
+susceptible_good = deception_vote_state.characters[9]
+for actor in [fake_claimant, susceptible_good]:
+    actor.strategy_tuning = main_module.resolve_current_npc_tuning(
+        actor.name,
+        actor.camp,
+        actor.role,
+    ).model_dump(mode="json")
+if framed_good.role != "villager" or susceptible_good.role != "villager":
+    raise SystemExit("deception regression requires a good listener and a framed good target")
+deception_probabilities_before_claim = main_module.build_npc_exile_vote_probabilities(
+    deception_vote_state,
+    susceptible_good,
+)
+main_module.register_public_claims(
+    deception_vote_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=fake_claimant.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="deception_vote_smoke",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=fake_claimant.id,
+            claim_type="seer_check",
+            claimed_role="seer",
+            target_id=framed_good.id,
+            result="werewolf",
+            source="deception_vote_smoke",
+        ),
+    ],
+)
+deception_bonus = main_module.get_public_black_check_vote_bonus(
+    deception_vote_state,
+    susceptible_good,
+    framed_good,
+)
+if deception_bonus <= 0:
+    raise SystemExit("a persuasive wolf black check should influence a susceptible good listener")
+deception_probabilities_after_claim = main_module.build_npc_exile_vote_probabilities(
+    deception_vote_state,
+    susceptible_good,
+)
+if (
+    deception_probabilities_after_claim.get(framed_good.id, 0.0)
+    <= deception_probabilities_before_claim.get(framed_good.id, 0.0)
+):
+    raise SystemExit("a persuasive public black check should raise a good listener's wrong-vote probability")
+original_deception_game_id = deception_vote_state.game_id
+deception_seed_choices = set()
+for seed_index in range(1, 161):
+    deception_vote_state.game_id = "deception_vote_seed_" + ("x" * seed_index)
+    deception_seed_choices.add(
+        main_module.choose_npc_vote_target(
+            deception_vote_state,
+            susceptible_good,
+        )
+    )
+deception_vote_state.game_id = original_deception_game_id
+if framed_good.id not in deception_seed_choices:
+    raise SystemExit("a good NPC must sometimes believe a wolf lie and cast a wrong vote")
+deceived_reason = main_module.build_npc_vote_reason(
+    deception_vote_state,
+    susceptible_good,
+    framed_good,
+    None,
+)
+if "公开验人" not in deceived_reason or "暂时采信" not in deceived_reason:
+    raise SystemExit("a deceived vote reason should cite only the public claim, not hidden truth")
+
+sheriff_belief_state = make_rule_test_game(
+    [
+        "villager", "werewolf", "seer", "villager", "villager",
+        "witch", "hunter", "guard", "villager", "villager",
+        "werewolf", "werewolf",
+    ]
+)
+fake_sheriff_claimant = sheriff_belief_state.characters[1]
+true_sheriff_claimant = sheriff_belief_state.characters[2]
+fake_sheriff_voter = sheriff_belief_state.characters[3]
+true_sheriff_voter = sheriff_belief_state.characters[4]
+main_module.register_public_claims(
+    sheriff_belief_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=fake_sheriff_claimant.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="sheriff_belief_fake",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=fake_sheriff_claimant.id,
+            claim_type="seer_check",
+            claimed_role="seer",
+            target_id=6,
+            result="good",
+            source="sheriff_belief_fake",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=true_sheriff_claimant.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="sheriff_belief_true",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=true_sheriff_claimant.id,
+            claim_type="seer_check",
+            claimed_role="seer",
+            target_id=7,
+            result="good",
+            source="sheriff_belief_true",
+        ),
+    ],
+)
+fake_sheriff_voter.relationships[str(fake_sheriff_claimant.id)]["trust"] = 0.94
+fake_sheriff_voter.relationships[str(true_sheriff_claimant.id)]["trust"] = 0.18
+true_sheriff_voter.relationships[str(fake_sheriff_claimant.id)]["trust"] = 0.18
+true_sheriff_voter.relationships[str(true_sheriff_claimant.id)]["trust"] = 0.94
+
+sheriff_candidate_ids = [fake_sheriff_claimant.id, true_sheriff_claimant.id]
+sheriff_choice_before_role_swap = main_module.choose_npc_sheriff_vote_target(
+    sheriff_belief_state,
+    fake_sheriff_voter,
+    sheriff_candidate_ids,
+)
+sheriff_probabilities_before_role_swap = main_module.build_npc_sheriff_vote_probabilities(
+    sheriff_belief_state,
+    fake_sheriff_voter,
+    sheriff_candidate_ids,
+)
+if abs(sum(sheriff_probabilities_before_role_swap.values()) - 1.0) > 1e-9:
+    raise SystemExit("sheriff-vote probabilities must normalize to one")
+if list(sheriff_probabilities_before_role_swap) != sorted(sheriff_candidate_ids):
+    raise SystemExit("sheriff-vote probabilities must use canonical candidate order")
+if sheriff_probabilities_before_role_swap != main_module.build_npc_sheriff_vote_probabilities(
+    sheriff_belief_state,
+    fake_sheriff_voter,
+    list(reversed(sheriff_candidate_ids)),
+):
+    raise SystemExit("sheriff-vote probabilities must be invariant to candidate input order")
+if sheriff_choice_before_role_swap != main_module.choose_npc_sheriff_vote_target(
+    sheriff_belief_state,
+    fake_sheriff_voter,
+    sheriff_candidate_ids,
+):
+    raise SystemExit("the same game id must replay the same sampled sheriff ballot")
+scores_before_role_swap = (
+    main_module.score_npc_sheriff_candidate(
+        sheriff_belief_state,
+        fake_sheriff_voter,
+        fake_sheriff_claimant,
+    ),
+    main_module.score_npc_sheriff_candidate(
+        sheriff_belief_state,
+        fake_sheriff_voter,
+        true_sheriff_claimant,
+    ),
+)
+fake_original_role, fake_original_camp = (
+    fake_sheriff_claimant.role,
+    fake_sheriff_claimant.camp,
+)
+true_original_role, true_original_camp = (
+    true_sheriff_claimant.role,
+    true_sheriff_claimant.camp,
+)
+fake_sheriff_claimant.role, fake_sheriff_claimant.camp = (
+    true_original_role,
+    true_original_camp,
+)
+true_sheriff_claimant.role, true_sheriff_claimant.camp = (
+    fake_original_role,
+    fake_original_camp,
+)
+scores_after_role_swap = (
+    main_module.score_npc_sheriff_candidate(
+        sheriff_belief_state,
+        fake_sheriff_voter,
+        fake_sheriff_claimant,
+    ),
+    main_module.score_npc_sheriff_candidate(
+        sheriff_belief_state,
+        fake_sheriff_voter,
+        true_sheriff_claimant,
+    ),
+)
+sheriff_probabilities_after_role_swap = main_module.build_npc_sheriff_vote_probabilities(
+    sheriff_belief_state,
+    fake_sheriff_voter,
+    sheriff_candidate_ids,
+)
+sheriff_choice_after_role_swap = main_module.choose_npc_sheriff_vote_target(
+    sheriff_belief_state,
+    fake_sheriff_voter,
+    sheriff_candidate_ids,
+)
+fake_sheriff_claimant.role, fake_sheriff_claimant.camp = (
+    fake_original_role,
+    fake_original_camp,
+)
+true_sheriff_claimant.role, true_sheriff_claimant.camp = (
+    true_original_role,
+    true_original_camp,
+)
+if scores_before_role_swap != scores_after_role_swap:
+    raise SystemExit("good sheriff-vote scoring must be invariant to hidden claimant roles")
+if sheriff_probabilities_before_role_swap != sheriff_probabilities_after_role_swap:
+    raise SystemExit("good sheriff-vote probabilities must be invariant to hidden claimant roles")
+if sheriff_choice_before_role_swap != sheriff_choice_after_role_swap:
+    raise SystemExit("good sheriff-vote choice must be invariant to hidden claimant roles")
+
+fake_listener_probabilities = main_module.build_npc_sheriff_vote_probabilities(
+    sheriff_belief_state,
+    fake_sheriff_voter,
+    sheriff_candidate_ids,
+)
+true_listener_probabilities = main_module.build_npc_sheriff_vote_probabilities(
+    sheriff_belief_state,
+    true_sheriff_voter,
+    sheriff_candidate_ids,
+)
+if fake_listener_probabilities[fake_sheriff_claimant.id] <= fake_listener_probabilities[true_sheriff_claimant.id]:
+    raise SystemExit("a good NPC should be more likely to elect a trusted fake seer")
+if true_listener_probabilities[true_sheriff_claimant.id] <= true_listener_probabilities[fake_sheriff_claimant.id]:
+    raise SystemExit("different good NPC beliefs should favor different competing seers")
+
+natural_sheriff_state = make_rule_test_game(
+    [
+        "werewolf", "villager", "seer", "villager", "witch", "werewolf",
+        "hunter", "guard", "villager", "villager", "werewolf", "werewolf",
+    ]
+)
+natural_fake_seer = natural_sheriff_state.characters[0]
+natural_gold_recipient = natural_sheriff_state.characters[1]
+natural_true_seer = natural_sheriff_state.characters[2]
+natural_sheriff_state.speeches = [
+    SpeechState(
+        day=1,
+        character_id=natural_fake_seer.id,
+        name=natural_fake_seer.name,
+        speech="我是预言家，昨晚验了2号梅西，是金水。警徽给我，我会用后续验人和票型负责。",
+        is_player=True,
+        phase="SHERIFF_SPEECH",
+    ),
+    SpeechState(
+        day=1,
+        character_id=natural_true_seer.id,
+        name=natural_true_seer.name,
+        speech="我才是预言家，昨晚验了6号塞尔达，是查杀。警徽给我，后续验人和票型会验证。",
+        is_player=False,
+        phase="SHERIFF_SPEECH",
+    ),
+]
+main_module.register_public_claims(
+    natural_sheriff_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=natural_fake_seer.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="natural_fake",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=natural_fake_seer.id,
+            claim_type="seer_check",
+            claimed_role="seer",
+            target_id=natural_gold_recipient.id,
+            result="good",
+            source="natural_fake",
+        ),
+    ],
+)
+main_module.register_public_claims(
+    natural_sheriff_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=natural_true_seer.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="natural_true",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=natural_true_seer.id,
+            claim_type="seer_check",
+            claimed_role="seer",
+            target_id=6,
+            result="werewolf",
+            source="natural_true",
+        ),
+    ],
+)
+natural_candidate_ids = [natural_fake_seer.id, natural_true_seer.id]
+natural_good_voters = [
+    character
+    for character in natural_sheriff_state.characters
+    if character.camp == "good" and character.id not in natural_candidate_ids
+]
+original_natural_game_id = natural_sheriff_state.game_id
+natural_good_choices = set()
+for seed_index in range(1, 121):
+    natural_sheriff_state.game_id = "natural_sheriff_seed_" + ("x" * seed_index)
+    for voter in natural_good_voters:
+        probabilities = main_module.build_npc_sheriff_vote_probabilities(
+            natural_sheriff_state,
+            voter,
+            natural_candidate_ids,
+        )
+        if abs(sum(probabilities.values()) - 1.0) > 1e-9:
+            raise SystemExit("each good listener's sheriff-vote probabilities must normalize")
+        natural_good_choices.add(
+            main_module.choose_npc_sheriff_vote_target(
+                natural_sheriff_state,
+                voter,
+                natural_candidate_ids,
+            )
+        )
+natural_sheriff_state.game_id = original_natural_game_id
+if not set(natural_candidate_ids).issubset(natural_good_choices):
+    raise SystemExit("across reproducible game ids, both fake and true seers must receive good votes")
+received_gold_adjustment = main_module.get_received_seer_check_sheriff_adjustment(
+    natural_sheriff_state,
+    natural_gold_recipient,
+    natural_fake_seer,
+)
+if received_gold_adjustment <= 0:
+    raise SystemExit("receiving a compatible public gold should create a positive soft personal read")
+natural_gold_recipient.relationships[str(natural_fake_seer.id)]["trust"] = 0.05
+natural_gold_recipient.relationships[str(natural_true_seer.id)]["trust"] = 0.95
+natural_gold_recipient.suspicion[str(natural_fake_seer.id)] = 55
+contrary_gold_probabilities = main_module.build_npc_sheriff_vote_probabilities(
+    natural_sheriff_state,
+    natural_gold_recipient,
+    natural_candidate_ids,
+)
+if contrary_gold_probabilities[natural_true_seer.id] <= contrary_gold_probabilities[natural_fake_seer.id]:
+    raise SystemExit("a received gold must remain a soft influence rather than locking the sheriff vote")
+if contrary_gold_probabilities[natural_fake_seer.id] <= 0.0:
+    raise SystemExit("a received gold should remain a possible soft sheriff-vote influence")
+
+natural_gold_recipient.relationships[str(natural_fake_seer.id)]["trust"] = 0.5
+natural_gold_recipient.relationships[str(natural_true_seer.id)]["trust"] = 0.5
+natural_gold_recipient.suspicion[str(natural_fake_seer.id)] = 0
+natural_scores_before_hidden_swap = (
+    main_module.score_npc_sheriff_candidate(
+        natural_sheriff_state,
+        natural_gold_recipient,
+        natural_fake_seer,
+    ),
+    main_module.score_npc_sheriff_candidate(
+        natural_sheriff_state,
+        natural_gold_recipient,
+        natural_true_seer,
+    ),
+)
+natural_probabilities_before_hidden_swap = main_module.build_npc_sheriff_vote_probabilities(
+    natural_sheriff_state,
+    natural_gold_recipient,
+    natural_candidate_ids,
+)
+natural_fake_role = (natural_fake_seer.role, natural_fake_seer.camp)
+natural_true_role = (natural_true_seer.role, natural_true_seer.camp)
+natural_fake_seer.role, natural_fake_seer.camp = natural_true_role
+natural_true_seer.role, natural_true_seer.camp = natural_fake_role
+natural_scores_after_hidden_swap = (
+    main_module.score_npc_sheriff_candidate(
+        natural_sheriff_state,
+        natural_gold_recipient,
+        natural_fake_seer,
+    ),
+    main_module.score_npc_sheriff_candidate(
+        natural_sheriff_state,
+        natural_gold_recipient,
+        natural_true_seer,
+    ),
+)
+natural_probabilities_after_hidden_swap = main_module.build_npc_sheriff_vote_probabilities(
+    natural_sheriff_state,
+    natural_gold_recipient,
+    natural_candidate_ids,
+)
+natural_fake_seer.role, natural_fake_seer.camp = natural_fake_role
+natural_true_seer.role, natural_true_seer.camp = natural_true_role
+if natural_scores_before_hidden_swap != natural_scores_after_hidden_swap:
+    raise SystemExit("received-check sheriff scoring must not inspect claimant hidden roles")
+if natural_probabilities_before_hidden_swap != natural_probabilities_after_hidden_swap:
+    raise SystemExit("received-check sheriff probabilities must not inspect claimant hidden roles")
+
+natural_sheriff_state.phase = "DAY_MEETING"
+natural_sheriff_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[natural_gold_recipient.id],
+)
+natural_sheriff_state.sheriff_id = natural_true_seer.id
+natural_sheriff_state.sheriff_election = SheriffElectionState(
+    day=1,
+    candidates=natural_candidate_ids,
+    votes=[
+        VoteState(
+            day=1,
+            voter_id=natural_gold_recipient.id,
+            target_id=natural_true_seer.id,
+            reason="NPC 警长票。",
+        )
+    ],
+    completed=True,
+)
+received_signal_before_source_change = [
+    signal.model_dump(mode="json")
+    for signal in main_module.build_public_decision_signals(natural_sheriff_state)
+    if signal.kind == "seer_check_claim"
+    and signal.actor_id == natural_fake_seer.id
+    and signal.target_id == natural_gold_recipient.id
+]
+if len(received_signal_before_source_change) != 1:
+    raise SystemExit("a received gold should become one public decision signal")
+if "source" in received_signal_before_source_change[0]:
+    raise SystemExit("received-check signals must not expose internal claim source")
+next(
+    claim
+    for claim in natural_sheriff_state.public_claims
+    if claim.character_id == natural_fake_seer.id
+    and claim.claim_type == "seer_check"
+).source = "hidden_truth_changed"
+received_signal_after_source_change = [
+    signal.model_dump(mode="json")
+    for signal in main_module.build_public_decision_signals(natural_sheriff_state)
+    if signal.kind == "seer_check_claim"
+    and signal.actor_id == natural_fake_seer.id
+    and signal.target_id == natural_gold_recipient.id
+]
+if received_signal_before_source_change != received_signal_after_source_change:
+    raise SystemExit("received-check signal projection must ignore hidden claim source")
+
+received_gold_context = main_module.build_public_speech_decision_context(
+    natural_sheriff_state,
+    natural_gold_recipient,
+    [],
+    [],
+)
+required_received_signals = main_module.get_required_received_seer_check_signals(
+    received_gold_context
+)
+if [signal.id for signal in required_received_signals] != [
+    received_signal_before_source_change[0]["id"]
+]:
+    raise SystemExit("the actor-scoped context should mark its received gold as required")
+unanswered_plan = main_module.build_public_speech_fallback_decision(
+    received_gold_context,
+    natural_true_seer,
+    "",
+)
+if not main_module.validate_received_seer_check_response_plan(
+    received_gold_context,
+    unanswered_plan,
+):
+    raise SystemExit("a structured plan must not silently ignore a received check")
+answered_plan = main_module.enforce_received_seer_check_response_plan(
+    natural_sheriff_state,
+    natural_gold_recipient,
+    received_gold_context,
+    unanswered_plan,
+)
+answered_plan_errors = main_module.validate_public_speech_plan(
+    received_gold_context,
+    answered_plan,
+)
+answered_plan_errors.extend(
+    main_module.validate_received_seer_check_response_plan(
+        received_gold_context,
+        answered_plan,
+    )
+)
+if answered_plan_errors:
+    raise SystemExit(
+        "the rule response to a received gold should be a legal plan: "
+        + "; ".join(answered_plan_errors)
+    )
+
+received_gold_speech = generate_npc_speech(
+    NpcSpeechRequest(
+        game_id=natural_sheriff_state.game_id,
+        character_id=natural_gold_recipient.id,
+    )
+).speech.speech
+received_gold_plan = natural_sheriff_state.speeches[-1].decision_plan
+if (
+    "给我发了金水" not in received_gold_speech
+    or "我的警长票投给了" not in received_gold_speech
+):
+    raise SystemExit("a gold recipient must mention the claim and explain an opposite sheriff vote")
+if not any(
+    signal_id.startswith("signal:seer_check_claim:1:1:2:good")
+    for signal_id in received_gold_plan.get("signal_ids", [])
+):
+    raise SystemExit("the accepted day plan must retain the received-gold signal")
+
+received_black_state = make_rule_test_game(
+    [
+        "werewolf", "villager", "seer", "villager", "witch", "werewolf",
+        "hunter", "guard", "villager", "villager", "werewolf", "werewolf",
+    ]
+)
+received_black_source = received_black_state.characters[0]
+received_black_target = received_black_state.characters[1]
+main_module.register_public_claims(
+    received_black_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=received_black_source.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="fake_black",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=received_black_source.id,
+            claim_type="seer_check",
+            claimed_role="seer",
+            target_id=received_black_target.id,
+            result="werewolf",
+            source="fake_black",
+        ),
+    ],
+)
+received_black_state.phase = "DAY_MEETING"
+received_black_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[received_black_target.id],
+)
+received_black_speech = generate_npc_speech(
+    NpcSpeechRequest(
+        game_id=received_black_state.game_id,
+        character_id=received_black_target.id,
+    )
+).speech.speech
+received_black_plan = received_black_state.speeches[-1].decision_plan
+if "给我发了查杀" not in received_black_speech:
+    raise SystemExit("a black-check recipient must address the public check")
+if (
+    received_black_plan.get("primary_target_id") != received_black_source.id
+    or received_black_plan.get("stance") != "oppose"
+):
+    raise SystemExit("a black-check recipient must publicly challenge its source")
+
+fake_checks_true_state = make_rule_test_game(
+    [
+        "villager", "werewolf", "seer", "villager", "villager",
+        "witch", "hunter", "guard", "villager", "villager",
+        "werewolf", "werewolf",
+    ]
+)
+meeting_fake_seer = fake_checks_true_state.characters[1]
+meeting_true_seer = fake_checks_true_state.characters[2]
+deceived_meeting_voter = fake_checks_true_state.characters[9]
+deceived_meeting_voter.relationships[str(meeting_fake_seer.id)]["trust"] = 0.94
+deceived_meeting_voter.relationships[str(meeting_true_seer.id)]["trust"] = 0.12
+main_module.register_public_claims(
+    fake_checks_true_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=meeting_fake_seer.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="fake_checks_true",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=meeting_fake_seer.id,
+            claim_type="seer_check",
+            claimed_role="seer",
+            target_id=meeting_true_seer.id,
+            result="werewolf",
+            source="fake_checks_true",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=meeting_true_seer.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="true_seer_counterclaim",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=meeting_true_seer.id,
+            claim_type="seer_check",
+            claimed_role="seer",
+            target_id=5,
+            result="good",
+            source="true_seer_counterclaim",
+        ),
+    ],
+)
+meeting_choice_before_role_swap = main_module.choose_npc_vote_target(
+    fake_checks_true_state,
+    deceived_meeting_voter,
+)
+meeting_probabilities_before_role_swap = main_module.build_npc_exile_vote_probabilities(
+    fake_checks_true_state,
+    deceived_meeting_voter,
+)
+if abs(sum(meeting_probabilities_before_role_swap.values()) - 1.0) > 1e-9:
+    raise SystemExit("good exile-vote probabilities must normalize to one")
+if meeting_choice_before_role_swap != main_module.choose_npc_vote_target(
+    fake_checks_true_state,
+    deceived_meeting_voter,
+):
+    raise SystemExit("the same game id must replay the same sampled good exile ballot")
+meeting_scores_before_role_swap = (
+    main_module.score_npc_vote_candidate(
+        fake_checks_true_state,
+        deceived_meeting_voter,
+        meeting_fake_seer,
+    ),
+    main_module.score_npc_vote_candidate(
+        fake_checks_true_state,
+        deceived_meeting_voter,
+        meeting_true_seer,
+    ),
+)
+meeting_fake_original_role, meeting_fake_original_camp = (
+    meeting_fake_seer.role,
+    meeting_fake_seer.camp,
+)
+meeting_true_original_role, meeting_true_original_camp = (
+    meeting_true_seer.role,
+    meeting_true_seer.camp,
+)
+meeting_fake_seer.role, meeting_fake_seer.camp = (
+    meeting_true_original_role,
+    meeting_true_original_camp,
+)
+meeting_true_seer.role, meeting_true_seer.camp = (
+    meeting_fake_original_role,
+    meeting_fake_original_camp,
+)
+meeting_scores_after_role_swap = (
+    main_module.score_npc_vote_candidate(
+        fake_checks_true_state,
+        deceived_meeting_voter,
+        meeting_fake_seer,
+    ),
+    main_module.score_npc_vote_candidate(
+        fake_checks_true_state,
+        deceived_meeting_voter,
+        meeting_true_seer,
+    ),
+)
+meeting_probabilities_after_role_swap = main_module.build_npc_exile_vote_probabilities(
+    fake_checks_true_state,
+    deceived_meeting_voter,
+)
+meeting_choice_after_role_swap = main_module.choose_npc_vote_target(
+    fake_checks_true_state,
+    deceived_meeting_voter,
+)
+meeting_fake_seer.role, meeting_fake_seer.camp = (
+    meeting_fake_original_role,
+    meeting_fake_original_camp,
+)
+meeting_true_seer.role, meeting_true_seer.camp = (
+    meeting_true_original_role,
+    meeting_true_original_camp,
+)
+if meeting_scores_before_role_swap != meeting_scores_after_role_swap:
+    raise SystemExit("good exile-vote scoring must be invariant to hidden candidate roles")
+if meeting_probabilities_before_role_swap != meeting_probabilities_after_role_swap:
+    raise SystemExit("good exile-vote probabilities must be invariant to hidden candidate roles")
+if meeting_choice_before_role_swap != meeting_choice_after_role_swap:
+    raise SystemExit("good exile-vote choice must be invariant to hidden candidate roles")
+
+black_check_bonus_before_role_change = main_module.get_public_black_check_vote_bonus(
+    fake_checks_true_state,
+    deceived_meeting_voter,
+    meeting_true_seer,
+)
+meeting_fake_original_role, meeting_fake_original_camp = (
+    meeting_fake_seer.role,
+    meeting_fake_seer.camp,
+)
+meeting_fake_seer.role, meeting_fake_seer.camp = "villager", "good"
+black_check_bonus_after_role_change = main_module.get_public_black_check_vote_bonus(
+    fake_checks_true_state,
+    deceived_meeting_voter,
+    meeting_true_seer,
+)
+meeting_fake_seer.role, meeting_fake_seer.camp = (
+    meeting_fake_original_role,
+    meeting_fake_original_camp,
+)
+if black_check_bonus_before_role_change != black_check_bonus_after_role_change:
+    raise SystemExit("public black-check persuasion must not inspect the claimant's hidden role")
+deceived_meeting_probabilities = main_module.build_npc_exile_vote_probabilities(
+    fake_checks_true_state,
+    deceived_meeting_voter,
+)
+if (
+    deceived_meeting_probabilities[meeting_true_seer.id]
+    <= deceived_meeting_probabilities[meeting_fake_seer.id]
+):
+    raise SystemExit("a trusted fake seer's public black check should raise pressure on the true seer")
+if deceived_meeting_probabilities[meeting_fake_seer.id] <= 0.0:
+    raise SystemExit("competing public seers must remain probabilistic rather than hidden-role locked")
+original_fake_checks_game_id = fake_checks_true_state.game_id
+deceived_seed_choices = set()
+for seed_index in range(1, 161):
+    fake_checks_true_state.game_id = "fake_checks_true_seed_" + ("x" * seed_index)
+    deceived_seed_choices.add(
+        main_module.choose_npc_vote_target(
+            fake_checks_true_state,
+            deceived_meeting_voter,
+        )
+    )
+fake_checks_true_state.game_id = original_fake_checks_game_id
+if meeting_true_seer.id not in deceived_seed_choices:
+    raise SystemExit("a good NPC must sometimes believe a fake seer and vote out the true seer")
+deceived_true_seer_reason = main_module.build_npc_vote_reason(
+    fake_checks_true_state,
+    deceived_meeting_voter,
+    meeting_true_seer,
+    None,
+)
+if "公开验人" not in deceived_true_seer_reason or "暂时采信" not in deceived_true_seer_reason:
+    raise SystemExit("a wrong vote on the true seer must cite only public information")
+
+plan_vote_state = make_rule_test_game(
+    [
+        "villager", "villager", "villager", "werewolf", "seer",
+        "witch", "hunter", "guard", "villager", "villager",
+        "werewolf", "werewolf",
+    ]
+)
+plan_voter = plan_vote_state.characters[1]
+planned_vote_target = plan_vote_state.characters[2]
+new_evidence_target = plan_vote_state.characters[3]
+plan_voter.strategy_tuning = main_module.resolve_current_npc_tuning(
+    plan_voter.name,
+    plan_voter.camp,
+    plan_voter.role,
+).model_dump(mode="json")
+plan_vote_state.speeches = [
+    SpeechState(
+        day=1,
+        character_id=plan_voter.id,
+        name=plan_voter.name,
+        speech=f"我暂定投{planned_vote_target.id}号。",
+        is_player=False,
+        phase="DAY_MEETING",
+        focus_target_id=planned_vote_target.id,
+        public_position=PublicPositionV1(
+            speaker_id=plan_voter.id,
+            day=1,
+            phase="DAY_MEETING",
+            suspected_target_ids=[planned_vote_target.id],
+            provisional_vote_target_id=planned_vote_target.id,
+            confidence=92,
+        ),
+    ),
+]
+planned_vote_probabilities = main_module.build_npc_exile_vote_probabilities(
+    plan_vote_state,
+    plan_voter,
+)
+if max(planned_vote_probabilities, key=planned_vote_probabilities.get) != planned_vote_target.id:
+    raise SystemExit("a same-day public position should be the strongest later-vote influence")
+planned_reason = main_module.build_npc_vote_reason(
+    plan_vote_state,
+    plan_voter,
+    planned_vote_target,
+    None,
+)
+if "发言时暂定" not in planned_reason or "不足以推翻" not in planned_reason:
+    raise SystemExit("a position-consistent vote should explain its decision continuity")
+plan_voter.suspicion[str(new_evidence_target.id)] = 100
+new_evidence_probabilities = main_module.build_npc_exile_vote_probabilities(
+    plan_vote_state,
+    plan_voter,
+)
+if max(new_evidence_probabilities, key=new_evidence_probabilities.get) != new_evidence_target.id:
+    raise SystemExit("strong new legal evidence must outweigh a provisional public position")
+
+selected_plan_state = make_rule_test_game(
+    [
+        "villager", "werewolf", "werewolf", "villager",
+        "werewolf", "werewolf", "seer",
+    ]
+)
+selected_plan_speaker = selected_plan_state.characters[1]
+low_pressure_teammate = selected_plan_state.characters[2]
+selected_plan_target = selected_plan_state.characters[3]
+if (
+    main_module.get_public_suspicion_score(
+        selected_plan_state,
+        low_pressure_teammate.id,
+    ) != 0
+    or low_pressure_teammate.id in {
+        target.id
+        for target in main_module.get_legal_public_speech_targets(
+            selected_plan_state,
+            selected_plan_speaker,
+        )
+    }
+):
+    raise SystemExit("selected-plan regression requires a hidden low-pressure wolf teammate")
+selected_plan_rule_text = "我会追问4号周深的矛盾。"
+secondary_character_reference = main_module.validate_llm_rewrite(
+    LLMGeneration(
+        text="我会追问4号周深的矛盾，3号C罗也必须解释。",
+        used_llm=True,
+        provider="stub",
+        model="stub",
+    ),
+    selected_plan_rule_text,
+    selected_plan_state,
+    speaker=selected_plan_speaker,
+    required_target=selected_plan_target,
+    public_text=True,
+    required_intent="pressure",
+)
+if not secondary_character_reference.used_llm:
+    raise SystemExit(
+        "public rewrite should allow public seat references while preserving the selected target"
+    )
+
+low_information_signal = main_module.DecisionSignalV1(
+    id="signal:low_information:1:DAY_MEETING:4",
+    kind="low_information_speech",
+    category="assessment",
+    day=1,
+    phase="DAY_MEETING",
+    actor_id=selected_plan_target.id,
+    summary="第1天，4号周深的发言没有给出具体目标或立场。",
+)
+empty_pass_rewrite = main_module.validate_llm_rewrite(
+    LLMGeneration(
+        text="4号周深，我没什么信息，先过吧。",
+        used_llm=True,
+        provider="stub",
+        model="stub",
+    ),
+    "4号周深上一轮发言信息量偏低，我会继续核对他的站边和票型。",
+    selected_plan_state,
+    speaker=selected_plan_speaker,
+    required_target=selected_plan_target,
+    public_text=True,
+    required_intent="observe",
+    required_signals=[low_information_signal],
+)
+if (
+    empty_pass_rewrite.used_llm
+    or "empty pass" not in empty_pass_rewrite.fallback_reason
+):
+    raise SystemExit("a short no-information pass should fail public-expression validation")
+
+grounded_signal_rewrite = main_module.validate_llm_rewrite(
+    LLMGeneration(
+        text="4号周深刚才只复述别人，没有形成自己的判断；请明确站边，我会结合你后续票型判断。",
+        used_llm=True,
+        provider="stub",
+        model="stub",
+    ),
+    "4号周深上一轮发言信息量偏低，我会继续核对他的站边和票型。",
+    selected_plan_state,
+    speaker=selected_plan_speaker,
+    required_target=selected_plan_target,
+    public_text=True,
+    required_intent="observe",
+    required_signals=[low_information_signal],
+)
+if not grounded_signal_rewrite.used_llm:
+    raise SystemExit("a natural synonym grounded in the selected public signal should pass")
+
+action_actor = selected_plan_state.characters[3]
+action_target = selected_plan_state.characters[6]
+action_actor_name = main_module.format_full_character_name(action_actor)
+action_target_name = main_module.format_full_character_name(action_target)
+
+def validate_action_signal_text(signal, text, required_target):
+    return main_module.validate_llm_rewrite(
+        LLMGeneration(
+            text=text,
+            used_llm=True,
+            provider="stub",
+            model="stub",
+        ),
+        signal.summary + "我会继续核对相关解释和后续票型。",
+        selected_plan_state,
+        speaker=selected_plan_speaker,
+        required_target=required_target,
+        public_text=True,
+        required_intent="observe",
+        required_signals=[signal],
+    )
+
+sheriff_vote_signal = main_module.DecisionSignalV1(
+    id="signal:sheriff_vote:1:4:7",
+    kind="sheriff_vote",
+    category="fact",
+    day=1,
+    phase="SHERIFF_VOTE",
+    actor_id=action_actor.id,
+    target_id=action_target.id,
+    summary=f"第1天警长投票中，{action_actor_name}投给{action_target_name}。",
+)
+correct_vote_rewrite = validate_action_signal_text(
+    sheriff_vote_signal,
+    f"{action_actor_name}支持{action_target_name}竞选警长，我会继续看这组警长票关系。",
+    action_target,
+)
+if not correct_vote_rewrite.used_llm:
+    raise SystemExit("a natural actor-to-target sheriff vote should pass")
+generic_process_support = validate_action_signal_text(
+    sheriff_vote_signal,
+    f"{action_actor_name}支持警长投票这套流程，{action_target_name}需要解释自己的发言。",
+    action_target,
+)
+if generic_process_support.used_llm:
+    raise SystemExit("supporting the voting process must not be mistaken for voting for the next speaker")
+passive_vote_rewrite = validate_action_signal_text(
+    sheriff_vote_signal,
+    f"{action_target_name}收到{action_actor_name}投来的警长票，我会继续看这组关系。",
+    action_target,
+)
+if not passive_vote_rewrite.used_llm:
+    raise SystemExit("an unambiguous passive sheriff-vote sentence should pass")
+for reversed_vote_text in [
+    f"{action_target_name}把警长票投给{action_actor_name}，我会继续观察。",
+    f"{action_actor_name}收到{action_target_name}投给他的警长票，我会继续观察。",
+]:
+    reversed_vote_rewrite = validate_action_signal_text(
+        sheriff_vote_signal,
+        reversed_vote_text,
+        action_target,
+    )
+    if reversed_vote_rewrite.used_llm:
+        raise SystemExit("a reversed sheriff-vote actor and target must be rejected")
+
+badge_transfer_signal = main_module.DecisionSignalV1(
+    id="signal:badge_transfer:1:4:7",
+    kind="badge_transfer",
+    category="fact",
+    day=1,
+    phase="BADGE_TRANSFER",
+    actor_id=action_actor.id,
+    target_id=action_target.id,
+    summary=f"第1天，{action_actor_name}将警徽移交给{action_target_name}。",
+)
+natural_badge_rewrite = validate_action_signal_text(
+    badge_transfer_signal,
+    f"{action_actor_name}把徽章递给{action_target_name}，这次选择值得继续验证。",
+    action_target,
+)
+if not natural_badge_rewrite.used_llm:
+    raise SystemExit("a natural badge-transfer synonym should pass")
+reversed_badge_rewrite = validate_action_signal_text(
+    badge_transfer_signal,
+    f"{action_target_name}把警徽交给{action_actor_name}，这次选择值得继续验证。",
+    action_target,
+)
+if reversed_badge_rewrite.used_llm:
+    raise SystemExit("a reversed badge transfer must be rejected")
+
+night_elimination_action_signal = main_module.DecisionSignalV1(
+    id="signal:public_elimination:1:4",
+    kind="public_elimination",
+    category="fact",
+    day=1,
+    phase="NIGHT_RESULT",
+    actor_id=action_actor.id,
+    summary=f"第1天，{action_actor_name}在夜间结果公布时出局。",
+)
+correct_night_elimination = validate_action_signal_text(
+    night_elimination_action_signal,
+    f"{action_actor_name}昨夜出局，这个公开结果会影响我今天的判断。",
+    action_actor,
+)
+if not correct_night_elimination.used_llm:
+    raise SystemExit("a public night-elimination synonym should pass")
+generic_elimination_rewrite = validate_action_signal_text(
+    night_elimination_action_signal,
+    f"{action_actor_name}已经倒牌，这个公开结果会影响我今天的判断。",
+    action_actor,
+)
+if not generic_elimination_rewrite.used_llm:
+    raise SystemExit("an expression may omit a public elimination source without changing it")
+wrong_elimination_source = validate_action_signal_text(
+    night_elimination_action_signal,
+    f"{action_actor_name}白天被放逐出局，这个结果会影响我今天的判断。",
+    action_actor,
+)
+if wrong_elimination_source.used_llm:
+    raise SystemExit("a night result must not be rewritten as a daytime exile")
+
+elected_action_signal = main_module.DecisionSignalV1(
+    id="signal:sheriff_elected:1:4",
+    kind="sheriff_elected",
+    category="fact",
+    day=1,
+    phase="SHERIFF_RESULT",
+    actor_id=action_actor.id,
+    summary=f"第1天，{action_actor_name}当选警长。",
+)
+sheriff_candidate_only = validate_action_signal_text(
+    elected_action_signal,
+    f"{action_actor_name}是警长候选人，{action_target_name}需要解释自己的票型。",
+    action_actor,
+)
+if sheriff_candidate_only.used_llm:
+    raise SystemExit("being a sheriff candidate must not be mistaken for winning the badge")
+unselected_action_rewrite = validate_action_signal_text(
+    elected_action_signal,
+    f"{action_actor_name}戴上了警徽，但2号梅西随后退水，我会继续观察。",
+    action_actor,
+)
+if (
+    unselected_action_rewrite.used_llm
+    or "public action absent from authoritative public state"
+    not in unselected_action_rewrite.fallback_reason
+):
+    raise SystemExit("an expression must not invent an unsupported public action")
+
+authoritative_action_state = selected_plan_state.model_copy(deep=True)
+authoritative_withdrawer = authoritative_action_state.characters[4]
+authoritative_action_actor = authoritative_action_state.characters[3]
+authoritative_action_target = authoritative_action_state.characters[6]
+authoritative_action_state.sheriff_election = SheriffElectionState(
+    day=1,
+    candidates=[authoritative_action_actor.id, authoritative_withdrawer.id],
+    withdrawn=[authoritative_withdrawer.id],
+    completed=True,
+)
+authoritative_action_state.sheriff_events = [
+    SheriffEventState(
+        day=1,
+        event_type="elected",
+        actor_id=authoritative_action_actor.id,
+        detail="规则状态确认其当选警长。",
+    )
+]
+authoritative_action_rewrite = main_module.validate_llm_rewrite(
+    LLMGeneration(
+        text=(
+            f"{main_module.format_full_character_name(authoritative_action_actor)}戴上了警徽，"
+            f"{main_module.format_full_character_name(authoritative_withdrawer)}此前退水，"
+            "我会把这两项公开动作放在一起看。"
+        ),
+        used_llm=True,
+        provider="stub",
+        model="stub",
+    ),
+    elected_action_signal.summary + "我会继续核对公开动作。",
+    authoritative_action_state,
+    speaker=authoritative_action_state.characters[1],
+    required_target=authoritative_action_actor,
+    public_text=True,
+    required_intent="observe",
+    required_signals=[elected_action_signal],
+)
+if not authoritative_action_rewrite.used_llm:
+    raise SystemExit(
+        "selected signals should be a required lower bound, not exclude other authoritative actions: "
+        + authoritative_action_rewrite.fallback_reason
+    )
+
+withdraw_action_signal = main_module.DecisionSignalV1(
+    id="signal:sheriff_withdraw:1:4",
+    kind="sheriff_withdraw",
+    category="fact",
+    day=1,
+    phase="SHERIFF_WITHDRAWAL",
+    actor_id=action_actor.id,
+    summary=f"第1天，{action_actor_name}在警长竞选中退水。",
+)
+speculative_motive_rewrite = validate_action_signal_text(
+    withdraw_action_signal,
+    f"{action_actor_name}已经退水，我认为{action_actor_name}可能是狼，先放进压力位继续验证。",
+    action_actor,
+)
+if not speculative_motive_rewrite.used_llm:
+    raise SystemExit("an NPC may make a possibly wrong inference from an accurate public action")
+concrete_pass_wording = validate_action_signal_text(
+    withdraw_action_signal,
+    f"信息不多，但{action_actor_name}退水没有解释，我怀疑他在避嫌，这个点先过吧。",
+    action_actor,
+)
+if not concrete_pass_wording.used_llm:
+    raise SystemExit("the word pass should not reject a speech that has an action, target, and judgment")
+
+quoted_action_text = (
+    f"{action_actor_name}自称预言家，验了{action_target_name}是金水，并上警竞选。"
+)
+quoted_action_facts = main_module.extract_public_action_assertions(
+    quoted_action_text,
+    selected_plan_state,
+)
+if ("sheriff_signup", action_target.id, 0) in quoted_action_facts:
+    raise SystemExit("an action after a quoted check must not be assigned to the checked target")
+
+seer_role_claim = main_module.PublicClaimState(
+    day=1,
+    character_id=selected_plan_speaker.id,
+    claim_type="role",
+    claimed_role="seer",
+    source="validation_false_positive_smoke",
+)
+seer_good_claim = main_module.PublicClaimState(
+    day=1,
+    character_id=selected_plan_speaker.id,
+    claim_type="seer_check",
+    claimed_role="seer",
+    target_id=action_target.id,
+    result="good",
+    source="validation_false_positive_smoke",
+)
+claim_with_short_ending = (
+    f"我是预言家，昨晚验了{action_target_name}，金水。先看行动，话够了，看票。"
+)
+claim_with_short_ending_rewrite = main_module.validate_llm_rewrite(
+    LLMGeneration(
+        text=claim_with_short_ending,
+        used_llm=True,
+        provider="stub",
+        model="stub",
+    ),
+    claim_with_short_ending,
+    selected_plan_state,
+    speaker=selected_plan_speaker,
+    required_target=action_target,
+    required_claims=[seer_role_claim, seer_good_claim],
+    public_text=True,
+)
+if not claim_with_short_ending_rewrite.used_llm:
+    raise SystemExit("a complete role and check claim must not be rejected for a concise ending")
+
+seer_wolf_claim = seer_good_claim.model_copy(update={"result": "werewolf"})
+shorthand_check_text = f"我起跳预言家，{action_target_name}，查杀。"
+shorthand_check_rewrite = main_module.validate_llm_rewrite(
+    LLMGeneration(
+        text=shorthand_check_text,
+        used_llm=True,
+        provider="stub",
+        model="stub",
+    ),
+    shorthand_check_text,
+    selected_plan_state,
+    speaker=selected_plan_speaker,
+    required_target=action_target,
+    required_claims=[seer_role_claim, seer_wolf_claim],
+    public_text=True,
+)
+if not shorthand_check_rewrite.used_llm:
+    raise SystemExit("the natural seer shorthand target-comma-check result should pass")
+
+villager_role_text = "你既认出了我，我便直说：此局我拿的是村民牌。"
+villager_role_rewrite = main_module.validate_llm_rewrite(
+    LLMGeneration(
+        text=villager_role_text,
+        used_llm=True,
+        provider="stub",
+        model="stub",
+    ),
+    villager_role_text,
+    selected_plan_state,
+    speaker=action_actor,
+    required_self_role="villager",
+)
+if not villager_role_rewrite.used_llm:
+    raise SystemExit("the natural self-role phrase '我拿的是村民牌' should pass")
+
+quoted_claimant = selected_plan_state.characters[4]
+quoted_target = selected_plan_state.characters[1]
+quoted_check_text = (
+    f"{main_module.format_full_character_name(quoted_claimant)}起跳预言家，"
+    f"给{main_module.format_full_character_name(quoted_target)}发金水；"
+    f"但我的查验是{action_target_name}为好人。"
+)
+quoted_checks = main_module.extract_seer_check_assertions(
+    quoted_check_text,
+    selected_plan_state,
+    selected_plan_state.characters[11],
+)
+if any(
+    claimant_id == selected_plan_state.characters[11].id
+    and target_id == quoted_target.id
+    for claimant_id, target_id, _result in quoted_checks
+):
+    raise SystemExit("an omitted subject in a quoted gold claim must not default to the current speaker")
+
+explicit_quote_text = (
+    f"{main_module.format_full_character_name(quoted_claimant)}给"
+    f"{main_module.format_full_character_name(action_target)}金水。"
+)
+explicit_quote_checks = main_module.extract_seer_check_assertions(
+    explicit_quote_text,
+    selected_plan_state,
+    selected_plan_speaker,
+)
+if (quoted_claimant.id, action_target.id, "good") not in explicit_quote_checks:
+    raise SystemExit("an explicitly attributed public gold claim should retain its real claimant")
 
 unsafe_role_rewrite = main_module.validate_llm_rewrite(
     LLMGeneration(text="我是女巫，今晚有完整信息。", used_llm=True, provider="stub", model="stub"),
@@ -1690,8 +6481,8 @@ unsafe_team_rewrite = main_module.validate_llm_rewrite(
     "我会继续观察C罗。",
     wolf_team_state,
 )
-if unsafe_team_rewrite.used_llm or "wolf-team" not in unsafe_team_rewrite.fallback_reason:
-    raise SystemExit("LLM validator should reject hidden wolf-team disclosure")
+if not unsafe_team_rewrite.used_llm:
+    raise SystemExit("generic teammate wording should not be treated as a wolf-team disclosure")
 
 semantic_validation_state = make_rule_test_game(
     ["villager", "villager", "werewolf", "villager", "seer", "witch", "hunter"]
@@ -1724,7 +6515,7 @@ semantic_rule_text = main_module.build_public_claim_speech(
 real_deepseek_good_rewrite = main_module.validate_llm_rewrite(
     LLMGeneration(
         text=(
-            "1号的发言很谨慎，说等预言家。那我就不绕了，我是预言家，"
+            "那我就不绕了，我是预言家，"
             "昨晚验了3号C罗，他是好人。我会竞选警长，后续用发言和票型来印证这个信息。"
         ),
         used_llm=True,
@@ -1833,6 +6624,9 @@ attributed_rule_text = main_module.build_public_claim_speech(
     attributed_speaker,
     attributed_claims,
 )
+attributed_rule_text = (
+    "5号起跳给8号金水，3号也接了话。" + attributed_rule_text
+)
 real_attribution_rewrite = main_module.validate_llm_rewrite(
     LLMGeneration(
         text=(
@@ -1909,6 +6703,271 @@ unsupported_power_identity = main_module.validate_llm_rewrite(
 )
 if unsupported_power_identity.used_llm or "unsupported character identity" not in unsupported_power_identity.fallback_reason:
     raise SystemExit("semantic validator should reject an unapproved categorical power-role identity")
+
+camp_rule_text = "我会继续观察4号周深。"
+for allowed_public_camp_text in [
+    "我会观察4号周深，但4号周深就是狼牌。",
+    "我会观察4号周深，但4号周深确定属于好人阵营。",
+    "我是好人，但4号周深必须解释站边，我会继续观察。",
+    "我们是好人阵营，4号周深仍需要解释。",
+]:
+    allowed_public_camp_assertion = main_module.validate_llm_rewrite(
+        LLMGeneration(
+            text=allowed_public_camp_text,
+            used_llm=True,
+            provider="stub",
+            model="stub",
+        ),
+        camp_rule_text,
+        semantic_validation_state,
+        speaker=semantic_speaker,
+        required_target=fake_target,
+        public_text=True,
+    )
+    if not allowed_public_camp_assertion.used_llm:
+        raise SystemExit(
+            "public camp reads and first-person good claims should remain fallible opinions: "
+            + allowed_public_camp_assertion.fallback_reason
+        )
+
+for unsupported_self_wolf_text in [
+    "我是狼，但我会继续观察4号周深。",
+    "我是狼人，但我会继续观察4号周深。",
+    "我是一张狼牌，但我会继续观察4号周深。",
+    "我属于狼人阵营，但我会继续观察4号周深。",
+]:
+    unsupported_camp_assertion = main_module.validate_llm_rewrite(
+        LLMGeneration(
+            text=unsupported_self_wolf_text,
+            used_llm=True,
+            provider="stub",
+            model="stub",
+        ),
+        camp_rule_text,
+        semantic_validation_state,
+        speaker=semantic_speaker,
+        required_target=fake_target,
+        public_text=True,
+    )
+    if (
+        unsupported_camp_assertion.used_llm
+        or unsupported_camp_assertion.text != camp_rule_text
+        or "unsupported camp assertion" not in unsupported_camp_assertion.fallback_reason
+    ):
+        raise SystemExit("validator should reject an unauthorized first-person wolf disclosure")
+
+for non_assertive_camp_text in [
+    "4号周深，你凭什么认定我是狼？先回答我的问题。",
+    "4号周深，你凭什么认定我是狼人？先回答我的问题。",
+    "4号周深刚才说我是狼，我不同意这个结论。",
+    "我不是狼，4号周深的判断没有依据。",
+    "如果我是狼，4号周深的逻辑也不能因此成立。",
+    "我如果是狼，4号周深的逻辑也不能因此成立。",
+]:
+    non_assertive_camp_rewrite = main_module.validate_llm_rewrite(
+        LLMGeneration(
+            text=non_assertive_camp_text,
+            used_llm=True,
+            provider="stub",
+            model="stub",
+        ),
+        "我会追问4号周深的说法。",
+        semantic_validation_state,
+        speaker=semantic_speaker,
+        required_target=fake_target,
+        public_text=True,
+        required_intent="pressure",
+    )
+    if not non_assertive_camp_rewrite.used_llm:
+        raise SystemExit(
+            "validator should allow challenged, quoted, negated, or hypothetical camp wording: "
+            + non_assertive_camp_rewrite.fallback_reason
+        )
+
+parallel_attribution_rewrite = main_module.validate_llm_rewrite(
+    LLMGeneration(
+        text="4号周深刚才说5号刘亦菲是狼，7号贝多芬也是狼；我会追问4号这套判断的依据。",
+        used_llm=True,
+        provider="stub",
+        model="stub",
+    ),
+    "我会追问4号周深的说法。",
+    semantic_validation_state,
+    speaker=semantic_speaker,
+    required_target=fake_target,
+    public_text=True,
+    required_intent="pressure",
+)
+if not parallel_attribution_rewrite.used_llm:
+    raise SystemExit(
+        "a parallel quoted camp claim must not become the current speaker's assertion: "
+        + parallel_attribution_rewrite.fallback_reason
+    )
+
+public_claim_rewrite_state = semantic_validation_state.model_copy(deep=True)
+public_claimant = public_claim_rewrite_state.characters[3]
+public_check_target = public_claim_rewrite_state.characters[6]
+public_claim_rewrite_state.public_claims.extend(
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=public_claimant.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="public_claim_rewrite_smoke",
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=public_claimant.id,
+            claim_type="seer_check",
+            claimed_role="seer",
+            target_id=public_check_target.id,
+            result="werewolf",
+            source="public_claim_rewrite_smoke",
+        ),
+    ]
+)
+registered_public_claim_rewrite = main_module.validate_llm_rewrite(
+    LLMGeneration(
+        text=(
+            f"{main_module.format_full_character_name(public_claimant)}自称预言家，"
+            f"验了{main_module.format_full_character_name(public_check_target)}是狼人；"
+            f"我会继续核对{main_module.format_full_character_name(public_claimant)}的逻辑。"
+        ),
+        used_llm=True,
+        provider="stub",
+        model="stub",
+    ),
+    f"我会继续核对{main_module.format_full_character_name(public_claimant)}的公开声明。",
+    public_claim_rewrite_state,
+    speaker=public_claim_rewrite_state.characters[1],
+    required_target=public_claimant,
+    public_text=True,
+    required_intent="observe",
+)
+if not registered_public_claim_rewrite.used_llm:
+    raise SystemExit(
+        "an already registered public role and check may be accurately restated: "
+        + registered_public_claim_rewrite.fallback_reason
+    )
+
+wolf_team_variant = main_module.validate_llm_rewrite(
+    LLMGeneration(
+        text="我们狼队今天先观察4号周深。",
+        used_llm=True,
+        provider="stub",
+        model="stub",
+    ),
+    camp_rule_text,
+    semantic_validation_state,
+    speaker=semantic_speaker,
+    required_target=fake_target,
+    public_text=True,
+)
+if wolf_team_variant.used_llm or "hidden wolf-team information" not in wolf_team_variant.fallback_reason:
+    raise SystemExit("semantic validator should reject first-person wolf-team variants")
+
+direct_wolf_teammate = main_module.validate_llm_rewrite(
+    LLMGeneration(
+        text="3号C罗是我的狼队友，我会继续观察4号周深。",
+        used_llm=True,
+        provider="stub",
+        model="stub",
+    ),
+    camp_rule_text,
+    semantic_validation_state,
+    speaker=semantic_speaker,
+    required_target=fake_target,
+    public_text=True,
+)
+if (
+    direct_wolf_teammate.used_llm
+    or "hidden wolf-team information" not in direct_wolf_teammate.fallback_reason
+):
+    raise SystemExit("a direct first-person wolf-teammate disclosure must still fail")
+
+for public_team_read in [
+    "如果9号喜羊羊是狼，3号C罗可能是狼队友；4号周深需要解释站边。",
+    "我觉得3号C罗和9号喜羊羊像双狼，4号周深也要继续解释。",
+    "4号周深刚才说3号C罗是狼队友，我会核对这句话。",
+    "3号C罗不是我的狼队友，4号周深需要解释票型。",
+    "凭什么说3号C罗是狼队友？4号周深先把依据讲清楚。",
+    "3号C罗是我的队友，但4号周深的逻辑仍要单独核对。",
+]:
+    public_team_rewrite = main_module.validate_llm_rewrite(
+        LLMGeneration(
+            text=public_team_read,
+            used_llm=True,
+            provider="stub",
+            model="stub",
+        ),
+        camp_rule_text,
+        semantic_validation_state,
+        speaker=semantic_speaker,
+        required_target=fake_target,
+        public_text=True,
+    )
+    if not public_team_rewrite.used_llm:
+        raise SystemExit(
+            "conditional, speculative, quoted, negated, questioned, or generic team wording should pass: "
+            + public_team_rewrite.fallback_reason
+        )
+
+known_wolf_name = next(
+    character.name
+    for character in semantic_validation_state.characters
+    if character.role == "werewolf"
+)
+known_good_name = next(
+    character.name
+    for character in semantic_validation_state.characters
+    if character.role != "werewolf" and not character.is_player
+)
+wolf_name_sensitive = main_module.is_sensitive_llm_failure(
+    "LLM text omitted the rule-selected target",
+    known_wolf_name,
+    semantic_validation_state,
+    camp_rule_text,
+)
+good_name_sensitive = main_module.is_sensitive_llm_failure(
+    "LLM text omitted the rule-selected target",
+    known_good_name,
+    semantic_validation_state,
+    camp_rule_text,
+)
+if wolf_name_sensitive != good_name_sensitive:
+    raise SystemExit("validation redaction must not reveal whether a mentioned seat is truly a wolf")
+for role_independent_reason, expected_sensitive in [
+    ("LLM text introduced hidden wolf-team information", True),
+    ("LLM text omitted the rule-selected target", False),
+]:
+    if any(
+        main_module.is_sensitive_llm_failure(
+            role_independent_reason,
+            raw_name,
+            semantic_validation_state,
+            camp_rule_text,
+        )
+        != expected_sensitive
+        for raw_name in [known_wolf_name, known_good_name]
+    ):
+        raise SystemExit("validation redaction should depend on rejection type, not hidden role")
+
+speculative_camp_read = main_module.validate_llm_rewrite(
+    LLMGeneration(
+        text="我会观察4号周深，我觉得4号周深可能是狼人。",
+        used_llm=True,
+        provider="stub",
+        model="stub",
+    ),
+    camp_rule_text,
+    semantic_validation_state,
+    speaker=semantic_speaker,
+    required_target=fake_target,
+    public_text=True,
+)
+if not speculative_camp_read.used_llm:
+    raise SystemExit("semantic validator should allow a clearly speculative camp read")
 
 speculative_power_read = main_module.validate_llm_rewrite(
     LLMGeneration(
@@ -2439,18 +7498,26 @@ def check_godot_loads() -> None:
         forbidden_output=("SCRIPT ERROR", "Parse Error", "Failed to load", "missing characters"),
     )
     run_command(
+        [godot_bin, "--headless", "--path", str(GAME_DIR), "--script", "res://scripts/day_night_check.gd"],
+        cwd=ROOT_DIR,
+        fail_message="Godot day/night phase mapping check failed",
+        forbidden_output=("SCRIPT ERROR", "Parse Error", "Failed to load"),
+    )
+    run_command(
         [godot_bin, "--headless", "--path", str(GAME_DIR), MAIN_SCENE, "--quit"],
         cwd=ROOT_DIR,
         fail_message="Godot failed to load the main scene",
         forbidden_output=("SCRIPT ERROR", "Parse Error", "Failed to load script"),
     )
-    print("[OK] Godot dialog font covers required glyphs and the main scene loads.")
+    print("[OK] Godot font, NIGHT-only visual mapping, and main scene loading checks pass.")
 
 
 def check_godot_ui_layout() -> None:
     try:
         scene_text = MAIN_SCENE_FILE.read_text(encoding="utf-8")
         script_text = MAIN_SCRIPT_FILE.read_text(encoding="utf-8")
+        town_background_scene_text = TOWN_BACKGROUND_SCENE_FILE.read_text(encoding="utf-8")
+        town_background_script_text = TOWN_BACKGROUND_SCRIPT_FILE.read_text(encoding="utf-8")
         project_text = PROJECT_FILE.read_text(encoding="utf-8")
         dialog_scene_text = DIALOG_SCENE_FILE.read_text(encoding="utf-8")
         dialog_script_text = DIALOG_SCRIPT_FILE.read_text(encoding="utf-8")
@@ -2458,22 +7525,65 @@ def check_godot_ui_layout() -> None:
         npc_script_text = NPC_SCRIPT_FILE.read_text(encoding="utf-8")
         player_scene_text = PLAYER_SCENE_FILE.read_text(encoding="utf-8")
         player_script_text = PLAYER_SCRIPT_FILE.read_text(encoding="utf-8")
+        huaihuai_asset_text = (CHARACTER_ASSET_DIR / "huaihuai.svg").read_text(
+            encoding="utf-8"
+        )
+        ranran_asset_text = (CHARACTER_ASSET_DIR / "ranran.svg").read_text(
+            encoding="utf-8"
+        )
     except OSError as exc:
         raise SmokeCheckError(f"could not read Godot UI files: {exc}") from exc
 
     required_scene_fragments = [
+        '[ext_resource type="PackedScene" path="res://scenes/TownBackground.tscn" id="6_town_background"]',
+        '[node name="TownBackground" parent="." instance=ExtResource("6_town_background")]',
+        '[node name="PhaseHUD" type="Control" parent="UI"]',
+        '[node name="IdentityPanel" type="PanelContainer" parent="UI"]',
+        '[node name="PlayerIdentityBlock" type="VBoxContainer" parent="UI/IdentityPanel/Margin"]',
+        '[node name="KeyInfoToggleButton" type="Button" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock"]',
+        '[node name="KeyInfoContentPanel" type="PanelContainer" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock"]',
+        '[node name="KeyInfoLabel" type="Label" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoContentPanel/Margin/VBox/ScrollContainer"]',
+        'text = "◇ 公开说法（真假未确认） · ● 已确认公开动作"',
+        '[node name="WolfPanel" type="Control" parent="UI"]',
+        'text = "当前行动"',
+        '[node name="IntelPanel" type="Control" parent="UI"]',
+        '[node name="Tabs" type="TabContainer" parent="UI/IntelPanel/Panel/Margin/VBox"]',
+        '[node name="CharacterGrid" type="GridContainer" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs/Roster/Margin"]',
+        '[node name="PublicLogLabel" type="Label" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs/PublicRecords/Margin"]',
+        '[node name="PlayerActionHistoryBlock" type="VBoxContainer" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs/MyRecords"]',
+        '[node name="GameSetupOverlay" type="Control" parent="UI"]',
+        '[node name="PlayerNameInput" type="LineEdit" parent="UI/GameSetupOverlay/Panel/Margin/VBox/PlayerNameRow"]',
+        '[node name="LLMEnabledToggle" type="CheckButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow"]',
+        '[node name="PlayerRoleOption" type="OptionButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/PlayerRoleRow"]',
+        '[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_phase_hud"]',
+        '[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_wolf_panel"]',
+        '[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_intel"]',
+        '[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_light_control"]',
+        '[sub_resource type="Theme" id="Theme_light_ui"]',
+        'Button/colors/font_color = Color(0, 0, 0, 1)',
+        'CheckButton/colors/font_color = Color(0, 0, 0, 1)',
+        'Label/colors/font_color = Color(0, 0, 0, 1)',
+        'LineEdit/colors/font_color = Color(0, 0, 0, 1)',
+        'OptionButton/colors/font_color = Color(0, 0, 0, 1)',
+        'TabBar/colors/font_selected_color = Color(0, 0, 0, 1)',
+        'TabBar/colors/font_unselected_color = Color(0, 0, 0, 1)',
+        'TextEdit/colors/font_readonly_color = Color(0, 0, 0, 1)',
+        'offset_left = -270.0',
         '[node name="ScrollContainer" type="ScrollContainer"',
         'horizontal_scroll_mode = 0',
-        'offset_left = -536.0',
+        'offset_left = -456.0',
         'default_font_size = 13',
-        'columns = 2',
+        'columns = 3',
         'text = "RanRanHuaiHuaiKill"',
         '[node name="GameSummaryOverlay" type="Control"',
         '[node name="ReviewGameButton" type="Button"',
         '[node name="GameSummaryRequest" type="HTTPRequest"',
-        '[node name="LLMEnabledToggle" type="CheckButton"',
         '[node name="LittleKnight" parent="." instance=ExtResource("3_npc_scene")]',
         '[node name="DoctorStrange" parent="." instance=ExtResource("3_npc_scene")]',
+        '[node name="HuaiHuai" parent="." instance=ExtResource("3_npc_scene")]',
+        '[node name="RanRan" parent="." instance=ExtResource("3_npc_scene")]',
+        'position = Vector2(-170, 0)',
+        'position = Vector2(870, 0)',
         '[node name="NightActionOption" type="OptionButton"',
         '[node name="HunterActionRow" type="HBoxContainer"',
         '[node name="HunterShotRequest" type="HTTPRequest"',
@@ -2490,13 +7600,10 @@ def check_godot_ui_layout() -> None:
         '[node name="CombinedVoteRequest" type="HTTPRequest"',
         '[ext_resource type="FontFile" path="res://assets/fonts/NotoSansSC-Variable.ttf" id="5_main_font"]',
         'theme = SubResource("Theme_main_cjk")',
-        '[node name="PlayerIdentityBlock" type="VBoxContainer"',
-        '[node name="PlayerActionHistoryBlock" type="VBoxContainer"',
         '[node name="HistoryText" type="TextEdit"',
-        'custom_minimum_size = Vector2(0, 84)',
-        'theme_override_font_sizes/font_size = 11',
-        'text = "玩家行动记录"',
-        '[node name="PlayerRoleOption" type="OptionButton"',
+        'custom_minimum_size = Vector2(0, 420)',
+        'theme_override_font_sizes/font_size = 13',
+        'text = "仅你可见的行动记录"',
         '[node name="TemporaryNominationOption" type="OptionButton"',
         '[node name="SheriffOverviewLabel" type="Label"',
         'position = Vector2(350, -285)',
@@ -2507,14 +7614,98 @@ def check_godot_ui_layout() -> None:
         if fragment not in scene_text:
             raise SmokeCheckError(f"Godot menu layout is missing: {fragment}")
 
-    if 'card.custom_minimum_size = Vector2(164, 218)' not in script_text:
-        raise SmokeCheckError("Godot character cards are not using the portrait two-column size")
+    if scene_text.count('instance=ExtResource("3_npc_scene")') != 13:
+        raise SmokeCheckError("Godot world should contain eleven game NPCs and two town residents")
+    if scene_text.count("wolf_character_id = 0") != 2:
+        raise SmokeCheckError("exactly 坏坏 and 然然 should be non-participating resident NPCs")
+    for character_id in range(2, 13):
+        if scene_text.count(f"wolf_character_id = {character_id}\n") != 1:
+            raise SmokeCheckError(f"wolf-game NPC id {character_id} should appear exactly once")
+    for resident_name, asset_name in [("坏坏", "huaihuai.svg"), ("然然", "ranran.svg")]:
+        mapping = f'"{resident_name}": "res://assets/characters/{asset_name}"'
+        if mapping not in npc_script_text or mapping not in dialog_script_text:
+            raise SmokeCheckError(f"Godot resident skin and portrait mapping is incomplete: {resident_name}")
+    resident_asset_markers = {
+        "坏坏": (
+            huaihuai_asset_text,
+            ["<title>坏坏小恐龙</title>", "#79bd67", "#78c9df", "#f3d66b"],
+        ),
+        "然然": (
+            ranran_asset_text,
+            ["<title>然然熊猫</title>", "#252b31", "#f8f4e9", "#62b7d0"],
+        ),
+    }
+    for resident_name, (asset_text, markers) in resident_asset_markers.items():
+        if 'width="64" height="64" viewBox="0 0 64 64"' not in asset_text:
+            raise SmokeCheckError(f"resident pixel asset must stay 64x64: {resident_name}")
+        if not all(marker in asset_text for marker in markers):
+            raise SmokeCheckError(
+                f"resident pixel asset does not match its designed species and palette: {resident_name}"
+            )
     for fragment in [
+        'dialog_text = "我是坏坏，点心屋的小恐龙。',
+        'dialog_text = "我是然然，心情邮局的熊猫邮差。',
+    ]:
+        if fragment not in scene_text:
+            raise SmokeCheckError("resident scene introduction is not synchronized with its visual identity")
+
+    if scene_text.count('theme = SubResource("Theme_light_ui")') != 5:
+        raise SmokeCheckError("every light UI root should use the black-text light theme")
+    light_ui_start = scene_text.index('[node name="PhaseHUD" type="Control" parent="UI"]')
+    light_ui_end = scene_text.index('[node name="GameSummaryOverlay" type="Control" parent="UI"]')
+    light_ui_text = scene_text[light_ui_start:light_ui_end]
+    for line in light_ui_text.splitlines():
+        if "theme_override_colors/font" in line and "Color(0, 0, 0, 1)" not in line:
+            raise SmokeCheckError(f"light UI text is not black: {line.strip()}")
+
+    if 'card.custom_minimum_size = Vector2(168, 205)' not in script_text:
+        raise SmokeCheckError("Godot character cards are not using the intel drawer three-column size")
+    for fragment in [
+        '[node name="TownBackground" type="Node2D"]',
+        'z_index = -20',
+        '[node name="WorldTint" type="CanvasModulate" parent="."]',
+    ]:
+        if fragment not in town_background_scene_text:
+            raise SmokeCheckError(f"Godot layered town scene is missing: {fragment}")
+    for fragment in [
+        'const NIGHT_TINT :=',
+        'const LAMP_POSITIONS :=',
+        'func set_night(enabled: bool, immediate: bool = false) -> void:',
+        '_transition_tween = create_tween()',
+        'func _draw_pond() -> void:',
+        'func _draw_buildings() -> void:',
+        'func _draw_meeting_square() -> void:',
+        'func _draw_gardens() -> void:',
+        'func _draw_trees() -> void:',
+        'func _draw_night_details() -> void:',
+    ]:
+        if fragment not in town_background_script_text:
+            raise SmokeCheckError(f"Godot layered town drawing is missing: {fragment}")
+    for fragment in [
+        '@onready var town_background: Node2D = $TownBackground',
+        'func _phase_uses_night_visual(phase: String) -> bool:',
+        'return phase == "NIGHT"',
+        'func _update_world_time(phase: String, immediate: bool = false) -> void:',
+        'town_background.call("set_night", _phase_uses_night_visual(phase), immediate)',
+        '_update_world_time("", true)',
+        '_update_world_time(_current_wolf_phase)',
         '@onready var wolf_scroll_container: ScrollContainer',
-        'const WOLF_MENU_WIDTH := 520.0',
-        'const WOLF_MENU_MIN_EXPANDED_HEIGHT := 500.0',
-        'const WOLF_MENU_MAX_EXPANDED_HEIGHT := 760.0',
-        'viewport_height * 0.82',
+        'const WOLF_MENU_WIDTH := 440.0',
+        'const WOLF_MENU_MIN_EXPANDED_HEIGHT := 320.0',
+        'const WOLF_MENU_MAX_EXPANDED_HEIGHT := 520.0',
+        'const INTEL_PANEL_WIDTH := 600.0',
+        'const IDENTITY_PANEL_COLLAPSED_BOTTOM := 184.0',
+        'const IDENTITY_PANEL_EXPANDED_BOTTOM := 500.0',
+        'viewport_height * 0.62',
+        'func _show_game_setup() -> void:',
+        'game_setup_overlay.add_to_group("dialog_open")',
+        'setup_status_label.text = "创建失败：后端响应缺少游戏编号。"',
+        'func _set_intel_panel_open(open: bool) -> void:',
+        'game_summary_request.cancel_request()',
+        'intel_tabs.set_tab_title(0, "场上角色")',
+        'wolf_panel.visible = has_game',
+        'setup_toggle_button.disabled = has_game and _current_wolf_phase != "GAME_OVER"',
+        'for ui_root in [phase_hud, wolf_panel, intel_panel, game_setup_overlay]:',
         'var phase_changed := _current_wolf_phase != str(phase)',
         'call_deferred("_keep_sheriff_controls_visible")',
         'wolf_scroll_container.ensure_control_visible(sheriff_withdrawal_row)',
@@ -2526,6 +7717,9 @@ def check_godot_ui_layout() -> None:
         if fragment not in script_text:
             raise SmokeCheckError(f"Godot compact panel behavior is missing: {fragment}")
     for removed_fragment in [
+        '[node name="Ground" type="Polygon2D" parent="."]',
+        '[node name="Path" type="Polygon2D" parent="."]',
+        '[node name="MeetingSquare" type="Polygon2D" parent="."]',
         '[node name="GenerateNpcVoteButton"',
         '[node name="ResolveVoteButton"',
     ]:
@@ -2552,6 +7746,13 @@ def check_godot_ui_layout() -> None:
         'str(_wolf_campaign_status.get(character_id, ""))',
         '"player_role": str(_get_selected_option_metadata(player_role_option, "random"))',
         'func _update_player_identity_display(game_data: Dictionary)',
+        'func _update_key_public_info(game_data: Dictionary)',
+        'game_data.get("public_intel", [])',
+        'func _set_key_info_expanded(expanded: bool, animate: bool = true)',
+        'previous_count == 0 and _key_info_count > 0',
+        '"●" if str(item.get("category", "claim")) == "confirmed_action" else "◇"',
+        'player_role_label.add_theme_color_override("font_color", Color(0, 0, 0, 1))',
+        'label.add_theme_color_override("font_color", Color(0, 0, 0, 1))',
         'func _update_player_action_history(game_data: Dictionary)',
         'func _configure_wolf_panel_focus()',
         'node.focus_mode = Control.FOCUS_NONE',
@@ -2605,6 +7806,8 @@ def check_godot_ui_layout() -> None:
             raise SmokeCheckError(f"Godot {scene_label} scene is missing its PK marker")
     if 'campaign_status: String = ""' not in npc_script_text:
         raise SmokeCheckError("Godot NPC state does not expose sheriff campaign visuals")
+    if 'theme_override_colors/font_outline_color = Color(0.96, 0.98, 1, 0.96)' not in npc_scene_text:
+        raise SmokeCheckError("Godot NPC names need a light outline for night readability")
     if 'campaign_status: String = ""' not in player_script_text:
         raise SmokeCheckError("Godot player state does not expose sheriff campaign visuals")
     if 'func lock_movement_until_release()' not in player_script_text:
@@ -2613,6 +7816,8 @@ def check_godot_ui_layout() -> None:
         raise SmokeCheckError("Godot movement release lock should only capture keys held during submission")
     if 'focus_owner.is_visible_in_tree() and focus_owner.editable' not in player_script_text:
         raise SmokeCheckError("Godot player should ignore stale focus on disabled text inputs")
+    if 'Vector2(menu_width * 0.5, 0.0)' not in player_script_text:
+        raise SmokeCheckError("Godot camera safe area should center the player in the unobstructed viewport")
     if not POLICE_BADGE_FILE.exists():
         raise SmokeCheckError("Godot police campaign badge asset is missing")
 
@@ -2622,10 +7827,16 @@ def check_godot_ui_layout() -> None:
         raise SmokeCheckError("Godot character pixel assets are missing: " + ", ".join(missing_assets))
     for asset_name in EXPECTED_CHARACTER_ASSETS:
         asset_text = (CHARACTER_ASSET_DIR / asset_name).read_text(encoding="utf-8")
-        if 'shape-rendering="crispEdges"' not in asset_text or "\ufffd" in asset_text:
+        if (
+            'width="64" height="64"' not in asset_text
+            or 'viewBox="0 0 64 64"' not in asset_text
+            or 'shape-rendering="crispEdges"' not in asset_text
+            or "\ufffd" in asset_text
+            or any(marker in asset_text for marker in ["<image", "<text", "href=", "filter=", "gradient"])
+        ):
             raise SmokeCheckError(f"Godot character asset is invalid: {asset_name}")
 
-    print("[OK] Godot contextual role UI, temporary nomination, CJK theme, compact town, and pixel characters are present.")
+    print("[OK] Godot layered town, rule-driven day/night visuals, contextual UI, and pixel characters are present.")
 
 
 def load_json_list(path: Path, label: str) -> list[dict]:

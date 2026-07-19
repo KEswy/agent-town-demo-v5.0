@@ -19,6 +19,8 @@ const PORTRAIT_PATHS := {
 	"懒羊羊": "res://assets/characters/lazy_goat.svg",
 	"洛洛": "res://assets/characters/luoluo.svg",
 	"奇异博士": "res://assets/characters/doctor_strange.svg",
+	"坏坏": "res://assets/characters/huaihuai.svg",
+	"然然": "res://assets/characters/ranran.svg",
 }
 
 @onready var portrait: TextureRect = $Panel/Margin/VBox/Portrait
@@ -89,7 +91,10 @@ func show_response(
 	knowledge_titles: Variant = "",
 	memory_count: int = 0,
 	relationship_level: String = "",
-	retrieval_mode: String = ""
+	retrieval_mode: String = "",
+	llm_used: bool = false,
+	llm_provider: String = "rule",
+	llm_fallback_reason: String = ""
 ) -> void:
 	show_dialog(npc_name, dialog_text)
 	if memory_count > 0:
@@ -105,6 +110,9 @@ func show_response(
 		knowledge_label.text = source_text
 	if not retrieval_mode.is_empty():
 		knowledge_label.text += "\n检索模式：" + _format_retrieval_mode(retrieval_mode)
+	knowledge_label.text += "\n文本生成：" + _format_text_generator(llm_used, llm_provider)
+	if not llm_used and not llm_fallback_reason.is_empty():
+		knowledge_label.text += "\n回退原因：" + _format_llm_fallback_reason(llm_fallback_reason)
 	knowledge_label.visible = true
 
 
@@ -290,6 +298,10 @@ func _format_text_generator(llm_used: bool, llm_provider: String) -> String:
 
 func _format_llm_fallback_reason(reason: String) -> String:
 	var normalized := reason.to_lower()
+	if "llm is disabled" in normalized:
+		return "全局 LLM 未启用"
+	if "mock provider" in normalized:
+		return "Mock 模式使用规则回复"
 	if "disabled for this game" in normalized:
 		return "本局未启用 LLM"
 	if "not fully configured" in normalized:
@@ -302,6 +314,8 @@ func _format_llm_fallback_reason(reason: String) -> String:
 		return "LLM 五次回答均未通过规则校验"
 	if "replacement character" in normalized:
 		return "LLM 回答包含异常字符"
+	if "resident chat" in normalized:
+		return "常驻居民回复未通过轻量格式检查"
 	return "LLM 重试后仍未获得可用回答"
 
 

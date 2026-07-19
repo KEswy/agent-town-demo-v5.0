@@ -33,9 +33,34 @@ texture_filter = 1
 
 [node name="SheriffBadge" type="Polygon2D" parent="."]
 visible = false
-position = Vector2(21, -34)
+position = Vector2(31, -31)
+z_index = 8
 color = Color(1, 0.76, 0.12, 1)
-polygon = PackedVector2Array(-8, 6, -8, -3, -4, 1, 0, -6, 4, 1, 8, -3, 8, 6)
+polygon = PackedVector2Array(-9, 7, -9, -4, -4, 0, 0, -8, 4, 0, 9, -4, 9, 7)
+
+[node name="RibbonBorder" type="Polygon2D" parent="SheriffBadge"]
+show_behind_parent = true
+z_index = -2
+color = Color(1, 0.78, 0.16, 0.98)
+polygon = PackedVector2Array(-15, -15, 48, -15, 56, -8, 56, 8, 48, 15, -15, 15, -20, 8, -20, -8)
+
+[node name="Ribbon" type="Polygon2D" parent="SheriffBadge"]
+show_behind_parent = true
+z_index = -1
+color = Color(0.72, 0.9, 0.98, 0.98)
+polygon = PackedVector2Array(-13, -12, 47, -12, 53, -6, 53, 6, 47, 12, -13, 12, -17, 6, -17, -6)
+
+[node name="SheriffLabel" type="Label" parent="SheriffBadge"]
+z_index = 1
+offset_left = 11.0
+offset_top = -12.0
+offset_right = 51.0
+offset_bottom = 12.0
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 14
+text = "警长"
+horizontal_alignment = 1
+vertical_alignment = 1
 
 [node name="CampaignBadge" type="Sprite2D" parent="."]
 visible = false
@@ -105,6 +130,8 @@ offset_top = 30.0
 offset_right = 80.0
 offset_bottom = 78.0
 theme_override_colors/font_color = Color(0.08, 0.08, 0.08, 1)
+theme_override_colors/font_outline_color = Color(0.96, 0.98, 1, 0.96)
+theme_override_constants/outline_size = 3
 theme_override_font_sizes/font_size = 13
 text = "Guide"
 horizontal_alignment = 1

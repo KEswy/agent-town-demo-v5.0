@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" shape-rendering="crispEdges">
+  <title>然然熊猫</title>
+  <desc>黑白熊猫，戴黄色披肩并背着浅蓝邮差包的活泼像素居民。</desc>
+
+  <!-- Round black ears and a blocky white panda head. -->
+  <rect x="8" y="4" width="16" height="16" fill="#252b31"/>
+  <rect x="40" y="4" width="16" height="16" fill="#252b31"/>
+  <rect x="11" y="7" width="10" height="10" fill="#343b43"/>
+  <rect x="43" y="7" width="10" height="10" fill="#343b43"/>
+  <polygon points="16,8 48,8 55,15 55,34 48,42 16,42 9,34 9,15" fill="#f8f4e9"/>
+  <rect x="13" y="13" width="38" height="24" fill="#fffdf4"/>
+
+  <!-- Strong panda eye patches, bright eyes, muzzle and cheeks. -->
+  <polygon points="17,18 27,16 30,29 20,32 15,27" fill="#30363d"/>
+  <polygon points="37,16 47,18 49,27 44,32 34,29" fill="#30363d"/>
+  <rect x="21" y="21" width="6" height="7" fill="#171c20"/>
+  <rect x="37" y="21" width="6" height="7" fill="#171c20"/>
+  <rect x="22" y="21" width="3" height="3" fill="#ffffff"/>
+  <rect x="38" y="21" width="3" height="3" fill="#ffffff"/>
+  <rect x="24" y="29" width="16" height="9" fill="#f1e7d4"/>
+  <rect x="29" y="29" width="7" height="5" fill="#252b31"/>
+  <rect x="31" y="34" width="3" height="3" fill="#76515a"/>
+  <rect x="13" y="31" width="6" height="4" fill="#f2aab8"/>
+  <rect x="45" y="31" width="6" height="4" fill="#f2aab8"/>
+
+  <!-- Black limbs frame the white body; yellow scarf and blue mailbag match the town UI. -->
+  <polygon points="17,40 47,40 53,59 11,59" fill="#f8f4e9"/>
+  <polygon points="15,42 7,49 10,57 20,52" fill="#30363d"/>
+  <polygon points="49,42 57,49 54,57 44,52" fill="#30363d"/>
+  <polygon points="17,40 32,48 47,40 45,48 32,54 19,48" fill="#f2ce4f"/>
+  <rect x="42" y="43" width="6" height="16" fill="#8bd4e8"/>
+  <rect x="39" y="49" width="15" height="11" fill="#62b7d0"/>
+  <rect x="42" y="52" width="9" height="3" fill="#bceaf3"/>
+  <rect x="9" y="56" width="19" height="6" fill="#252b31"/>
+  <rect x="36" y="56" width="19" height="6" fill="#252b31"/>
+</svg>

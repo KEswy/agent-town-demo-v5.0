@@ -1,9 +1,9 @@
 # Agent Town 常用命令
 
-所有命令默认从项目根目录执行：
+所有命令默认从项目根目录执行。请把 `<project-root>` 替换为本机克隆目录：
 
 ```bash
-cd /Users/tonystark/game-dev-lab/agent-town-demo
+cd <project-root>
 ```
 
 ## 首次安装后端依赖

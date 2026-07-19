@@ -19,6 +19,8 @@ const SKIN_PATHS := {
 	"懒羊羊": "res://assets/characters/lazy_goat.svg",
 	"洛洛": "res://assets/characters/luoluo.svg",
 	"奇异博士": "res://assets/characters/doctor_strange.svg",
+	"坏坏": "res://assets/characters/huaihuai.svg",
+	"然然": "res://assets/characters/ranran.svg",
 }
 
 var _player_nearby := false
@@ -107,7 +109,10 @@ func _update_visual_state() -> void:
 	nearby_marker.color = Color(1, 0.84, 0.2, 1) if _is_current_speaker else Color(1, 0.9, 0.32, 1)
 	nearby_marker.scale = Vector2(1.35, 1.35) if _is_current_speaker else Vector2.ONE
 	turn_indicator.visible = _alive and _is_current_speaker
-	sheriff_badge.visible = _alive and _is_sheriff
+	# The badge represents current ownership, including the short transfer window
+	# after a sheriff dies. It disappears only when backend state transfers or
+	# destroys the badge.
+	sheriff_badge.visible = _is_sheriff
 	campaign_badge.visible = _alive and _campaign_status in ["candidate", "withdrawn"]
 	campaign_badge.modulate = (
 		Color(0.48, 0.52, 0.56, 1)
