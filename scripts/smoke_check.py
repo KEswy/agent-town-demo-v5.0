@@ -58,6 +58,7 @@ BACKEND_NPC_DECISION_FILE = BACKEND_DIR / "app" / "npc_decision.py"
 BACKEND_NPC_TUNING_FILE = BACKEND_DIR / "app" / "npc_tuning.py"
 BACKEND_BELIEF_FILE = BACKEND_DIR / "app" / "belief.py"
 BACKEND_STANCE_FILE = BACKEND_DIR / "app" / "stance.py"
+BACKEND_INVARIANCE_FILE = BACKEND_DIR / "app" / "invariance.py"
 BACKEND_SIMULATION_FILE = BACKEND_DIR / "app" / "simulation.py"
 BACKEND_SIMULATION_METRICS_FILE = BACKEND_DIR / "app" / "simulation_metrics.py"
 SIMULATION_SCRIPT_FILE = ROOT_DIR / "scripts" / "simulate_games.py"
@@ -107,8 +108,8 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
 
-    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-F" not in root_readme:
-        raise SmokeCheckError("root README must identify the active V3.1-F iteration")
+    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-G" not in root_readme:
+        raise SmokeCheckError("root README must identify the active V3.1-G iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
@@ -120,8 +121,8 @@ def check_release_docs() -> None:
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
 
-    if "V3.1-F" not in backend_readme or "V3.1-F" not in roadmap:
-        raise SmokeCheckError("V3.1-F status must stay synchronized across development docs")
+    if "V3.1-G" not in backend_readme or "V3.1-G" not in roadmap:
+        raise SmokeCheckError("V3.1-G status must stay synchronized across development docs")
     if "scripts/simulate_games.py" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
     if "agent_town_metrics.v1" not in commands:
@@ -144,8 +145,14 @@ def check_release_docs() -> None:
         or "[CONTINUITY]" not in commands
     ):
         raise SmokeCheckError("COMMANDS.md must document M04-B controlled speech")
+    if (
+        "hidden_info_invariance.v1" not in commands
+        or "hidden_info_projection.v1" not in commands
+        or "M06-A" not in commands
+    ):
+        raise SmokeCheckError("COMMANDS.md must document the M06-A invariance matrix")
 
-    print("[OK] V3.1-F README, commands, and roadmap status are synchronized.")
+    print("[OK] V3.1-G README, commands, and roadmap status are synchronized.")
 
 
 def check_json_files() -> None:
@@ -267,6 +274,7 @@ def check_json_files() -> None:
         BACKEND_NPC_TUNING_FILE,
         BACKEND_BELIEF_FILE,
         BACKEND_STANCE_FILE,
+        BACKEND_INVARIANCE_FILE,
         BACKEND_SIMULATION_FILE,
         BACKEND_SIMULATION_METRICS_FILE,
         SIMULATION_SCRIPT_FILE,
@@ -289,6 +297,7 @@ def check_backend_compiles() -> None:
             str(BACKEND_NPC_TUNING_FILE),
             str(BACKEND_BELIEF_FILE),
             str(BACKEND_STANCE_FILE),
+            str(BACKEND_INVARIANCE_FILE),
             str(BACKEND_SIMULATION_FILE),
             str(BACKEND_SIMULATION_METRICS_FILE),
             str(SIMULATION_SCRIPT_FILE),
@@ -1253,6 +1262,15 @@ from app.belief import (
     BeliefTraceRecorder,
     build_belief_snapshot,
 )
+from app.invariance import (
+    ACTOR_PROJECTION_NAMES,
+    INVARIANCE_MODE,
+    INVARIANCE_PROJECTION_VERSION,
+    INVARIANCE_SCHEMA_VERSION,
+    HiddenInfoInvarianceError,
+    build_hidden_info_invariance_report,
+    build_m06a_hidden_variants,
+)
 from app.simulation import (
     BATCH_SCHEMA_VERSION,
     BELIEF_SCHEMA_VERSION as SIMULATION_BELIEF_SCHEMA_VERSION,
@@ -1769,6 +1787,174 @@ if claim_snapshot != build_belief_snapshot(
     observer_ids=[villager_observer.id],
 ):
     raise SystemExit("public-claim beliefs must not inspect claimant or target truth")
+
+m06a_state = left.model_copy(deep=True)
+m06a_observer_ids = sorted(
+    character.id
+    for character in m06a_state.characters
+    if not character.is_player and character.role == "villager"
+)
+m06a_hidden_wolf = rules.get_character(
+    m06a_state,
+    m06a_state.wolf_fake_seer_id,
+)
+m06a_hidden_good = next(
+    character
+    for character in m06a_state.characters
+    if (
+        not character.is_player
+        and character.camp == "good"
+        and character.role != "villager"
+    )
+)
+m06a_alternate_fake_seer = next(
+    character
+    for character in m06a_state.characters
+    if (
+        not character.is_player
+        and character.role == "werewolf"
+        and character.id != m06a_hidden_wolf.id
+    )
+)
+m06a_state.phase = "DAY_MEETING"
+m06a_state.meeting = rules.DayMeetingState(
+    day=m06a_state.day,
+    direction="clockwise",
+    order=m06a_observer_ids,
+)
+m06a_state.public_claims = [
+    rules.PublicClaimState(
+        day=m06a_state.day,
+        character_id=m06a_hidden_wolf.id,
+        claim_type="role",
+        claimed_role="seer",
+        source="m06a_internal_true_source",
+    ),
+    rules.PublicClaimState(
+        day=m06a_state.day,
+        character_id=m06a_hidden_wolf.id,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=m06a_hidden_good.id,
+        result="werewolf",
+        source="m06a_internal_true_source",
+    ),
+]
+m06a_state.wolf_fake_seer_id = m06a_hidden_wolf.id
+m06a_variants = build_m06a_hidden_variants(
+    m06a_state,
+    hidden_wolf_id=m06a_hidden_wolf.id,
+    hidden_good_id=m06a_hidden_good.id,
+    alternate_fake_seer_id=m06a_alternate_fake_seer.id,
+)
+expected_m06a_variant_ids = {
+    "claim_source_rewrite",
+    "combined_hidden_mutation",
+    "fake_seer_marker_change",
+    "hidden_role_truth_swap",
+    "role_and_designation_swap",
+    "unpublished_night_result",
+}
+if set(m06a_variants) != expected_m06a_variant_ids:
+    raise SystemExit("M06-A must retain every canonical hidden-only mutation")
+m06a_report = build_hidden_info_invariance_report(
+    m06a_state,
+    m06a_variants,
+    observer_ids=m06a_observer_ids,
+)
+expected_m06a_checks = len(m06a_variants) * (
+    1 + len(m06a_observer_ids) * len(ACTOR_PROJECTION_NAMES)
+)
+if (
+    m06a_report["schema_version"] != INVARIANCE_SCHEMA_VERSION
+    or m06a_report["projection_version"] != INVARIANCE_PROJECTION_VERSION
+    or m06a_report["mode"] != INVARIANCE_MODE
+    or m06a_report["check_count"] != expected_m06a_checks
+    or m06a_report["matched_check_count"] != expected_m06a_checks
+    or not m06a_report["passed"]
+    or any(not variant["passed"] for variant in m06a_report["variants"])
+):
+    raise SystemExit("the M06-A legal-perspective matrix must pass every projection")
+m06a_reordered_report = build_hidden_info_invariance_report(
+    m06a_state,
+    dict(reversed(list(m06a_variants.items()))),
+    observer_ids=list(reversed(m06a_observer_ids)),
+)
+if m06a_report != m06a_reordered_report:
+    raise SystemExit("M06-A reports must be independent of input ordering")
+
+def iter_report_strings(value):
+    if isinstance(value, dict):
+        for nested in value.values():
+            yield from iter_report_strings(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from iter_report_strings(nested)
+    elif isinstance(value, str):
+        yield value
+
+if any(
+    value in {"werewolf", "seer", "m06a_internal_true_source"}
+    for value in iter_report_strings(m06a_report)
+):
+    raise SystemExit("M06-A reports must not serialize hidden truth or internal sources")
+
+m06a_public_change = m06a_state.model_copy(deep=True)
+m06a_public_change.public_claims[-1].result = "good"
+m06a_negative_report = build_hidden_info_invariance_report(
+    m06a_state,
+    {"public_claim_result_changed": m06a_public_change},
+    observer_ids=m06a_observer_ids,
+)
+if (
+    m06a_negative_report["passed"]
+    or m06a_negative_report["matched_check_count"]
+    == m06a_negative_report["check_count"]
+    or not any(
+        mismatch["projection"] == "public_state"
+        and mismatch["first_difference"]
+        for mismatch in m06a_negative_report["variants"][0]["mismatches"]
+    )
+):
+    raise SystemExit("M06-A must detect a public-input change as a negative control")
+
+for unauthorized_state, unauthorized_observer_id in (
+    (m06a_state, m06a_hidden_good.id),
+    (
+        m06a_state.model_copy(
+            deep=True,
+            update={"sheriff_id": m06a_observer_ids[0]},
+        ),
+        m06a_observer_ids[0],
+    ),
+):
+    try:
+        build_hidden_info_invariance_report(
+            unauthorized_state,
+            {"unchanged": unauthorized_state.model_copy(deep=True)},
+            observer_ids=[unauthorized_observer_id],
+        )
+    except HiddenInfoInvarianceError:
+        pass
+    else:
+        raise SystemExit("M06-A must reject privileged or sheriff observers")
+
+m06a_privileged_player = m06a_state.model_copy(deep=True)
+m06a_player = rules.get_character(
+    m06a_privileged_player,
+    m06a_privileged_player.player_character_id,
+)
+m06a_player.role = "seer"
+try:
+    build_hidden_info_invariance_report(
+        m06a_privileged_player,
+        {"unchanged": m06a_privileged_player.model_copy(deep=True)},
+        observer_ids=[m06a_observer_ids[0]],
+    )
+except HiddenInfoInvarianceError:
+    pass
+else:
+    raise SystemExit("M06-A must reject a role-privileged player projection")
 
 villager_stance = build_stance_snapshot(
     left,
@@ -2316,7 +2502,7 @@ print("headless simulation smoke test passed")
         cwd=BACKEND_DIR,
         fail_message="headless deterministic simulation smoke test failed",
     )
-    print("[OK] Simulations, beliefs, shadow stances, and controlled speech reasons are deterministic.")
+    print("[OK] Simulations and the M06-A hidden-information projection matrix are deterministic.")
 
 
 def check_backend_search() -> None:

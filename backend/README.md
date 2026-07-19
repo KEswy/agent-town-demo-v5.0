@@ -2,6 +2,19 @@
 
 Agent Town Demo 的 Python FastAPI 后端，负责小镇 NPC 对话、知识检索、长期记忆，以及狼人杀规则和对局内 NPC 状态。
 
+## V3.1-G 隐藏信息不变性矩阵 M06-A
+
+`app/invariance.py` 是离线测试模块，实时 `app/main.py`、API 路由和规则结算不会导入它。它提供两个版本化层次：
+
+- `hidden_info_projection.v1`：普通村民玩家可见的角色/日志/情报/会议/警长/公开信号投影，以及每名普通村民 NPC 的 `belief_state.v2`、`stance_summary.v1`、`NPCDecisionContextV1`、`public_speech_continuity.v1` 和规则 `public_speech_plan.v3` fallback。
+- `hidden_info_invariance.v1`：按变体和观察者比较上述投影，只保存 SHA-256 摘要、首个差异路径与守恒计数，不序列化角色真值、阵营、声明内部来源或 belief 正文。
+
+`build_m06a_hidden_variants()` 从同一公开局面生成六个规范样本：改写 `PublicClaimState.source`、替换 `wolf_fake_seer_id`、交换一个 NPC 狼人与一个 NPC 神职的隐藏 `role/camp`、组合身份与内部悍跳标记、注入尚未公布的夜间结算，以及组合全部隐藏变化。公开日志、声明内容、存活状态和已经公布的行动保持不变。
+
+`build_hidden_info_invariance_report()` 只接受普通村民玩家和存活、无警徽的 NPC 村民观察者。固定 seed 自检用 3 名观察者 × 6 个变体，逐个检查 1 个公开投影和 5 个 actor 投影，共 `96/96` 项一致；倒序输入仍产生完全相同的报告。自动化还把公开查验结果从查杀改为金水作为负对照，要求矩阵报告差异，并验证神职/狼人、警长和角色特权玩家均被拒绝。
+
+M06-A 只锁定“无权视角不应变化”。预言家查验、女巫刀口和狼人队友等依法应随隐藏事实变化的私有投影不属于本阶段，留给 M06-B 建立授权正向矩阵。该测试边界不改变 Python 规则事实、现有模拟 schema 或 NPC 玩法。
+
 ## V3.1-F 普通白天发言受控消费 M04-B
 
 普通非警长 `DAY_MEETING` 现在是 `stance_summary.v1` 的第一个实时消费者。`app/main.py` 在进入既有结构化发言决策前，用当前 speaker 的单 actor `belief_state.v2` 构造 `public_speech_continuity.v1`；警长发言、警长票、放逐票和夜间/结算路径不调用该入口。
@@ -138,7 +151,7 @@ V2.0 基线来自 [`Agent Town Demo V2.0`](https://github.com/KEswy/agent-town-d
 
 进入 V3 后仍有四项明确限制：当前对局主要保存在进程内存中；严格结构化策略重点覆盖普通非警长白天发言，其他路径仍以规则决策加角色化改写为主；LLM 校验、回退、延迟和成本只有日志，没有统一指标面板；批量模拟与第一版 NPC 指标已经可用，但投票概率和自动平衡阈值尚未校准。
 
-V3 下一步推荐扩展 M06 隐藏信息不变性矩阵和 M09 LLM 可观测性，再用 M15 对投票概率做多种子校准。完整拆分和 V3.1-A 至 V3.1-F 实施状态见 [`V3 改进与开发路线表`](../docs/V3_ROADMAP.md)。
+V3 下一步推荐完成 M06-B 授权私有视角矩阵和 M09 LLM 可观测性，再用 M15 对投票概率做多种子校准。完整拆分和 V3.1-A 至 V3.1-G 实施状态见 [`V3 改进与开发路线表`](../docs/V3_ROADMAP.md)。
 
 ## 运行
 

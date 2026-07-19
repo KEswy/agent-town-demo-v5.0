@@ -92,6 +92,18 @@ M04-B 把普通非警长白天发言接入 `public_speech_continuity.v1`，计�
 
 规则 fallback 会对齐 stance；启用 LLM 后，偏离必须引用本次已选的新增公开 signal，或命中内部 seed 与 NPC 参数决定的确定性扰动。合法声明和规则强制回应使用独立原因，不会把私有 belief evidence ID 写入持久化计划或公开台词。
 
+M06-A 的隐藏信息不变性矩阵已并入完整 smoke。`hidden_info_projection.v1` 会比较普通村民玩家的公开/API 等价投影，以及所有普通 NPC 村民的 belief、stance、决策上下文、连续性和规则 fallback；`hidden_info_invariance.v1` 只输出摘要、计数和首个差异路径，不保存隐藏身份正文。
+
+矩阵自动覆盖隐藏身份真值、悍跳内部标记、声明内部来源、未公布夜间结果和组合变体。固定夹具执行 96 项无权视角差分，并用公开查验结果变化作为必须被检测到的负对照。M06-A 只接受普通村民玩家和无警徽 NPC 村民；合法角色私有视角留给 M06-B。
+
+无需启动后端即可执行，使用文末同一条完整自检命令：
+
+```bash
+backend/.venv/bin/python scripts/smoke_check.py
+```
+
+该命令不会启动 FastAPI 或 Godot 编辑器；末段只会短暂运行 Godot headless 资源加载检查。
+
 只关闭 stance 明细、仍保留 belief 时使用：
 
 ```bash
