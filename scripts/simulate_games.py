@@ -98,6 +98,7 @@ def main() -> int:
         metrics = report["metrics"]
         belief_summary = report["belief_summary"]
         stance_summary = report["stance_summary"]
+        continuity_summary = report["speech_continuity_summary"]
         good_vote = metrics["good_exile_vote"]
         fake_seer = metrics["fake_seer_acceptance"]
         print(
@@ -133,6 +134,11 @@ def main() -> int:
                 "unexplained_change="
                 f"{_format_rate(stance_summary['unexplained_change_rate'])}"
             )
+        print(
+            "[CONTINUITY] "
+            f"controlled_speeches={continuity_summary['controlled_speech_count']}; "
+            f"reasons={continuity_summary['reason_counts']}"
+        )
     return 0
 
 

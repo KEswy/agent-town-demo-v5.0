@@ -84,6 +84,14 @@ M04-A 默认还输出 `stance_summary.v1`：每名 NPC 的统一立场变化，�
 [STANCE] mode=shadow; observations=...; alignment=...; unexplained_change=...
 ```
 
+M04-B 把普通非警长白天发言接入 `public_speech_continuity.v1`，计划升级为 `public_speech_plan.v3`；警长票和放逐票仍只做 shadow 对照。模拟结果为 `agent_town_simulation.v6` / `agent_town_simulation_batch.v6`，并始终输出不含私有 belief 内容的 `speech_continuity_metrics.v1` 原因计数：
+
+```text
+[CONTINUITY] controlled_speeches=...; reasons={'stance_aligned': ..., 'new_public_evidence': ..., 'deterministic_variance': ..., 'authorized_claim': ..., 'mandatory_rule_response': ..., 'unscored': ...}
+```
+
+规则 fallback 会对齐 stance；启用 LLM 后，偏离必须引用本次已选的新增公开 signal，或命中内部 seed 与 NPC 参数决定的确定性扰动。合法声明和规则强制回应使用独立原因，不会把私有 belief evidence ID 写入持久化计划或公开台词。
+
 只关闭 stance 明细、仍保留 belief 时使用：
 
 ```bash
@@ -104,7 +112,7 @@ backend/.venv/bin/python scripts/simulate_games.py \
   --output /tmp/agent-town-simulation-1000.json
 ```
 
-关闭 belief 轨迹不会改变 `gameplay_digest`、胜负或指标，会把每局 `belief_trace / stance_trace` 和批量 `belief_summary / stance_summary` 设为 `null`。单独使用 `--no-stance-trace` 时，只有 stance 两项为 `null`。
+关闭 belief 轨迹不会改变 `gameplay_digest`、胜负或指标，会把每局 `belief_trace / stance_trace` 和批量 `belief_summary / stance_summary` 设为 `null`。单独使用 `--no-stance-trace` 时，只有 stance 两项为 `null`；两种精简模式都保留体积很小的 `speech_continuity` 原因汇总。
 
 ## 启动后端和 LLM
 

@@ -107,8 +107,8 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
 
-    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-E" not in root_readme:
-        raise SmokeCheckError("root README must identify the active V3.1-E iteration")
+    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-F" not in root_readme:
+        raise SmokeCheckError("root README must identify the active V3.1-F iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
@@ -120,8 +120,8 @@ def check_release_docs() -> None:
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
 
-    if "V3.1-E" not in backend_readme or "V3.1-E" not in roadmap:
-        raise SmokeCheckError("V3.1-E status must stay synchronized across development docs")
+    if "V3.1-F" not in backend_readme or "V3.1-F" not in roadmap:
+        raise SmokeCheckError("V3.1-F status must stay synchronized across development docs")
     if "scripts/simulate_games.py" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
     if "agent_town_metrics.v1" not in commands:
@@ -137,8 +137,15 @@ def check_release_docs() -> None:
         or "--no-stance-trace" not in commands
     ):
         raise SmokeCheckError("COMMANDS.md must document M04 shadow stance handling")
+    if (
+        "public_speech_continuity.v1" not in commands
+        or "public_speech_plan.v3" not in commands
+        or "speech_continuity_metrics.v1" not in commands
+        or "[CONTINUITY]" not in commands
+    ):
+        raise SmokeCheckError("COMMANDS.md must document M04-B controlled speech")
 
-    print("[OK] V3.1-E README, commands, and roadmap status are synchronized.")
+    print("[OK] V3.1-F README, commands, and roadmap status are synchronized.")
 
 
 def check_json_files() -> None:
@@ -467,9 +474,12 @@ from pydantic import ValidationError
 from app.main import normalize_public_speech_plan_payload
 from app.npc_decision import (
     NPCDecisionContextV1,
+    PublicSpeechContinuityV1,
     PublicSpeechDecisionV1,
     PublicSpeechPlanV2,
+    PublicSpeechPlanV3,
     upgrade_public_speech_decision_v1,
+    validate_public_speech_continuity,
     validate_public_speech_decision,
     validate_public_speech_plan,
 )
@@ -717,6 +727,119 @@ if validate_public_speech_plan(context, valid_v2_plan):
 if context.model_dump_json() != context_before_v2_validation:
     raise SystemExit("V2 plan validation must not mutate its rule context")
 
+continuity_payload = {
+    "schema_version": "public_speech_continuity.v1",
+    "stance_schema_version": "stance_summary.v1",
+    "actor_id": 2,
+    "day": 1,
+    "phase": "DAY_MEETING",
+    "trusted_target_ids": [],
+    "primary_suspect_id": 3,
+    "secondary_suspect_id": 4,
+    "provisional_vote_target_id": 3,
+    "verification_target_id": 4,
+    "verification_condition": "vote_alignment",
+    "confidence": 0.76,
+    "basis_evidence_ids": ["belief:public:1"],
+    "previous_position_day": 1,
+    "new_public_signal_ids": ["signal:sheriff_withdraw:1:4"],
+    "variance_allowed": False,
+    "mandatory_response": False,
+}
+continuity = PublicSpeechContinuityV1.model_validate(continuity_payload)
+valid_v3_plan = PublicSpeechPlanV3.model_validate(
+    {
+        **deepcopy(valid_v2_payload),
+        "schema_version": "public_speech_plan.v3",
+        "continuity_reason": "stance_aligned",
+        "continuity_signal_ids": [],
+    }
+)
+if validate_public_speech_continuity(context, continuity, valid_v3_plan):
+    raise SystemExit("an aligned V3 plan should consume its legal stance card")
+
+new_signal_plan = PublicSpeechPlanV3.model_validate(
+    {
+        **deepcopy(valid_v2_payload),
+        "schema_version": "public_speech_plan.v3",
+        "primary_target_id": 4,
+        "secondary_target_id": 3,
+        "stance_target_id": 4,
+        "question": {"target_id": 4, "topic": "action_motive"},
+        "verification": {"target_id": 4, "criterion": "vote_alignment"},
+        "provisional_vote_target_id": 4,
+        "signal_ids": ["signal:sheriff_withdraw:1:4"],
+        "continuity_reason": "new_public_evidence",
+        "continuity_signal_ids": ["signal:sheriff_withdraw:1:4"],
+    }
+)
+if (
+    validate_public_speech_plan(context, new_signal_plan)
+    or validate_public_speech_continuity(context, continuity, new_signal_plan)
+):
+    raise SystemExit("a stance change tied to one selected new public signal should pass")
+
+unexplained_v3_plan = new_signal_plan.model_copy(
+    update={
+        "continuity_reason": "stance_aligned",
+        "continuity_signal_ids": [],
+    }
+)
+if not any(
+    error.startswith("continuity_unexplained_change")
+    for error in validate_public_speech_continuity(
+        context,
+        continuity,
+        unexplained_v3_plan,
+    )
+):
+    raise SystemExit("a V3 stance change without evidence or variance must fail")
+
+variance_plan = new_signal_plan.model_copy(
+    update={
+        "continuity_reason": "deterministic_variance",
+        "continuity_signal_ids": [],
+    }
+)
+if not any(
+    error.startswith("continuity_variance_not_allowed")
+    for error in validate_public_speech_continuity(context, continuity, variance_plan)
+):
+    raise SystemExit("an unapproved variance reason must not bypass continuity")
+variance_continuity = continuity.model_copy(update={"variance_allowed": True})
+if validate_public_speech_continuity(context, variance_continuity, variance_plan):
+    raise SystemExit("a deterministic actor variance gate should allow a legal divergence")
+
+mandatory_continuity = continuity.model_copy(update={"mandatory_response": True})
+mandatory_plan = valid_v3_plan.model_copy(
+    update={"continuity_reason": "mandatory_rule_response"}
+)
+if validate_public_speech_continuity(context, mandatory_continuity, mandatory_plan):
+    raise SystemExit("a Python-required response should carry its explicit continuity reason")
+
+authorized_claim_plan = PublicSpeechPlanV3.model_validate(
+    {
+        **deepcopy(valid_v2_payload),
+        "schema_version": "public_speech_plan.v3",
+        "intent": "reveal",
+        "secondary_target_id": None,
+        "verification": {"target_id": 3, "criterion": "claim_consistency"},
+        "tactic": "role_reveal",
+        "claim_option_ids": ["claim:seer-check:3"],
+        "continuity_reason": "authorized_claim",
+        "continuity_signal_ids": [],
+    }
+)
+if (
+    validate_public_speech_plan(context, authorized_claim_plan)
+    or validate_public_speech_continuity(
+        context,
+        continuity,
+        authorized_claim_plan,
+    )
+):
+    raise SystemExit("an allowlisted role/check bundle should use authorized_claim")
+
 if normalize_public_speech_plan_payload(deepcopy(valid_v2_payload)) != valid_v2_payload:
     raise SystemExit("a normal flat V2 plan must pass through normalization unchanged")
 
@@ -834,6 +957,31 @@ if (
 ):
     raise SystemExit("a revealed good check must support and avoid voting its target")
 
+dead_check_context_payload = deepcopy(context_payload)
+dead_check_context_payload["claim_options"][0]["facts"][1]["target_id"] = 99
+dead_check_context = NPCDecisionContextV1.model_validate(
+    dead_check_context_payload
+)
+dead_check_decision = PublicSpeechDecisionV1.model_validate(
+    {
+        "schema_version": "public_speech.v1",
+        "intent": "reveal",
+        "target_id": None,
+        "claim_option_ids": ["claim:seer-check:3"],
+        "evidence_ids": [],
+        "signal_ids": [],
+    }
+)
+dead_check_plan = upgrade_public_speech_decision_v1(
+    dead_check_context,
+    dead_check_decision,
+)
+if (
+    dead_check_plan.primary_target_id is not None
+    or validate_public_speech_plan(dead_check_context, dead_check_plan)
+):
+    raise SystemExit("a historical check on a non-living seat must not become a live speech target")
+
 for label, updates, expected_error in [
     (
         "duplicate primary and secondary targets",
@@ -905,7 +1053,7 @@ print("NPC decision contract smoke test passed")
         cwd=BACKEND_DIR,
         fail_message="NPC decision contract smoke test failed",
     )
-    print("[OK] NPC V1/V2 decision schemas, upgrades, and allowlist validation work.")
+    print("[OK] NPC V1/V2/V3 decision schemas, continuity, and allowlist validation work.")
 
 
 def check_npc_tuning() -> None:
@@ -1110,6 +1258,7 @@ from app.simulation import (
     BELIEF_SCHEMA_VERSION as SIMULATION_BELIEF_SCHEMA_VERSION,
     METRICS_SCHEMA_VERSION,
     SIMULATION_SCHEMA_VERSION,
+    SPEECH_CONTINUITY_METRICS_VERSION,
     STANCE_SCHEMA_VERSION as SIMULATION_STANCE_SCHEMA_VERSION,
     _choose_public_player_target,
     run_rule_simulation,
@@ -1171,6 +1320,26 @@ if (
     or not first["metrics"]["post_game_only"]
 ):
     raise SystemExit("a simulated game must expose versioned post-game metrics")
+continuity_metrics = first["speech_continuity"]
+continuity_reasons = {
+    "stance_aligned",
+    "new_public_evidence",
+    "deterministic_variance",
+    "authorized_claim",
+    "mandatory_rule_response",
+    "unscored",
+}
+if (
+    continuity_metrics["schema_version"] != SPEECH_CONTINUITY_METRICS_VERSION
+    or continuity_metrics["continuity_schema_version"]
+    != "public_speech_continuity.v1"
+    or continuity_metrics["plan_schema_version"] != "public_speech_plan.v3"
+    or set(continuity_metrics["reason_counts"]) != continuity_reasons
+    or sum(continuity_metrics["reason_counts"].values())
+    != continuity_metrics["controlled_speech_count"]
+    or continuity_metrics["controlled_speech_count"] <= 0
+):
+    raise SystemExit("a simulation must account for every controlled V3 speech reason")
 belief_trace = first["belief_trace"]
 if (
     first["belief_schema_version"] != BELIEF_SCHEMA_VERSION
@@ -1340,6 +1509,22 @@ if (
     or batch["stance_summary"]["game_count"] != 6
 ):
     raise SystemExit("batch simulation must aggregate compatible shadow stances")
+continuity_summary = batch["speech_continuity_summary"]
+if (
+    batch["speech_continuity_schema_version"]
+    != SPEECH_CONTINUITY_METRICS_VERSION
+    or continuity_summary["schema_version"]
+    != SPEECH_CONTINUITY_METRICS_VERSION
+    or set(continuity_summary["reason_counts"]) != continuity_reasons
+    or sum(continuity_summary["reason_counts"].values())
+    != continuity_summary["controlled_speech_count"]
+    or continuity_summary["controlled_speech_count"]
+    != sum(
+        game["speech_continuity"]["controlled_speech_count"]
+        for game in batch["games"]
+    )
+):
+    raise SystemExit("batch simulation must conserve controlled speech reasons")
 stance_alignment_total = sum(
     batch["stance_summary"]["alignment_counts"].values()
 )
@@ -2131,7 +2316,7 @@ print("headless simulation smoke test passed")
         cwd=BACKEND_DIR,
         fail_message="headless deterministic simulation smoke test failed",
     )
-    print("[OK] Simulations, metrics, beliefs, and shadow stance continuity are deterministic.")
+    print("[OK] Simulations, beliefs, shadow stances, and controlled speech reasons are deterministic.")
 
 
 def check_backend_search() -> None:
@@ -3901,6 +4086,87 @@ if any(
 if not any(item.visibility == "private" for item in villager_decision_context.evidence):
     raise SystemExit("decision context should preserve evidence visibility for legality checks")
 
+decision_context_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[7],
+)
+villager_continuity = main_module.build_public_speech_continuity_context(
+    decision_context_state,
+    decision_context_state.characters[6],
+    villager_decision_context,
+    mandatory_response=False,
+)
+villager_continuity_payload = villager_continuity.model_dump(mode="json")
+if (
+    villager_continuity.schema_version != "public_speech_continuity.v1"
+    or villager_continuity.stance_schema_version != "stance_summary.v1"
+    or "role" in villager_continuity_payload
+    or "camp" in villager_continuity_payload
+):
+    raise SystemExit("the live continuity input must be versioned and omit hidden labels")
+legal_villager_targets = {target.id for target in villager_decision_context.legal_targets}
+continuity_targets = {
+    target_id
+    for target_id in [
+        *villager_continuity.trusted_target_ids,
+        villager_continuity.primary_suspect_id,
+        villager_continuity.secondary_suspect_id,
+        villager_continuity.provisional_vote_target_id,
+        villager_continuity.verification_target_id,
+    ]
+    if target_id is not None
+}
+if not continuity_targets.issubset(legal_villager_targets):
+    raise SystemExit("live continuity targets must stay inside the speech allowlist")
+
+continuity_hidden_swap = decision_context_state.model_copy(deep=True)
+hidden_wolf = main_module.get_character(continuity_hidden_swap, 2)
+hidden_good = main_module.get_character(continuity_hidden_swap, 8)
+hidden_wolf.role, hidden_good.role = hidden_good.role, hidden_wolf.role
+hidden_wolf.camp, hidden_good.camp = hidden_good.camp, hidden_wolf.camp
+continuity_hidden_swap.wolf_fake_seer_id = hidden_good.id
+hidden_swap_speaker = main_module.get_character(continuity_hidden_swap, 7)
+hidden_swap_context = main_module.build_public_speech_decision_context(
+    continuity_hidden_swap,
+    hidden_swap_speaker,
+    decision_rag_context,
+    [],
+)
+hidden_swap_continuity = main_module.build_public_speech_continuity_context(
+    continuity_hidden_swap,
+    hidden_swap_speaker,
+    hidden_swap_context,
+    mandatory_response=False,
+)
+if villager_continuity != hidden_swap_continuity:
+    raise SystemExit("good live continuity must be invariant to unseen target role swaps")
+
+decision_context_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[2],
+)
+wolf_continuity = main_module.build_public_speech_continuity_context(
+    decision_context_state,
+    decision_context_state.characters[1],
+    wolf_decision_context,
+    mandatory_response=False,
+)
+legal_wolf_targets = {target.id for target in wolf_decision_context.legal_targets}
+if any(
+    target_id not in legal_wolf_targets
+    for target_id in [
+        *wolf_continuity.trusted_target_ids,
+        wolf_continuity.primary_suspect_id,
+        wolf_continuity.secondary_suspect_id,
+        wolf_continuity.provisional_vote_target_id,
+        wolf_continuity.verification_target_id,
+    ]
+    if target_id is not None
+):
+    raise SystemExit("wolf continuity must filter legal private beliefs through speech targets")
+
 signal_state = make_rule_test_game(
     [
         "villager", "werewolf", "werewolf", "werewolf", "werewolf",
@@ -4209,7 +4475,21 @@ class StubLLMClient:
         self.public_contexts.append(dict(context))
         if self.snapshotter is not None:
             self.gameplay_snapshots.append(self.snapshotter())
-        target = context["legal_targets"][0]
+        continuity = context["continuity"]
+        expected_target_id = (
+            continuity.get("provisional_vote_target_id")
+            or continuity.get("primary_suspect_id")
+            or next(iter(continuity.get("trusted_target_ids", [])), None)
+        )
+        target = next(
+            item
+            for item in context["legal_targets"]
+            if item["id"] == expected_target_id
+        ) if expected_target_id is not None else context["legal_targets"][0]
+        trusted = target["id"] in continuity.get("trusted_target_ids", []) and not (
+            continuity.get("provisional_vote_target_id")
+            or continuity.get("primary_suspect_id")
+        )
         public_evidence = next(
             (
                 item
@@ -4224,27 +4504,35 @@ class StubLLMClient:
             if item.get("kind") == "sheriff_elected"
         )
         data = {
-            "schema_version": "public_speech_plan.v2",
-            "intent": "pressure",
+            "schema_version": "public_speech_plan.v3",
+            "intent": "defend" if trusted else "pressure",
             "primary_target_id": target["id"],
             "secondary_target_id": None,
-            "stance": "oppose",
+            "stance": "support" if trusted else "oppose",
             "stance_target_id": target["id"],
             "confidence": 72,
-            "signal_read": "raises_suspicion",
+            "signal_read": "reduces_suspicion" if trusted else "raises_suspicion",
             "question": {
                 "target_id": target["id"],
-                "topic": "action_motive",
+                "topic": "response_to_pressure" if trusted else "action_motive",
             },
             "verification": {
                 "target_id": target["id"],
-                "criterion": "response_quality",
+                "criterion": "follow_up_action" if trusted else "response_quality",
             },
-            "provisional_vote_target_id": target["id"],
-            "tactic": "direct_pressure",
+            "provisional_vote_target_id": None if trusted else target["id"],
+            "tactic": "conditional_defense" if trusted else "direct_pressure",
             "claim_option_ids": [],
             "evidence_ids": [public_evidence["id"]] if public_evidence else [],
             "signal_ids": [public_signal["id"]],
+            "continuity_reason": (
+                "mandatory_rule_response"
+                if continuity.get("mandatory_response")
+                else "stance_aligned"
+                if expected_target_id is not None
+                else "unscored"
+            ),
+            "continuity_signal_ids": [],
         }
         if self.public_attempts == 1:
             data.pop("schema_version")
@@ -4340,18 +4628,21 @@ try:
         or not decision_call_context.get("private_memory")
         or not decision_call_context.get("public_logs")
         or len(decision_call_context.get("decision_signals", [])) < 2
+        or decision_call_context.get("continuity", {}).get("schema_version")
+        != "public_speech_continuity.v1"
+        or decision_call_context.get("continuity", {}).get("actor_id") != 2
     ):
         raise SystemExit("structured DAY_MEETING calls should receive the complete actor context")
     output_contract = decision_call_context.get("output_contract", {})
     if (
-        output_contract.get("schema_version") != "public_speech_plan.v2"
+        output_contract.get("schema_version") != "public_speech_plan.v3"
         or output_contract.get("format") != "flat_json_object"
         or "fields" in output_contract
         or "schema_version" not in output_contract.get("required_root_keys", [])
         or output_contract.get("flat_json_example", {}).get("schema_version")
-        != "public_speech_plan.v2"
+        != "public_speech_plan.v3"
     ):
-        raise SystemExit("the strategy prompt should request the complete V2 speech plan contract")
+        raise SystemExit("the strategy prompt should request the complete V3 speech plan contract")
     retry_feedback = stub_llm_client.public_contexts[1].get("validation_feedback", {})
     if (
         "schema_version" not in retry_feedback.get("required_root_keys", [])
@@ -4361,11 +4652,17 @@ try:
         raise SystemExit("a schema retry should explicitly request every plan field at the JSON root")
     stored_legacy_upgrade = llm_game_state.speeches[-1].decision_plan
     if (
-        stored_legacy_upgrade.get("schema_version") != "public_speech_plan.v2"
+        stored_legacy_upgrade.get("schema_version") != "public_speech_plan.v3"
         or stored_legacy_upgrade.get("primary_target_id") != stub_llm_client.selected_target_id
         or stored_legacy_upgrade.get("provisional_vote_target_id") != stub_llm_client.selected_target_id
+        or stored_legacy_upgrade.get("continuity_reason")
+        not in {"stance_aligned", "mandatory_rule_response", "unscored"}
+        or stored_legacy_upgrade.get("continuity_signal_ids")
     ):
-        raise SystemExit("an accepted flat V2 mock strategy should be stored without a wrapper")
+        raise SystemExit(
+            "an accepted flat V3 strategy should persist its safe continuity reason: "
+            + json.dumps(stored_legacy_upgrade, ensure_ascii=False, sort_keys=True)
+        )
     strategy_context_text = json.dumps(decision_call_context, ensure_ascii=False)
     if (
         "PRIVATE_STRATEGY_TOKEN" not in strategy_context_text
@@ -4384,6 +4681,7 @@ try:
         for key in [
             "actor", "legal_knowledge", "private_memory", "evidence",
             "decision_signals", "legal_targets", "claim_options", "allowed_intents",
+            "continuity",
             "focus_target", "rule_text", "public_evidence", "public_plan",
             "selected_public_signals", "recent_public_logs",
         ]
@@ -4423,7 +4721,7 @@ try:
         for marker in ["重点压力位", "我具体问", "不符合", "暂定票"]
     ):
         raise SystemExit(
-            "the Python-rendered V2 body must preserve stance, question, verification, and provisional vote"
+            "the Python-rendered V3 body must preserve stance, question, verification, and provisional vote"
         )
     if not recovered_validation_log_path.exists():
         raise SystemExit("a rejected draft should be logged even when a later validation succeeds")
@@ -4583,7 +4881,7 @@ try:
     if (
         failed_target is None
         or failed_target.id != validation_failure_target.id
-        or failed_plan.schema_version != "public_speech_plan.v2"
+        or failed_plan.schema_version != "public_speech_plan.v3"
         or failed_plan.primary_target_id != validation_failure_target.id
         or failed_claims
         or len(failed_rag_context) != 1
@@ -5118,7 +5416,7 @@ try:
         role_only_client.strategy_attempts != 2
         or role_only_client.expression_calls != 1
         or role_only_target is not None
-        or role_only_plan.schema_version != "public_speech_plan.v2"
+        or role_only_plan.schema_version != "public_speech_plan.v3"
         or role_only_plan.primary_target_id is not None
         or selected_role_only_claims != role_only_claims
         or not role_only_generation.used_llm

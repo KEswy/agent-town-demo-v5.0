@@ -1,8 +1,9 @@
-"""Versioned shadow stance summaries and continuity observations for V3.1-E.
+"""Versioned stance summaries and shadow continuity observations for V3.1-F.
 
 This module consumes only legal-perspective belief snapshots and structured
-public positions. It observes decisions after they happen and never feeds a
-target back into live speech, sheriff voting, exile voting, or rule state.
+public positions. M04-B lets ordinary non-sheriff day speech read one actor's
+summary through a separate controlled contract; trace recording, sheriff
+voting, exile voting, and rule state remain observational.
 """
 
 from __future__ import annotations

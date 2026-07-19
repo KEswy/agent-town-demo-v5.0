@@ -24,6 +24,11 @@ from .simulation_metrics import (
     aggregate_batch_metrics,
     build_game_metrics,
 )
+from .npc_decision import (
+    PUBLIC_SPEECH_CONTINUITY_SCHEMA_VERSION,
+    PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
+    SpeechContinuityReason,
+)
 from .stance import (
     STANCE_SCHEMA_VERSION,
     StanceTraceRecorder,
@@ -31,9 +36,10 @@ from .stance import (
 )
 
 
-SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v5"
-BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v5"
+SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v6"
+BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v6"
 PLAYER_POLICY_VERSION = "legal_public_baseline.v1"
+SPEECH_CONTINUITY_METRICS_VERSION = "speech_continuity_metrics.v1"
 DEFAULT_MAX_DAYS = 20
 DEFAULT_MAX_STEPS = 5_000
 
@@ -161,12 +167,27 @@ def run_rule_simulation_batch(
     ]
     winner_counts = Counter(str(result["winner"]) for result in results)
     total_days = sum(int(result["total_days"]) for result in results)
+    continuity_reason_counts: Counter[str] = Counter()
+    for result in results:
+        continuity_reason_counts.update(
+            {
+                str(reason): int(count)
+                for reason, count in result["speech_continuity"][
+                    "reason_counts"
+                ].items()
+            }
+        )
+    controlled_speech_count = sum(
+        int(result["speech_continuity"]["controlled_speech_count"])
+        for result in results
+    )
     return {
         "schema_version": BATCH_SCHEMA_VERSION,
         "simulation_schema_version": SIMULATION_SCHEMA_VERSION,
         "metrics_schema_version": METRICS_SCHEMA_VERSION,
         "belief_schema_version": BELIEF_SCHEMA_VERSION,
         "stance_schema_version": STANCE_SCHEMA_VERSION,
+        "speech_continuity_schema_version": SPEECH_CONTINUITY_METRICS_VERSION,
         "player_policy_version": PLAYER_POLICY_VERSION,
         "start_seed": start_seed,
         "games_requested": games,
@@ -190,6 +211,16 @@ def run_rule_simulation_batch(
             if capture_beliefs and capture_stances
             else None
         ),
+        "speech_continuity_summary": {
+            "schema_version": SPEECH_CONTINUITY_METRICS_VERSION,
+            "continuity_schema_version": PUBLIC_SPEECH_CONTINUITY_SCHEMA_VERSION,
+            "plan_schema_version": PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
+            "controlled_speech_count": controlled_speech_count,
+            "reason_counts": {
+                reason.value: continuity_reason_counts.get(reason.value, 0)
+                for reason in SpeechContinuityReason
+            },
+        },
         "games": results,
     }
 
@@ -619,6 +650,27 @@ def build_simulation_result(
 ) -> dict[str, object]:
     """Build a timestamp- and game-id-free result suitable for exact replay."""
 
+    controlled_plans = [
+        speech.decision_plan
+        for speech in game_state.speeches
+        if not speech.is_player
+        and speech.phase == "DAY_MEETING"
+        and speech.decision_plan.get("schema_version")
+        == PUBLIC_SPEECH_PLAN_SCHEMA_VERSION
+    ]
+    continuity_reason_counts = Counter(
+        str(plan.get("continuity_reason", ""))
+        for plan in controlled_plans
+    )
+    unknown_reasons = set(continuity_reason_counts).difference(
+        reason.value for reason in SpeechContinuityReason
+    )
+    if unknown_reasons:
+        raise SimulationError(
+            "controlled public speech has unknown continuity reason: "
+            + ", ".join(sorted(unknown_reasons))
+        )
+
     result: dict[str, object] = {
         "schema_version": SIMULATION_SCHEMA_VERSION,
         "metrics_schema_version": METRICS_SCHEMA_VERSION,
@@ -661,6 +713,16 @@ def build_simulation_result(
         "phase_trace": phase_trace,
         "llm_validation_failure_count": len(game_state.llm_validation_failures),
         "metrics": build_game_metrics(game_state),
+        "speech_continuity": {
+            "schema_version": SPEECH_CONTINUITY_METRICS_VERSION,
+            "continuity_schema_version": PUBLIC_SPEECH_CONTINUITY_SCHEMA_VERSION,
+            "plan_schema_version": PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
+            "controlled_speech_count": len(controlled_plans),
+            "reason_counts": {
+                reason.value: continuity_reason_counts.get(reason.value, 0)
+                for reason in SpeechContinuityReason
+            },
+        },
     }
     result["gameplay_digest"] = _payload_digest(result)
     result["belief_trace"] = belief_trace

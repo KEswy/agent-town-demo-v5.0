@@ -1,8 +1,9 @@
-"""Legal-perspective shadow beliefs for Agent Town V3.
+"""Legal-perspective beliefs and audit traces for Agent Town V3.
 
-The V3.1-D implementation remains observational. It adds auditable public
-soft-evidence decay and structured actor-private chat evidence, but no live
-speech, action, or vote reads these scores yet.
+V3.1-D added auditable public soft-evidence decay and structured actor-private
+chat evidence. V3.1-F lets ordinary non-sheriff day speech consume one actor's
+derived stance; actions, votes, rule outcomes, and the trace recorder remain
+separate from belief construction.
 """
 
 from __future__ import annotations

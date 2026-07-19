@@ -14,6 +14,8 @@ from pydantic import BaseModel, Field, ValidationError
 from .llm import LLM_CLIENT, LLMGeneration, LLMJsonGeneration
 from .npc_decision import (
     CONTEXT_SCHEMA_VERSION,
+    LEGACY_PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
+    PUBLIC_SPEECH_CONTINUITY_SCHEMA_VERSION,
     PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
     PUBLIC_SPEECH_SCHEMA_VERSION,
     ClaimFactV1,
@@ -25,17 +27,23 @@ from .npc_decision import (
     DecisionSignalV1,
     LegalTargetV1,
     NPCDecisionContextV1,
+    PublicSpeechContinuityV1,
     PublicPositionV1,
     PublicSpeechDecisionV1,
     PublicSpeechIntent,
     PublicSpeechPlanV2,
+    PublicSpeechPlanV3,
     QuestionTopic,
     SignalRead,
     SpeechQuestionV2,
+    SpeechContinuityReason,
     SpeechStance,
     SpeechTactic,
     SpeechVerificationV2,
     VerificationCriterion,
+    get_public_speech_continuity_expectation,
+    public_speech_plan_matches_continuity,
+    validate_public_speech_continuity,
     validate_public_speech_decision,
     validate_public_speech_plan,
     upgrade_public_speech_decision_v1,
@@ -8959,6 +8967,249 @@ def build_public_speech_fallback_decision(
     )
 
 
+def build_public_speech_continuity_context(
+    game_state: WolfGameState,
+    speaker: CharacterState,
+    decision_context: NPCDecisionContextV1,
+    *,
+    mandatory_response: bool,
+) -> PublicSpeechContinuityV1:
+    """Project the actor's legal stance into the first live consumer contract."""
+
+    if game_state.phase != "DAY_MEETING" or game_state.sheriff_id == speaker.id:
+        raise ValueError(
+            "public speech continuity is limited to ordinary non-sheriff day speech"
+        )
+    if decision_context.actor.id != speaker.id:
+        raise ValueError("public speech continuity actor does not match decision context")
+
+    # Local imports avoid an import cycle: belief/stance deliberately reuse the
+    # rule models in this module, while npc_decision remains dependency-free.
+    from .belief import build_belief_snapshot
+    from .stance import STANCE_SCHEMA_VERSION, build_stance_snapshot
+
+    belief_snapshot = build_belief_snapshot(
+        game_state,
+        observer_ids=[speaker.id],
+    )
+    stance_snapshot = build_stance_snapshot(
+        game_state,
+        belief_snapshot=belief_snapshot,
+    )
+    actor_summaries = [
+        item
+        for item in stance_snapshot["actors"]
+        if int(item["actor_id"]) == speaker.id
+    ]
+    if len(actor_summaries) != 1:
+        raise ValueError("public speech continuity requires one actor stance")
+    summary = actor_summaries[0]
+    legal_target_ids = {target.id for target in decision_context.legal_targets}
+    trusted_target_ids = [
+        int(item)
+        for item in summary["trusted_target_ids"]
+        if int(item) in legal_target_ids
+    ]
+    primary_suspect_id = summary["primary_suspect_id"]
+    if primary_suspect_id not in legal_target_ids:
+        primary_suspect_id = None
+    secondary_suspect_id = summary["secondary_suspect_id"]
+    if secondary_suspect_id not in legal_target_ids:
+        secondary_suspect_id = None
+    provisional_vote_target_id = summary["provisional_vote_target_id"]
+    if provisional_vote_target_id not in legal_target_ids:
+        provisional_vote_target_id = primary_suspect_id
+    verification_target_id = summary["verification_target_id"]
+    if verification_target_id not in legal_target_ids:
+        verification_target_id = None
+
+    previous_position = get_latest_public_position(game_state, speaker.id)
+    previous_signal_ids = (
+        set(previous_position.basis_signal_ids)
+        if previous_position is not None
+        else set()
+    )
+    new_public_signal_ids = (
+        sorted(
+            signal.id
+            for signal in decision_context.decision_signals
+            if signal.id not in previous_signal_ids
+            and signal.day >= previous_position.day
+        )
+        if previous_position is not None
+        else []
+    )
+    tuning = get_character_strategy_tuning(speaker)
+    variance_threshold = tuning.decision_variance * (1.0 - tuning.plan_consistency)
+    variance_allowed = deterministic_strategy_roll(
+        game_state,
+        speaker,
+        "ordinary_public_speech_stance_variance",
+    ) < variance_threshold
+
+    return PublicSpeechContinuityV1(
+        schema_version=PUBLIC_SPEECH_CONTINUITY_SCHEMA_VERSION,
+        stance_schema_version=STANCE_SCHEMA_VERSION,
+        actor_id=speaker.id,
+        day=game_state.day,
+        phase="DAY_MEETING",
+        trusted_target_ids=trusted_target_ids,
+        primary_suspect_id=primary_suspect_id,
+        secondary_suspect_id=secondary_suspect_id,
+        provisional_vote_target_id=provisional_vote_target_id,
+        verification_target_id=verification_target_id,
+        verification_condition=(
+            summary["verification_condition"]
+            if verification_target_id is not None
+            else None
+        ),
+        confidence=float(summary["confidence"]),
+        basis_evidence_ids=[str(item) for item in summary["basis_evidence_ids"]],
+        previous_position_day=(
+            previous_position.day if previous_position is not None else None
+        ),
+        new_public_signal_ids=new_public_signal_ids,
+        variance_allowed=variance_allowed,
+        mandatory_response=mandatory_response,
+    )
+
+
+def annotate_public_speech_plan_continuity(
+    plan: PublicSpeechPlanV2,
+    continuity: PublicSpeechContinuityV1,
+) -> PublicSpeechPlanV3:
+    """Upgrade a legacy plan with a deterministic, public-safe reason."""
+
+    _commitment, expected_target_id = get_public_speech_continuity_expectation(
+        continuity
+    )
+    selected_new_signals = sorted(
+        set(plan.signal_ids).intersection(continuity.new_public_signal_ids)
+    )[:3]
+    if continuity.mandatory_response:
+        reason = SpeechContinuityReason.MANDATORY_RULE_RESPONSE
+        selected_new_signals = []
+    elif plan.claim_option_ids:
+        reason = SpeechContinuityReason.AUTHORIZED_CLAIM
+        selected_new_signals = []
+    elif expected_target_id is None:
+        reason = SpeechContinuityReason.UNSCORED
+        selected_new_signals = []
+    elif public_speech_plan_matches_continuity(continuity, plan):
+        reason = SpeechContinuityReason.STANCE_ALIGNED
+        selected_new_signals = []
+    elif selected_new_signals:
+        reason = SpeechContinuityReason.NEW_PUBLIC_EVIDENCE
+    elif continuity.variance_allowed:
+        reason = SpeechContinuityReason.DETERMINISTIC_VARIANCE
+    else:
+        # The validator will reject this mismatched "aligned" reason. Keeping
+        # the mismatch explicit prevents legacy V1/V2 model output from
+        # silently bypassing the new continuity boundary.
+        reason = SpeechContinuityReason.STANCE_ALIGNED
+        selected_new_signals = []
+    return PublicSpeechPlanV3(
+        **{
+            **plan.model_dump(mode="python"),
+            "schema_version": PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
+            "continuity_reason": reason,
+            "continuity_signal_ids": selected_new_signals,
+        }
+    )
+
+
+def align_rule_public_speech_plan_to_continuity(
+    context: NPCDecisionContextV1,
+    continuity: PublicSpeechContinuityV1,
+    plan: PublicSpeechPlanV2,
+) -> PublicSpeechPlanV3:
+    """Make the deterministic fallback consume the stance card conservatively."""
+
+    commitment, expected_target_id = get_public_speech_continuity_expectation(
+        continuity
+    )
+    if continuity.mandatory_response or plan.claim_option_ids or expected_target_id is None:
+        return annotate_public_speech_plan_continuity(plan, continuity)
+
+    related_signals = [
+        signal
+        for signal in context.decision_signals
+        if expected_target_id in {signal.actor_id, signal.target_id}
+        or signal.kind
+        in {
+            "sheriff_elected",
+            "badge_transfer",
+            "badge_destroyed",
+            "public_elimination",
+        }
+    ]
+    selected_signal_ids = [related_signals[-1].id] if related_signals else []
+    if selected_signal_ids:
+        signal_read = (
+            SignalRead.REDUCES_SUSPICION
+            if commitment == "trust"
+            else SignalRead.RAISES_SUSPICION
+        )
+    else:
+        signal_read = SignalRead.NONE
+    confidence = max(plan.confidence, int(round(continuity.confidence * 100)))
+    secondary_target_id = (
+        plan.primary_target_id
+        if plan.primary_target_id is not None
+        and plan.primary_target_id != expected_target_id
+        else plan.secondary_target_id
+        if plan.secondary_target_id != expected_target_id
+        else None
+    )
+    if commitment == "trust":
+        aligned = plan.model_copy(
+            update={
+                "intent": PublicSpeechIntent.DEFEND,
+                "primary_target_id": expected_target_id,
+                "secondary_target_id": secondary_target_id,
+                "stance": SpeechStance.SUPPORT,
+                "stance_target_id": expected_target_id,
+                "confidence": confidence,
+                "signal_read": signal_read,
+                "question": SpeechQuestionV2(
+                    target_id=expected_target_id,
+                    topic=QuestionTopic.RESPONSE_TO_PRESSURE,
+                ),
+                "verification": SpeechVerificationV2(
+                    target_id=expected_target_id,
+                    criterion=VerificationCriterion.FOLLOW_UP_ACTION,
+                ),
+                "provisional_vote_target_id": None,
+                "tactic": SpeechTactic.CONDITIONAL_DEFENSE,
+                "signal_ids": selected_signal_ids,
+            }
+        )
+    else:
+        aligned = plan.model_copy(
+            update={
+                "intent": PublicSpeechIntent.PRESSURE,
+                "primary_target_id": expected_target_id,
+                "secondary_target_id": secondary_target_id,
+                "stance": SpeechStance.OPPOSE,
+                "stance_target_id": expected_target_id,
+                "confidence": confidence,
+                "signal_read": signal_read,
+                "question": SpeechQuestionV2(
+                    target_id=expected_target_id,
+                    topic=QuestionTopic.ACTION_MOTIVE,
+                ),
+                "verification": SpeechVerificationV2(
+                    target_id=expected_target_id,
+                    criterion=VerificationCriterion.RESPONSE_QUALITY,
+                ),
+                "provisional_vote_target_id": expected_target_id,
+                "tactic": SpeechTactic.DIRECT_PRESSURE,
+                "signal_ids": selected_signal_ids,
+            }
+        )
+    return annotate_public_speech_plan_continuity(aligned, continuity)
+
+
 def get_sheriff_vote_target_for_received_check(
     game_state: WolfGameState,
     voter_id: int,
@@ -9368,7 +9619,7 @@ def enforce_wolf_story_fallback_plan(
     ][-1:]
     old_primary = plan.primary_target_id
     return PublicSpeechPlanV2(
-        schema_version=PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
+        schema_version=LEGACY_PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
         intent=PublicSpeechIntent.PRESSURE,
         primary_target_id=source_id,
         secondary_target_id=(
@@ -9595,24 +9846,28 @@ def validate_wolf_coordination_plan(
 def normalize_public_speech_plan_payload(
     payload: dict[str, object],
 ) -> dict[str, object]:
-    """Unwrap the one legacy V2 shape without weakening strict validation.
+    """Unwrap the legacy V2/V3 shape without weakening strict validation.
 
     An earlier prompt described the contract as ``{schema_version, fields}``,
-    so some models copied that descriptive wrapper into their answer.  Only
-    that exact two-key V2 wrapper is normalized.  Extra outer keys keep the
+    so some models copied that descriptive wrapper into their answer. Only an
+    exact two-key V2 or V3 wrapper is normalized. Extra outer keys keep the
     payload wrapped, while extra inner keys survive flattening and are then
-    rejected by ``PublicSpeechPlanV2``'s ``extra='forbid'`` configuration.
+    rejected by the selected strict plan model's ``extra='forbid'`` setting.
     """
 
     if set(payload) != {"schema_version", "fields"}:
         return payload
-    if payload.get("schema_version") != PUBLIC_SPEECH_PLAN_SCHEMA_VERSION:
+    schema_version = payload.get("schema_version")
+    if schema_version not in {
+        LEGACY_PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
+        PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
+    }:
         return payload
     wrapped_fields = payload.get("fields")
     if not isinstance(wrapped_fields, dict) or "schema_version" in wrapped_fields:
         return payload
     return {
-        "schema_version": PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
+        "schema_version": schema_version,
         **wrapped_fields,
     }
 
@@ -9629,7 +9884,7 @@ def generate_structured_public_speech_plan(
     list[PublicClaimState],
     list[dict[str, object]],
     LLMGeneration,
-    PublicSpeechPlanV2,
+    PublicSpeechPlanV3,
 ]:
     """Let the LLM select allowlisted speech choices, then validate its text.
 
@@ -9643,6 +9898,16 @@ def generate_structured_public_speech_plan(
         speaker,
         rag_context,
         planned_claims,
+    )
+    mandatory_response = bool(
+        get_required_received_seer_check_signals(decision_context)
+        or get_wolf_teammate_black_check_sources(game_state, speaker.id)
+    )
+    continuity_context = build_public_speech_continuity_context(
+        game_state,
+        speaker,
+        decision_context,
+        mandatory_response=mandatory_response,
     )
     claim_option_map = build_public_speech_claim_option_map(
         game_state,
@@ -9689,6 +9954,11 @@ def generate_structured_public_speech_plan(
         decision_context,
         fallback_decision,
     )
+    fallback_decision = align_rule_public_speech_plan_to_continuity(
+        decision_context,
+        continuity_context,
+        fallback_decision,
+    )
     fallback_errors = validate_public_speech_plan(
         decision_context,
         fallback_decision,
@@ -9711,6 +9981,13 @@ def generate_structured_public_speech_plan(
     fallback_errors.extend(
         validate_received_seer_check_response_plan(
             decision_context,
+            fallback_decision,
+        )
+    )
+    fallback_errors.extend(
+        validate_public_speech_continuity(
+            decision_context,
+            continuity_context,
             fallback_decision,
         )
     )
@@ -9767,6 +10044,7 @@ def generate_structured_public_speech_plan(
         )
 
     context_payload = decision_context.model_dump(mode="json")
+    context_payload["continuity"] = continuity_context.model_dump(mode="json")
     required_received_signals = get_required_received_seer_check_signals(
         decision_context
     )
@@ -9813,6 +10091,13 @@ def generate_structured_public_speech_plan(
                 "criterion": [criterion.value for criterion in VerificationCriterion],
             },
             "provisional_vote_target_id": "null or one id from legal_targets",
+            "continuity_reason": [
+                reason.value for reason in SpeechContinuityReason
+            ],
+            "continuity_signal_ids": (
+                "zero to three ids from continuity.new_public_signal_ids; "
+                "also include each selected id in signal_ids"
+            ),
             "tactic": allowed_tactics,
             "claim_option_ids": "zero to three ids from claim_options only",
             "evidence_ids": "zero to three public ids from evidence only",
@@ -9845,6 +10130,12 @@ def generate_structured_public_speech_plan(
         "还要给出立场、置信度、对公开动作的解读、具体追问、后续验证标准、暂定票型和合法战术。"
         "若选择的验人声明为狼人，主目标、反对立场和暂定票必须都指向该验人目标；"
         "若验人声明为好人，必须支持该目标且不得把暂定票投给他。"
+        "continuity 是 Python 从 actor 合法视角 belief 生成的统一立场摘要。若没有 mandatory_response，"
+        "计划与其主导承诺一致时 continuity_reason 必须为 stance_aligned；没有可比目标时必须为 unscored。"
+        "偏离时只能选择 new_public_evidence 并在 continuity_signal_ids 引用本次 signal_ids 中的新公开信号，"
+        "或在 variance_allowed 为 true 时选择 deterministic_variance。mandatory_response 为 true 时必须选择"
+        "mandatory_rule_response。选择 claim_option_ids 时改用 authorized_claim；未选择声明不能借此偏离立场。"
+        "continuity 的 belief evidence ID 只用于私有策略理解，绝不能进入公开引用。"
         "如果 response_requirements 存在，说明别人公开给 actor 发了金水或查杀；必须选择其中全部"
         "required_signal_ids，并把对应声明者设为主目标或次目标。可以支持、保留或质疑金水，"
         "但不能因为 actor 知道自己的身份就把声明者真假当成公开事实。"
@@ -9923,8 +10214,21 @@ def generate_structured_public_speech_plan(
                     decision_context,
                     legacy_decision,
                 )
+                decision = annotate_public_speech_plan_continuity(
+                    decision,
+                    continuity_context,
+                )
+            elif (
+                decision_payload.get("schema_version")
+                == LEGACY_PUBLIC_SPEECH_PLAN_SCHEMA_VERSION
+            ):
+                legacy_plan = PublicSpeechPlanV2.model_validate(decision_payload)
+                decision = annotate_public_speech_plan_continuity(
+                    legacy_plan,
+                    continuity_context,
+                )
             else:
-                decision = PublicSpeechPlanV2.model_validate(decision_payload)
+                decision = PublicSpeechPlanV3.model_validate(decision_payload)
             decision_errors = validate_public_speech_plan(
                 decision_context,
                 decision,
@@ -9947,6 +10251,13 @@ def generate_structured_public_speech_plan(
             decision_errors.extend(
                 validate_received_seer_check_response_plan(
                     decision_context,
+                    decision,
+                )
+            )
+            decision_errors.extend(
+                validate_public_speech_continuity(
+                    decision_context,
+                    continuity_context,
                     decision,
                 )
             )
@@ -9978,11 +10289,23 @@ def generate_structured_public_speech_plan(
                 game_state,
                 selected_claims,
             )
+            legal_decision_target_ids = {
+                target.id for target in decision_context.legal_targets
+            }
+            actionable_claim_target = (
+                primary_claim_target
+                if primary_claim_target is not None
+                and primary_claim_target.id in legal_decision_target_ids
+                else None
+            )
+            has_targeted_claim = any(
+                claim.target_id is not None for claim in selected_claims
+            )
             if (
                 decision.intent == PublicSpeechIntent.REVEAL
-                and primary_claim_target is not None
+                and actionable_claim_target is not None
                 and decision.primary_target_id is not None
-                and decision.primary_target_id != primary_claim_target.id
+                and decision.primary_target_id != actionable_claim_target.id
             ):
                 decision_errors.append(
                     "claim_target_mismatch: reveal primary_target_id must match the claim target"
@@ -9990,7 +10313,7 @@ def generate_structured_public_speech_plan(
             if (
                 decision.intent == PublicSpeechIntent.REVEAL
                 and selected_claims
-                and primary_claim_target is None
+                and not has_targeted_claim
                 and decision.primary_target_id is not None
             ):
                 decision_errors.append(
@@ -12788,7 +13111,7 @@ def get_latest_public_speech_plan(
     game_state: WolfGameState,
     actor_id: int,
 ) -> Optional[PublicSpeechPlanV2]:
-    """Return this day's last validated plan; stale/legacy speeches are ignored."""
+    """Return this day's last validated V3 or legacy V2 plan."""
     for speech in reversed(game_state.speeches):
         if (
             speech.day != game_state.day
@@ -12798,7 +13121,12 @@ def get_latest_public_speech_plan(
         ):
             continue
         try:
-            return PublicSpeechPlanV2.model_validate(speech.decision_plan)
+            schema_version = speech.decision_plan.get("schema_version")
+            if schema_version == PUBLIC_SPEECH_PLAN_SCHEMA_VERSION:
+                return PublicSpeechPlanV3.model_validate(speech.decision_plan)
+            if schema_version == LEGACY_PUBLIC_SPEECH_PLAN_SCHEMA_VERSION:
+                return PublicSpeechPlanV2.model_validate(speech.decision_plan)
+            return None
         except ValidationError:
             return None
     return None

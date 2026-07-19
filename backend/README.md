@@ -2,9 +2,25 @@
 
 Agent Town Demo 的 Python FastAPI 后端，负责小镇 NPC 对话、知识检索、长期记忆，以及狼人杀规则和对局内 NPC 状态。
 
+## V3.1-F 普通白天发言受控消费 M04-B
+
+普通非警长 `DAY_MEETING` 现在是 `stance_summary.v1` 的第一个实时消费者。`app/main.py` 在进入既有结构化发言决策前，用当前 speaker 的单 actor `belief_state.v2` 构造 `public_speech_continuity.v1`；警长发言、警长票、放逐票和夜间/结算路径不调用该入口。
+
+消费边界如下：
+
+- continuity 只含当前 actor 的信任、主次怀疑、暂定票、验证条件、置信度与私有策略可见的 belief evidence ID；随后再和本次 `NPCDecisionContextV1.legal_targets` 求交。好人对未公开目标身份互换保持输入不变，狼人依法知道的队友也不能绕过发言 allowlist。
+- 当前实时计划为 `public_speech_plan.v3`，继承 v2 全部策略字段，并要求 `continuity_reason` 和最多三个 `continuity_signal_ids`。旧 `public_speech.v1` / `public_speech_plan.v2` 仍可解析，但进入实时链路后必须由 Python 升级成 v3 再校验。
+- `stance_aligned` 必须完全符合摘要的主导承诺；`new_public_evidence` 必须引用同时存在于计划 `signal_ids` 和 continuity 新公开信号 allowlist 的 ID；`deterministic_variance` 只在内部 seed 与 NPC `decision_variance × (1 - plan_consistency)` 门限命中时允许。
+- `authorized_claim` 仅随已选择的 allowlisted `claim_option_ids` 使用，声明选项存在但未选择时不能借此改口；`mandatory_rule_response` 仅用于必须回应的公开验人和规则已有的狼队故事线；没有可比目标时使用 `unscored`。
+- 规则 fallback 主动对齐 stance。LLM 仍可做合法策略选择并允许判断错误，但未给出合法连续性原因的计划会进入既有重试/回退链。持久化 v3 计划只保存公开 signal ID 和原因，不保存私有 belief evidence ID；表达层仍只收到无事实的短语气任务。
+
+离线结果升级为 `agent_town_simulation.v6` / `agent_town_simulation_batch.v6`。`speech_continuity_metrics.v1` 按上述六类原因守恒统计受控发言数量，不记录私有证据内容；M04-A 的 `stance_trace` 继续以 shadow 模式观察发言、警长票和放逐票。
+
+seed `20260719–20260818` 的 100 局规则模拟统计 2,163 次受控发言：`stance_aligned=1831`、`authorized_claim=141`、`mandatory_rule_response=139`、`unscored=52`，关闭 LLM 时另外两类为 0。公开发言 `unexplained_change` 从 112 次降到 3 次，整体未解释率为 1.68%；但好人胜率只有 2%，好人误投率为 64.46%。这些数值只证明连续性约束生效，不证明 NPC 判断更准确。
+
 ## V3.1-E 统一立场摘要与连续性 shadow M04-A
 
-`app/stance.py` 提供 `stance_summary.v1`，只由离线模拟导入，`STANCE_MODE="shadow"`。它不被 `app/main.py` 的发言、警长票、放逐票、夜间技能或规则结算读取。
+`app/stance.py` 提供 `stance_summary.v1`。在 M04-A 时它只由离线模拟导入；M04-B 起普通非警长白天发言通过局部导入受控读取单 actor 摘要，而 `StanceTraceRecorder`、警长票、放逐票、夜间技能和规则结算仍保持 `STANCE_MODE="shadow"`。
 
 `ActorStanceSummaryV1` 的输入只有 `belief_state.v2` actor snapshot、公开存活状态和本人当天最新的 `public_position.v1`：
 
@@ -27,13 +43,13 @@ Agent Town Demo 的 Python FastAPI 后端，负责小镇 NPC 对话、知识检�
 
 对照覆盖 `public_speech / sheriff_vote / exile_vote`。一次决定完成后使用包含该决定公开结果的摘要更新基线，避免把决定自身当成未来变化的理由。分类只用于离线诊断，不证明新证据与改票存在因果，也不在 M04-A 阻止任何合法选择。
 
-模拟 schema 为 `agent_town_simulation.v5` / `agent_town_simulation_batch.v5`：每局增加 `stance_trace.changes / observations / final_states`，批量 `stance_summary` 汇总观察数、四类计数、按阶段类型计数、一致率和未解释变化率。`--no-stance-trace` 保留 belief 但关闭 stance；`--no-belief-trace` 同时关闭二者。
+M04-A 当时的模拟 schema 为 `agent_town_simulation.v5` / `agent_town_simulation_batch.v5`；M04-B 已升级为 v6，但继续保留 `stance_trace.changes / observations / final_states` 和批量 `stance_summary`。`--no-stance-trace` 保留 belief 但关闭 stance；`--no-belief-trace` 同时关闭二者，受控发言原因汇总仍保留。
 
 seed `20260719–20260818` 的首份 100 局 shadow 诊断包含 6,133 次观察、4,516 次可评分观察和 1,617 次 `unscored`；可评分样本一致率 88.93%，未解释变化率 4.78%。放逐票、公开发言、警长票分别有 62、112、42 次未解释变化；警长票有 661 次因摘要没有信任任何当轮合法候选人而不评分。完整 JSON 约 101MB，不能把这批数值设成硬阈值或直接返回进行中客户端。
 
 ## V3.1-D 信念衰减与结构化私聊 M03-B
 
-`app/belief.py` 提供 `belief_state.v2`。它只被离线模拟导入，当前 `BELIEF_MODE="shadow"`：生成的分数、置信度和证据链不会被 `app/main.py` 的任何发言、技能或投票函数读取。
+`app/belief.py` 提供 `belief_state.v2`。轨迹记录仍为 `BELIEF_MODE="shadow"`；M04-B 起只有普通非警长白天发言会为当前 actor 即时构造 belief 并通过 stance 间接消费，技能、警长票、放逐票和胜负规则仍不读取这些分数。
 
 证据权限：
 
@@ -120,9 +136,9 @@ backend/.venv/bin/python scripts/simulate_games.py \
 
 V2.0 基线来自 [`Agent Town Demo V2.0`](https://github.com/KEswy/agent-town-demo-v2.0) 的提交 `6af73f54844b4e1471c6d9fb582431a7ee892592`。稳定边界继续保持：Python 规则引擎唯一决定身份、合法知识、技能、警徽、票型结算、出局与胜负；LLM 只能消费规则整理后的上下文，并在结构化白名单或安全表达契约内输出。
 
-进入 V3 后仍有四项明确限制：当前对局主要保存在进程内存中；严格结构化策略重点覆盖普通非警长白天发言，其他路径仍以规则决策加角色化改写为主；LLM 校验、回退、延迟和成本只有日志，没有统一指标面板；批量模拟已经可用，但 NPC 核心指标和自动平衡阈值尚未建立。
+进入 V3 后仍有四项明确限制：当前对局主要保存在进程内存中；严格结构化策略重点覆盖普通非警长白天发言，其他路径仍以规则决策加角色化改写为主；LLM 校验、回退、延迟和成本只有日志，没有统一指标面板；批量模拟与第一版 NPC 指标已经可用，但投票概率和自动平衡阈值尚未校准。
 
-V3 下一步推荐补齐信念衰减和结构化私聊证据，再实现发言/投票一致性。完整拆分和 V3.1-A/B/C 实施状态见 [`V3 改进与开发路线表`](../docs/V3_ROADMAP.md)。
+V3 下一步推荐扩展 M06 隐藏信息不变性矩阵和 M09 LLM 可观测性，再用 M15 对投票概率做多种子校准。完整拆分和 V3.1-A 至 V3.1-F 实施状态见 [`V3 改进与开发路线表`](../docs/V3_ROADMAP.md)。
 
 ## 运行
 
@@ -186,15 +202,15 @@ LLM_RETRY_DELAY_SECONDS=0.35
 - 新日志带 UTC `recorded_at` 与 `validator_version`，用于区分旧版本记录和当前 `semantic-v3` 校验行为。
 - 进行中的对局只返回失败原因和统一脱敏占位，不返回被拒绝的 DeepSeek 原文；是否脱敏只取决于失败类型，不会查询原文提到的角色是否真狼。服务端 JSONL 和 `GAME_OVER` 后的复盘仍保留完整原文。
 
-结构化公开发言计划 v2：
+结构化公开发言计划 v3（兼容 v1/v2 输入）：
 
-- `app/npc_decision.py` 定义严格的 `npc_decision_context.v1` 与 `public_speech_plan.v2`。普通非警长 `DAY_MEETING` 使用“决策层 → 语气层”两次调用；旧 `public_speech.v1` 仍可升级为 v2 计划，但新请求统一要求 v2。
+- `app/npc_decision.py` 定义严格的 `npc_decision_context.v1`、`public_speech_continuity.v1` 与 `public_speech_plan.v3`。普通非警长 `DAY_MEETING` 使用“决策层 → 语气层”两次调用；旧 v1/v2 输入会先升级为 v3，再经过相同连续性校验。
 - 每次决策都整理当前 NPC 的真实身份、阵营、性格、合法知识、近期公开日志、自身私有记忆、阶段、合法目标、声明事实包、带可见性的证据和公开动作信号。`decision_signals` 覆盖上警/不上警、退水/继续竞选、警长票与警徽结果、公开验人说法、上一天放逐票、已公布出局和保守的低信息量评价；验人信号只表示“某人公开这样说过”，不包含内部 `source` 或真假答案，夜间来源与仍待公布的首夜结果也不会进入公开投影。
-- 第一段只能返回扁平策略 JSON，不得包含 `text` 或 `fields` 包装。提示中的 `output_contract` 会给出根级必填键和完整 `flat_json_example`，所有字段都必须直接出现在根级，可空项也必须显式写 `null`。为兼容旧提示造成的模型惯性，后端只展开键恰好为 `schema_version + fields` 的 v2 包装；额外顶层键和展开后的额外内层键仍会被严格拒绝：
+- 第一段只能返回扁平策略 JSON，不得包含 `text` 或 `fields` 包装。提示中的 `output_contract` 会给出根级必填键和完整 `flat_json_example`，所有字段都必须直接出现在根级，可空项也必须显式写 `null`。后端只展开键恰好为 `schema_version + fields` 的 v2/v3 包装；额外顶层键和展开后的额外内层键仍会被严格拒绝：
 
 | 字段 | 含义与边界 |
 | --- | --- |
-| `schema_version` | 固定为 `public_speech_plan.v2` |
+| `schema_version` | 当前固定为 `public_speech_plan.v3`；v1/v2 仅作为兼容输入 |
 | `intent` | 从本次 `allowed_intents` 选择 `observe / pressure / defend / counterclaim / reveal` |
 | `primary_target_id` / `secondary_target_id` | 主判断位与对照位；只能来自 `legal_targets`，且不能相同 |
 | `stance` / `stance_target_id` | `support / oppose / undecided` 及其对象；对象必须是已选主次目标，`undecided` 必须配 `null` |
@@ -205,6 +221,7 @@ LLM_RETRY_DELAY_SECONDS=0.35
 | `provisional_vote_target_id` | `null` 或当天合法暂定票；不能投自己正在支持的对象 |
 | `tactic` | 从通用或狼人战术白名单选择；`wolf_*` 仅狼人可用，队友战术还必须指向上下文允许的狼队友 |
 | `claim_option_ids` / `evidence_ids` / `signal_ids` | 各最多三项、不得重复，只能选本次 allowlist；声明包不可拆，证据必须是 public，动作信号要与所选目标相关 |
+| `continuity_reason` / `continuity_signal_ids` | 必须说明沿用、公开新证据、确定性扰动、合法声明、规则强制回应或无可评分立场；持久化 ID 只能来自公开 signal |
 
 - `signal_read` 可选 `raises_suspicion / reduces_suspicion / needs_explanation / uncertain / mixed / none`。
 - `question.topic` 可选 `claim_basis / action_motive / stance / vote_intent / timeline / contradiction / role_result / response_to_pressure`；`verification.criterion` 可选 `next_speech_consistency / claim_consistency / vote_alignment / response_quality / role_result / night_result / badge_action / follow_up_action`。
@@ -216,7 +233,7 @@ LLM_RETRY_DELAY_SECONDS=0.35
 - Python 把已校验计划渲染成包含判断、问题、验证点和暂定票的规则正文，再拼接语气前缀。正文可以体现错误判断，也允许好人被狼人的公开叙事骗到，但 LLM 无法反转计划或伪造动作、身份、查验、技能、出局和胜负事实；“没信息，过”不会成为正式发言。
 - 通过校验的计划保存在当天 `SpeechState.decision_plan`。普通好人的警长票和放逐票只综合怀疑、公开压力、关系、公开声明可信度、警长归票、公开查杀、计划暂定票与本局参数，不读取候选人的真实 `role/camp`；因此可以选中假预言家、在真假预言家间分票或投出真预言家。真预言家自己的查验和狼人的队友知识仍属于各自合法私有信息。`plan_consistency` 只给暂定票加权，后续公开证据仍能推翻，旧日期计划不会复用。
 - 决策与表达分别最多纠正五轮。决策失败时使用可验证的规则计划；表达失败时保留已校验计划并使用规则话术。全部完成后才写入 `speeches`、`public_claims`、`public_logs` 和 NPC 记忆。
-- 当前只有普通非警长 `DAY_MEETING` 进入 v2 决策层；警上、警长、夜间、投票和私聊保持原规则决策边界，LLM 只做已批准内容的角色化改写。
+- 当前只有普通非警长 `DAY_MEETING` 进入 v3 决策层并消费 stance；警上、警长、夜间、投票和私聊保持原规则决策边界，LLM 只做已批准内容的角色化改写。
 
 ### 本轮决策契约（已完成）
 

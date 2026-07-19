@@ -17,7 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 CONTEXT_SCHEMA_VERSION = "npc_decision_context.v1"
 PUBLIC_SPEECH_SCHEMA_VERSION = "public_speech.v1"
-PUBLIC_SPEECH_PLAN_SCHEMA_VERSION = "public_speech_plan.v2"
+LEGACY_PUBLIC_SPEECH_PLAN_SCHEMA_VERSION = "public_speech_plan.v2"
+PUBLIC_SPEECH_PLAN_SCHEMA_VERSION = "public_speech_plan.v3"
+PUBLIC_SPEECH_CONTINUITY_SCHEMA_VERSION = "public_speech_continuity.v1"
 PUBLIC_POSITION_SCHEMA_VERSION = "public_position.v1"
 HashableValue = TypeVar("HashableValue", bound=Hashable)
 
@@ -108,6 +110,17 @@ class SpeechTactic(str, Enum):
     WOLF_FAKE_SEER = "wolf_fake_seer"
     WOLF_DEEP_COVER = "wolf_deep_cover"
     WOLF_MISDIRECTION = "wolf_misdirection"
+
+
+class SpeechContinuityReason(str, Enum):
+    """Auditable reason why a plan follows or departs from its stance card."""
+
+    STANCE_ALIGNED = "stance_aligned"
+    NEW_PUBLIC_EVIDENCE = "new_public_evidence"
+    DETERMINISTIC_VARIANCE = "deterministic_variance"
+    AUTHORIZED_CLAIM = "authorized_claim"
+    MANDATORY_RULE_RESPONSE = "mandatory_rule_response"
+    UNSCORED = "unscored"
 
 
 class DecisionActorV1(StrictDecisionModel):
@@ -344,6 +357,65 @@ class PublicSpeechPlanV2(StrictDecisionModel):
     def parse_tactic(cls, value: object) -> object:
         if isinstance(value, str):
             return SpeechTactic(value)
+        return value
+
+
+class PublicSpeechPlanV3(PublicSpeechPlanV2):
+    """V2 strategy plus an explicit, public-safe continuity explanation."""
+
+    schema_version: Literal["public_speech_plan.v3"]
+    continuity_reason: SpeechContinuityReason
+    continuity_signal_ids: list[str] = Field(max_length=3)
+
+    @field_validator("continuity_reason", mode="before")
+    @classmethod
+    def parse_continuity_reason(cls, value: object) -> object:
+        if isinstance(value, str):
+            return SpeechContinuityReason(value)
+        return value
+
+
+class PublicSpeechContinuityV1(StrictDecisionModel):
+    """Actor-scoped stance input for ordinary non-sheriff day speech.
+
+    Belief evidence IDs remain private decision context. Only public signal IDs
+    may be copied into a V3 plan and later persisted with a speech.
+    """
+
+    schema_version: Literal["public_speech_continuity.v1"] = (
+        PUBLIC_SPEECH_CONTINUITY_SCHEMA_VERSION
+    )
+    stance_schema_version: Literal["stance_summary.v1"] = "stance_summary.v1"
+    actor_id: int = Field(gt=0)
+    day: int = Field(ge=1)
+    phase: Literal["DAY_MEETING"] = "DAY_MEETING"
+    trusted_target_ids: list[int] = Field(max_length=2)
+    primary_suspect_id: Optional[int] = Field(gt=0)
+    secondary_suspect_id: Optional[int] = Field(gt=0)
+    provisional_vote_target_id: Optional[int] = Field(gt=0)
+    verification_target_id: Optional[int] = Field(gt=0)
+    verification_condition: Optional[str] = Field(min_length=1)
+    confidence: float = Field(ge=0.0, le=1.0)
+    basis_evidence_ids: list[str]
+    previous_position_day: Optional[int] = Field(ge=1)
+    new_public_signal_ids: list[str]
+    variance_allowed: bool
+    mandatory_response: bool
+
+    @field_validator("trusted_target_ids")
+    @classmethod
+    def validate_trusted_target_ids(cls, value: list[int]) -> list[int]:
+        if len(value) != len(set(value)):
+            raise ValueError("continuity trusted targets must be unique")
+        return value
+
+    @field_validator("basis_evidence_ids", "new_public_signal_ids")
+    @classmethod
+    def validate_unique_string_ids(cls, value: list[str]) -> list[str]:
+        if any(not item for item in value):
+            raise ValueError("continuity ids must not be empty")
+        if value != sorted(set(value)):
+            raise ValueError("continuity ids must be sorted and unique")
         return value
 
 
@@ -984,7 +1056,9 @@ def validate_public_speech_plan_v2(
     selected_seer_checks = [
         fact
         for fact in selected_claim_facts
-        if fact.claim_type == "seer_check" and fact.target_id is not None
+        if fact.claim_type == "seer_check"
+        and fact.target_id is not None
+        and fact.target_id in legal_target_id_set
     ]
     selected_seer_check = next(
         (
@@ -1163,6 +1237,126 @@ def validate_public_speech_plan(
     return validate_public_speech_plan_v2(context, plan)
 
 
+def get_public_speech_continuity_expectation(
+    continuity: PublicSpeechContinuityV1,
+) -> tuple[str, Optional[int]]:
+    """Return the same dominant commitment used by M04-A speech scoring."""
+
+    if continuity.provisional_vote_target_id is not None:
+        return "vote", continuity.provisional_vote_target_id
+    if continuity.primary_suspect_id is not None:
+        return "suspect", continuity.primary_suspect_id
+    if continuity.trusted_target_ids:
+        return "trust", continuity.trusted_target_ids[0]
+    return "none", None
+
+
+def public_speech_plan_matches_continuity(
+    continuity: PublicSpeechContinuityV1,
+    plan: PublicSpeechPlanV2,
+) -> bool:
+    """Compare a plan with the legal stance card's dominant commitment."""
+
+    commitment, target_id = get_public_speech_continuity_expectation(continuity)
+    if target_id is None:
+        return False
+    if commitment in {"vote", "suspect"}:
+        return (
+            plan.primary_target_id == target_id
+            and plan.stance == SpeechStance.OPPOSE
+            and plan.stance_target_id == target_id
+            and plan.provisional_vote_target_id == target_id
+        )
+    return (
+        plan.primary_target_id == target_id
+        and plan.stance == SpeechStance.SUPPORT
+        and plan.stance_target_id == target_id
+        and plan.provisional_vote_target_id != target_id
+    )
+
+
+def validate_public_speech_continuity(
+    context: NPCDecisionContextV1,
+    continuity: PublicSpeechContinuityV1,
+    plan: PublicSpeechPlanV3,
+) -> list[str]:
+    """Enforce one explicit legal reason for every stance divergence."""
+
+    errors: list[str] = []
+    legal_target_ids = {target.id for target in context.legal_targets}
+    if continuity.actor_id != context.actor.id:
+        errors.append("continuity_actor_mismatch")
+    if continuity.day != context.day or continuity.phase != context.phase:
+        errors.append("continuity_transition_mismatch")
+    continuity_target_ids = {
+        target_id
+        for target_id in [
+            *continuity.trusted_target_ids,
+            continuity.primary_suspect_id,
+            continuity.secondary_suspect_id,
+            continuity.provisional_vote_target_id,
+            continuity.verification_target_id,
+        ]
+        if target_id is not None
+    }
+    for target_id in sorted(continuity_target_ids):
+        if target_id == context.actor.id or target_id not in legal_target_ids:
+            errors.append(f"continuity_target_not_allowed: {target_id}")
+
+    public_signal_ids = {signal.id for signal in context.decision_signals}
+    for signal_id in continuity.new_public_signal_ids:
+        if signal_id not in public_signal_ids:
+            errors.append(f"continuity_new_signal_not_allowed: {signal_id}")
+    if len(plan.continuity_signal_ids) != len(set(plan.continuity_signal_ids)):
+        errors.append("duplicate_continuity_signal_id")
+    for signal_id in plan.continuity_signal_ids:
+        if signal_id not in continuity.new_public_signal_ids:
+            errors.append(f"continuity_signal_not_new: {signal_id}")
+        if signal_id not in plan.signal_ids:
+            errors.append(f"continuity_signal_not_selected: {signal_id}")
+
+    commitment, expected_target_id = get_public_speech_continuity_expectation(
+        continuity
+    )
+    aligned = public_speech_plan_matches_continuity(continuity, plan)
+    reason = plan.continuity_reason
+
+    if continuity.mandatory_response:
+        if reason != SpeechContinuityReason.MANDATORY_RULE_RESPONSE:
+            errors.append("continuity_reason_required: mandatory_rule_response")
+    elif reason == SpeechContinuityReason.MANDATORY_RULE_RESPONSE:
+        errors.append("continuity_mandatory_reason_not_allowed")
+    elif plan.claim_option_ids:
+        if reason != SpeechContinuityReason.AUTHORIZED_CLAIM:
+            errors.append("continuity_reason_required: authorized_claim")
+    elif reason == SpeechContinuityReason.AUTHORIZED_CLAIM:
+        errors.append("continuity_claim_reason_not_allowed")
+    elif expected_target_id is None:
+        if reason != SpeechContinuityReason.UNSCORED:
+            errors.append("continuity_reason_required: unscored")
+    elif aligned:
+        if reason != SpeechContinuityReason.STANCE_ALIGNED:
+            errors.append("continuity_reason_required: stance_aligned")
+    elif reason == SpeechContinuityReason.NEW_PUBLIC_EVIDENCE:
+        if not plan.continuity_signal_ids:
+            errors.append("continuity_new_evidence_signal_required")
+    elif reason == SpeechContinuityReason.DETERMINISTIC_VARIANCE:
+        if not continuity.variance_allowed:
+            errors.append("continuity_variance_not_allowed")
+    else:
+        errors.append(
+            "continuity_unexplained_change: "
+            f"expected {commitment} target {expected_target_id}"
+        )
+
+    if (
+        reason != SpeechContinuityReason.NEW_PUBLIC_EVIDENCE
+        and plan.continuity_signal_ids
+    ):
+        errors.append("continuity_signal_reason_mismatch")
+    return errors
+
+
 def build_public_speech_plan_v2(
     context: NPCDecisionContextV1,
     decision: PublicSpeechDecisionV1,
@@ -1212,10 +1406,13 @@ def build_public_speech_plan_v2(
         if option.id in set(decision.claim_option_ids)
         for fact in option.facts
     ]
+    legal_target_ids = {target.id for target in context.legal_targets}
     selected_checks = [
         fact
         for fact in selected_claim_facts
-        if fact.claim_type == "seer_check" and fact.target_id is not None
+        if fact.claim_type == "seer_check"
+        and fact.target_id is not None
+        and fact.target_id in legal_target_ids
     ]
     selected_check = next(
         (
@@ -1287,7 +1484,7 @@ def build_public_speech_plan_v2(
         else None
     )
     plan = PublicSpeechPlanV2(
-        schema_version=PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
+        schema_version=LEGACY_PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
         intent=decision.intent,
         primary_target_id=primary_target_id,
         secondary_target_id=secondary_target_id,
@@ -1354,7 +1551,9 @@ def _duplicate_values(
 
 __all__ = [
     "CONTEXT_SCHEMA_VERSION",
+    "LEGACY_PUBLIC_SPEECH_PLAN_SCHEMA_VERSION",
     "PUBLIC_POSITION_SCHEMA_VERSION",
+    "PUBLIC_SPEECH_CONTINUITY_SCHEMA_VERSION",
     "PUBLIC_SPEECH_PLAN_SCHEMA_VERSION",
     "PUBLIC_SPEECH_SCHEMA_VERSION",
     "ClaimFactV1",
@@ -1369,17 +1568,23 @@ __all__ = [
     "PublicSpeechDecisionV1",
     "PublicSpeechIntent",
     "PublicSpeechPlanV2",
+    "PublicSpeechPlanV3",
+    "PublicSpeechContinuityV1",
     "PublicPositionV1",
     "QuestionTopic",
     "SignalRead",
     "SpeechQuestionV2",
     "SpeechStance",
+    "SpeechContinuityReason",
     "SpeechTactic",
     "SpeechVerificationV2",
     "VerificationCriterion",
     "build_public_speech_plan_v2",
+    "get_public_speech_continuity_expectation",
+    "public_speech_plan_matches_continuity",
     "validate_public_speech_decision",
     "validate_public_speech_plan",
     "validate_public_speech_plan_v2",
+    "validate_public_speech_continuity",
     "upgrade_public_speech_decision_v1",
 ]
