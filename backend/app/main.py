@@ -142,6 +142,7 @@ FAKE_SEER_CAMPAIGN_POLICY_VERSION = "fake_seer_campaign.v2"
 FAKE_SEER_CAMPAIGN_RANDOM_STREAM = "fake_seer_campaign.v1"
 FAKE_SEER_CHECK_POLICY_VERSION = "fake_seer_check_mix.v1"
 PUBLIC_CONTESTED_EXILE_MAX_SHARE = 0.75
+PUBLIC_SPEECH_LLM_MAX_CHARS = 120
 
 NPC_PERSONALITIES = {
     "梅西": {
@@ -598,8 +599,7 @@ class BadgeFlowState(BaseModel):
     phase: str
     primary_target_id: int
     secondary_target_id: Optional[int] = None
-    good_badge_target_id: int
-    werewolf_badge_target_id: Optional[int] = None
+    claimed_good_anchor_id: Optional[int] = None
     revision_reason: str = "initial"
     reason_target_id: Optional[int] = None
     active: bool = True
@@ -616,10 +616,13 @@ class BadgeFlowView(BaseModel):
     primary_target_name: str
     secondary_target_id: Optional[int] = None
     secondary_target_name: str = ""
-    good_badge_target_id: int
-    good_badge_target_name: str
-    werewolf_badge_target_id: Optional[int] = None
-    werewolf_badge_target_name: str = ""
+    claimed_good_anchor_id: Optional[int] = None
+    claimed_good_anchor_name: str = ""
+    good_result_badge_target_id: int
+    good_result_badge_target_name: str
+    werewolf_result_badge_target_id: Optional[int] = None
+    werewolf_result_badge_target_name: str = ""
+    werewolf_result_destroys_badge: bool = False
     revision_reason: str
     reason_target_id: Optional[int] = None
     reason_target_name: str = ""
@@ -876,8 +879,7 @@ class ParsedPlayerSpeech(BaseModel):
 class BadgeFlowInput(BaseModel):
     primary_target_id: int = Field(gt=0)
     secondary_target_id: Optional[int] = Field(default=None, gt=0)
-    good_badge_target_id: int = Field(gt=0)
-    werewolf_badge_target_id: Optional[int] = Field(default=None, gt=0)
+    claimed_good_anchor_id: Optional[int] = Field(default=None, gt=0)
     revision_reason: str = "initial"
     reason_target_id: Optional[int] = Field(default=None, gt=0)
 
@@ -1820,31 +1822,104 @@ def get_badge_flow_for_night(
     )
 
 
+def get_living_claimed_good_targets(
+    game_state: WolfGameState,
+    claimant_id: int,
+    planned_claims: Optional[list[PublicClaimState]] = None,
+    *,
+    exclude_target_id: Optional[int] = None,
+) -> list[CharacterState]:
+    """Return the claimant's latest still-live public gold claims, newest first.
+
+    These are statements in the claimant's public story, never rule-confirmed
+    roles. Pending same-speech claims are accepted so a sheriff candidate can
+    publish their first check and badge flow atomically.
+    """
+
+    combined_claims = [
+        claim
+        for claim in game_state.public_claims
+        if claim.character_id == claimant_id
+        and claim.claim_type == "seer_check"
+        and claim.target_id is not None
+    ]
+    combined_claims.extend(
+        claim
+        for claim in planned_claims or []
+        if claim.character_id == claimant_id
+        and claim.claim_type == "seer_check"
+        and claim.target_id is not None
+    )
+    seen_target_ids: set[int] = set()
+    targets: list[CharacterState] = []
+    for claim in reversed(combined_claims):
+        target_id = int(claim.target_id)
+        if target_id in seen_target_ids:
+            continue
+        seen_target_ids.add(target_id)
+        if claim.result != "good" or target_id == exclude_target_id:
+            continue
+        target = get_character(game_state, target_id)
+        if target.alive and target.id != claimant_id:
+            targets.append(target)
+    return targets
+
+
+def resolve_badge_flow_good_anchor(
+    game_state: WolfGameState,
+    claimant: CharacterState,
+    flow_input: BadgeFlowInput,
+    planned_claims: Optional[list[PublicClaimState]] = None,
+) -> Optional[CharacterState]:
+    """Resolve the black-check branch from the claimant's public gold chain."""
+
+    valid_anchors = get_living_claimed_good_targets(
+        game_state,
+        claimant.id,
+        planned_claims,
+        exclude_target_id=flow_input.primary_target_id,
+    )
+    if flow_input.claimed_good_anchor_id is None:
+        return valid_anchors[0] if valid_anchors else None
+    anchor = next(
+        (
+            candidate
+            for candidate in valid_anchors
+            if candidate.id == flow_input.claimed_good_anchor_id
+        ),
+        None,
+    )
+    if anchor is None:
+        raise HTTPException(
+            status_code=400,
+            detail="查杀分支只能把警徽交给该预言家仍存活的公开金水；没有公开金水时必须撕徽。",
+        )
+    return anchor
+
+
 def build_badge_flow_display_text(
     game_state: WolfGameState,
     flow: BadgeFlowState,
 ) -> str:
     claimant = get_character(game_state, flow.character_id)
     primary = get_character(game_state, flow.primary_target_id)
-    order_text = f"先验{format_full_character_name(primary)}"
+    order_text = f"今晚验{format_full_character_name(primary)}"
     if flow.secondary_target_id is not None:
         secondary = get_character(game_state, flow.secondary_target_id)
-        order_text += f"，再验{format_full_character_name(secondary)}"
-    good_target = get_character(game_state, flow.good_badge_target_id)
-    if flow.werewolf_badge_target_id is None:
-        wolf_route = "查杀时撕徽"
+        order_text += f"，下一顺验{format_full_character_name(secondary)}"
+    if flow.claimed_good_anchor_id is None:
+        wolf_route = "查杀分支：撕徽"
     else:
-        wolf_target = get_character(game_state, flow.werewolf_badge_target_id)
-        wolf_route = f"查杀时警徽给{format_full_character_name(wolf_target)}"
+        anchor = get_character(game_state, flow.claimed_good_anchor_id)
+        wolf_route = f"查杀分支：警徽给{format_full_character_name(anchor)}"
     reason_label = BADGE_FLOW_REASON_LABELS.get(
         flow.revision_reason,
         BADGE_FLOW_REASON_LABELS["other_public_reason"],
     )
-    action_label = "公布" if flow.version == 1 else "更新"
     return (
-        f"{format_full_character_name(claimant)}{action_label}警徽流v{flow.version}："
+        f"{format_full_character_name(claimant)}的警徽流："
         f"第{flow.effective_night_day}夜生效，"
-        f"{order_text}；金水时警徽给{format_full_character_name(good_target)}，"
+        f"{order_text}；金水分支：警徽给{format_full_character_name(primary)}，"
         f"{wolf_route}。公开理由：{reason_label}。"
     )
 
@@ -1859,10 +1934,9 @@ def build_badge_flow_views(game_state: WolfGameState) -> list[BadgeFlowView]:
             if flow.secondary_target_id is not None
             else None
         )
-        good_target = get_character(game_state, flow.good_badge_target_id)
-        wolf_target = (
-            get_character(game_state, flow.werewolf_badge_target_id)
-            if flow.werewolf_badge_target_id is not None
+        anchor = (
+            get_character(game_state, flow.claimed_good_anchor_id)
+            if flow.claimed_good_anchor_id is not None
             else None
         )
         reason_target = (
@@ -1882,10 +1956,13 @@ def build_badge_flow_views(game_state: WolfGameState) -> list[BadgeFlowView]:
                 primary_target_name=primary.name,
                 secondary_target_id=secondary.id if secondary is not None else None,
                 secondary_target_name=secondary.name if secondary is not None else "",
-                good_badge_target_id=good_target.id,
-                good_badge_target_name=good_target.name,
-                werewolf_badge_target_id=wolf_target.id if wolf_target is not None else None,
-                werewolf_badge_target_name=wolf_target.name if wolf_target is not None else "",
+                claimed_good_anchor_id=anchor.id if anchor is not None else None,
+                claimed_good_anchor_name=anchor.name if anchor is not None else "",
+                good_result_badge_target_id=primary.id,
+                good_result_badge_target_name=primary.name,
+                werewolf_result_badge_target_id=anchor.id if anchor is not None else None,
+                werewolf_result_badge_target_name=anchor.name if anchor is not None else "",
+                werewolf_result_destroys_badge=anchor is None,
                 revision_reason=flow.revision_reason,
                 reason_target_id=reason_target.id if reason_target is not None else None,
                 reason_target_name=reason_target.name if reason_target is not None else "",
@@ -1902,7 +1979,8 @@ def validate_badge_flow_input(
     flow_input: BadgeFlowInput,
     *,
     allow_pending_seer_claim: bool = False,
-) -> tuple[CharacterState, Optional[CharacterState], CharacterState, Optional[CharacterState]]:
+    planned_claims: Optional[list[PublicClaimState]] = None,
+) -> tuple[CharacterState, Optional[CharacterState], Optional[CharacterState]]:
     """Validate a flow without mutating claims, logs, or earlier versions."""
 
     if not claimant.alive:
@@ -1929,6 +2007,7 @@ def validate_badge_flow_input(
         previous_target_ids = {
             active_flow.primary_target_id,
             active_flow.secondary_target_id,
+            active_flow.claimed_good_anchor_id,
         }
         if flow_input.reason_target_id not in previous_target_ids:
             raise HTTPException(
@@ -1971,28 +2050,17 @@ def validate_badge_flow_input(
     ):
         raise HTTPException(status_code=400, detail="第二警徽流目标必须是另一名不同的存活角色。")
 
-    flow_target_ids = {primary.id}
-    if secondary is not None:
-        flow_target_ids.add(secondary.id)
-    good_target = get_character(game_state, flow_input.good_badge_target_id)
-    if not good_target.alive or good_target.id not in flow_target_ids:
-        raise HTTPException(status_code=400, detail="金水传徽目标必须是警徽流中的存活目标。")
-    wolf_target = (
-        get_character(game_state, flow_input.werewolf_badge_target_id)
-        if flow_input.werewolf_badge_target_id is not None
-        else None
+    claimed_good_anchor = resolve_badge_flow_good_anchor(
+        game_state,
+        claimant,
+        flow_input,
+        planned_claims,
     )
-    if wolf_target is not None and (
-        not wolf_target.alive or wolf_target.id not in flow_target_ids
-    ):
-        raise HTTPException(status_code=400, detail="查杀传徽目标必须是警徽流中的存活目标，或选择撕徽。")
-    if wolf_target is not None and wolf_target.id == good_target.id:
-        raise HTTPException(status_code=400, detail="金水与查杀的警徽去向必须能够区分。")
     if flow_input.reason_target_id is not None:
         reason_target = get_character(game_state, flow_input.reason_target_id)
         if reason_target.id == claimant.id:
             raise HTTPException(status_code=400, detail="换流原因对象不能是自己。")
-    return primary, secondary, good_target, wolf_target
+    return primary, secondary, claimed_good_anchor
 
 
 def validate_player_badge_flow_with_planned_claims(
@@ -2027,6 +2095,30 @@ def validate_player_badge_flow_with_planned_claims(
             planned_role_claim is not None
             and planned_role_claim.claimed_role == "seer"
         ),
+        planned_claims=planned_claims,
+    )
+
+
+def get_projected_public_role_claim(
+    game_state: WolfGameState,
+    claimant_id: int,
+    planned_claims: list[PublicClaimState],
+) -> Optional[str]:
+    planned_role_claim = next(
+        (
+            claim
+            for claim in reversed(planned_claims)
+            if claim.claim_type == "role" and claim.claimed_role
+        ),
+        None,
+    )
+    if planned_role_claim is not None:
+        return planned_role_claim.claimed_role
+    current_role_claim = get_public_role_claim(game_state, claimant_id)
+    return (
+        current_role_claim.claimed_role
+        if current_role_claim is not None
+        else None
     )
 
 
@@ -2037,7 +2129,7 @@ def publish_badge_flow(
 ) -> BadgeFlowState:
     """Append one public flow version without consulting claimant truth."""
 
-    primary, secondary, good_target, wolf_target = validate_badge_flow_input(
+    primary, secondary, claimed_good_anchor = validate_badge_flow_input(
         game_state,
         claimant,
         flow_input,
@@ -2066,8 +2158,9 @@ def publish_badge_flow(
         phase=game_state.phase,
         primary_target_id=primary.id,
         secondary_target_id=secondary.id if secondary is not None else None,
-        good_badge_target_id=good_target.id,
-        werewolf_badge_target_id=wolf_target.id if wolf_target is not None else None,
+        claimed_good_anchor_id=(
+            claimed_good_anchor.id if claimed_good_anchor is not None else None
+        ),
         revision_reason=revision_reason,
         reason_target_id=flow_input.reason_target_id,
     )
@@ -2373,8 +2466,25 @@ def plan_npc_badge_flow_input(
     reason_target_id: Optional[int] = None
     if active_flow is not None:
         active_primary = get_character(game_state, active_flow.primary_target_id)
-        if not active_primary.alive:
+        active_anchor = (
+            get_character(game_state, active_flow.claimed_good_anchor_id)
+            if active_flow.claimed_good_anchor_id is not None
+            else None
+        )
+        if active_anchor is not None and not active_anchor.alive:
             revision_reason = "target_eliminated"
+            reason_target_id = active_anchor.id
+        elif not active_primary.alive:
+            revision_reason = "target_eliminated"
+            reason_target_id = active_primary.id
+        elif any(
+            claim.character_id == speaker.id
+            and claim.claim_type == "seer_check"
+            and claim.target_id == active_primary.id
+            and claim.day >= active_flow.effective_night_day
+            for claim in game_state.public_claims
+        ):
+            revision_reason = "other_public_reason"
             reason_target_id = active_primary.id
         else:
             new_role_claim = next(
@@ -2475,11 +2585,18 @@ def plan_npc_badge_flow_input(
     )
     primary = ranked[0]
     secondary = ranked[1] if len(ranked) > 1 else None
+    claimed_good_targets = get_living_claimed_good_targets(
+        game_state,
+        speaker.id,
+        planned_claims,
+        exclude_target_id=primary.id,
+    )
     return BadgeFlowInput(
         primary_target_id=primary.id,
         secondary_target_id=secondary.id if secondary is not None else None,
-        good_badge_target_id=primary.id,
-        werewolf_badge_target_id=secondary.id if secondary is not None else None,
+        claimed_good_anchor_id=(
+            claimed_good_targets[0].id if claimed_good_targets else None
+        ),
         revision_reason=revision_reason,
         reason_target_id=reason_target_id,
     )
@@ -2487,42 +2604,58 @@ def plan_npc_badge_flow_input(
 
 def build_badge_flow_input_speech_text(
     game_state: WolfGameState,
+    claimant: CharacterState,
     flow_input: BadgeFlowInput,
+    planned_claims: Optional[list[PublicClaimState]] = None,
 ) -> str:
     primary = get_character(game_state, flow_input.primary_target_id)
     order_text = f"先验{format_full_character_name(primary)}"
     if flow_input.secondary_target_id is not None:
         secondary = get_character(game_state, flow_input.secondary_target_id)
-        order_text += f"，再验{format_full_character_name(secondary)}"
-    good_target = get_character(game_state, flow_input.good_badge_target_id)
-    if flow_input.werewolf_badge_target_id is None:
-        wolf_route = "查杀时撕徽"
+        order_text += f"，后验{format_full_character_name(secondary)}"
+    claimed_good_anchor = resolve_badge_flow_good_anchor(
+        game_state,
+        claimant,
+        flow_input,
+        planned_claims,
+    )
+    if claimed_good_anchor is None:
+        wolf_route = "查杀分支：撕徽"
     else:
-        wolf_target = get_character(game_state, flow_input.werewolf_badge_target_id)
-        wolf_route = f"查杀时警徽给{format_full_character_name(wolf_target)}"
+        wolf_route = (
+            f"查杀分支：警徽给{format_full_character_name(claimed_good_anchor)}"
+        )
     reason_label = BADGE_FLOW_REASON_LABELS.get(
         flow_input.revision_reason,
         BADGE_FLOW_REASON_LABELS["other_public_reason"],
     )
     return (
-        f"我的警徽流第{game_state.day + 1}夜生效，"
-        f"{order_text}；"
-        f"金水时警徽给{format_full_character_name(good_target)}，"
-        f"{wolf_route}，这次安排基于{reason_label}。"
+        f"我的警徽流：第{game_state.day + 1}夜生效，{order_text}；"
+        f"金水分支：警徽给{format_full_character_name(primary)}，"
+        f"{wolf_route}；理由：{reason_label}。"
     )
 
 
 def attach_canonical_badge_flow_speech_text(
     speech: str,
     game_state: WolfGameState,
+    claimant: CharacterState,
     flow_input: BadgeFlowInput,
+    planned_claims: Optional[list[PublicClaimState]] = None,
 ) -> str:
     """Replace free-form flow wording with the rule-engine projection."""
 
     compact_original = re.sub(r"[\s\u3000]+", "", speech)
     declared_seer = any(
         phrase in compact_original
-        for phrase in ["我是预言家", "我跳预言家", "我起跳预言家"]
+        for phrase in [
+            "我是预言家",
+            "我跳预言家",
+            "我起跳预言家",
+            "我报预言家",
+            "我认预言家",
+            "预言家在这里",
+        ]
     )
     cleaned = re.sub(
         r"(?:我的)?警徽流[^。！？!?\n]*[。！？!?]?",
@@ -2541,10 +2674,22 @@ def attach_canonical_badge_flow_speech_text(
     compact_cleaned = re.sub(r"[\s\u3000]+", "", cleaned)
     if declared_seer and not any(
         phrase in compact_cleaned
-        for phrase in ["我是预言家", "我跳预言家", "我起跳预言家"]
+        for phrase in [
+            "我是预言家",
+            "我跳预言家",
+            "我起跳预言家",
+            "我报预言家",
+            "我认预言家",
+            "预言家在这里",
+        ]
     ):
         cleaned = f"我跳预言家。{cleaned}" if cleaned else "我跳预言家"
-    canonical = build_badge_flow_input_speech_text(game_state, flow_input)
+    canonical = build_badge_flow_input_speech_text(
+        game_state,
+        claimant,
+        flow_input,
+        planned_claims,
+    )
     return f"{cleaned}。{canonical}" if cleaned else canonical
 
 
@@ -2722,7 +2867,7 @@ def render_public_position_summary(
             f"若{format_full_character_name(target)}{criterion_label}则改票"
         )
     if position.badge_flow_version is not None:
-        parts.append(f"沿用警徽流v{position.badge_flow_version}")
+        parts.append("沿用既有警徽安排")
     if len(parts) == 1:
         parts.append("尚未明确站边或票型")
     return "｜".join(parts)
@@ -2806,6 +2951,7 @@ def generate_npc_sheriff_speech(
             speaker,
             planned_badge_flow,
             allow_pending_seer_claim=True,
+            planned_claims=planned_claims,
         )
     target = get_primary_claim_target(game_state, planned_claims)
     if target is None:
@@ -2814,16 +2960,18 @@ def generate_npc_sheriff_speech(
     evidence = choose_public_decision_evidence(rag_context)
     if planned_claims:
         rule_speech = build_public_claim_speech(game_state, speaker, planned_claims)
-        rule_speech += "我竞选警长，会用后续发言和票型证明这套信息。"
+        rule_speech += "我上警，后续看结果和票型。"
     elif speaker.role == "werewolf" and speaker.id == game_state.wolf_fake_seer_id:
-        rule_speech = "我先不争预言家身份，这轮警上更想观察已经起跳的人能否把逻辑说完整。"
+        rule_speech = "我不跳预言家，先听起跳位把身份和逻辑说清楚。"
     else:
         target_text = format_full_character_name(target) if target is not None else "场上的身份声明"
-        rule_speech = f"我上警是想整理信息，目前会重点观察{target_text}，也会对自己的判断负责。"
+        rule_speech = f"我上警梳理信息，先看{target_text}的逻辑和票型。"
     if planned_badge_flow is not None:
         rule_speech += build_badge_flow_input_speech_text(
             game_state,
+            speaker,
             planned_badge_flow,
+            planned_claims,
         )
     rule_speech = append_public_rag_evidence(rule_speech, evidence)
     rule_speech = apply_npc_voice(game_state, speaker, rule_speech, "meeting")
@@ -2840,7 +2988,9 @@ def generate_npc_sheriff_speech(
         speech_text = attach_canonical_badge_flow_speech_text(
             speech_text,
             game_state,
+            speaker,
             planned_badge_flow,
+            planned_claims,
         )
     speech_item = NpcSpeechItem(
         character_id=speaker.id,
@@ -3002,7 +3152,10 @@ def get_public_persuasion_strength(
         speech_quality += 0.14
     if any(marker in normalized for marker in ["因为", "所以", "依据", "理由", "矛盾", "逻辑"]):
         speech_quality += 0.10
-    if any(marker in normalized for marker in ["警徽", "后续", "票型", "投票", "验证", "负责"]):
+    if any(
+        marker in normalized
+        for marker in ["警徽", "后续", "票型", "投票", "暂票", "验证", "负责"]
+    ):
         speech_quality += 0.08
     if latest_public_speech.evidence_titles:
         speech_quality += 0.02
@@ -3666,12 +3819,12 @@ def get_matching_badge_flow_transfer_result(
     engine from treating every character who did not receive the badge as bad.
     """
 
-    if target_id == flow.good_badge_target_id:
+    if target_id == flow.primary_target_id:
         return "good"
     if (
-        flow.werewolf_badge_target_id is None
+        flow.claimed_good_anchor_id is None
         and target_id is None
-    ) or target_id == flow.werewolf_badge_target_id:
+    ) or target_id == flow.claimed_good_anchor_id:
         return "werewolf"
     return ""
 
@@ -3789,9 +3942,9 @@ def choose_npc_badge_heir(
                 )
 
             branch_target_id = (
-                flow.good_badge_target_id
+                flow.primary_target_id
                 if claimed_result == "good"
-                else flow.werewolf_badge_target_id
+                else flow.claimed_good_anchor_id
                 if claimed_result == "werewolf"
                 else None
             )
@@ -3801,6 +3954,10 @@ def choose_npc_badge_heir(
                 candidate.id == branch_target_id for candidate in candidates
             ):
                 return branch_target_id
+            if claimed_result:
+                # The published recipient also died during this resolution, so
+                # the claimant cannot silently invent a third branch.
+                return None
 
     if sheriff.role == "werewolf":
         sheriff_story_opponent_ids = set(
@@ -4022,19 +4179,46 @@ def submit_player_sheriff_speech(request: SheriffSpeechRequest) -> SheriffSpeech
         speaker = get_character(game_state, request.character_id)
         if not speaker.is_player:
             raise HTTPException(status_code=400, detail="该接口只接受玩家警上发言。")
-        if request.badge_flow is not None:
-            speech = attach_canonical_badge_flow_speech_text(
-                speech,
-                game_state,
-                request.badge_flow,
-            )
         parsed = parse_player_speech(game_state, speech)
         planned_claims = parsed_claims_to_public_claims(
             game_state,
             speaker.id,
             parsed.claims,
         )
+        projected_role = get_projected_public_role_claim(
+            game_state,
+            speaker.id,
+            planned_claims,
+        )
+        if (
+            projected_role == "seer"
+            and get_active_badge_flow(game_state, speaker.id) is None
+            and request.badge_flow is None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="警上竞选或 PK 发言中跳预言家时，必须同时交代警徽流。",
+            )
         if request.badge_flow is not None:
+            validate_player_badge_flow_with_planned_claims(
+                game_state,
+                speaker,
+                request.badge_flow,
+                planned_claims,
+            )
+            speech = attach_canonical_badge_flow_speech_text(
+                speech,
+                game_state,
+                speaker,
+                request.badge_flow,
+                planned_claims,
+            )
+            parsed = parse_player_speech(game_state, speech)
+            planned_claims = parsed_claims_to_public_claims(
+                game_state,
+                speaker.id,
+                parsed.claims,
+            )
             validate_player_badge_flow_with_planned_claims(
                 game_state,
                 speaker,
@@ -4265,12 +4449,6 @@ def submit_player_speech(request: PlayerSpeechRequest) -> PlayerSpeechResponse:
         elif request.temporary_nomination_target_id is not None:
             raise HTTPException(status_code=400, detail="只有警长能在发言时提出暂时归票。")
 
-        if request.badge_flow is not None:
-            public_speech = attach_canonical_badge_flow_speech_text(
-                public_speech,
-                game_state,
-                request.badge_flow,
-            )
         parsed = parse_player_speech(game_state, public_speech)
         planned_claims = parsed_claims_to_public_claims(
             game_state,
@@ -4278,6 +4456,25 @@ def submit_player_speech(request: PlayerSpeechRequest) -> PlayerSpeechResponse:
             parsed.claims,
         )
         if request.badge_flow is not None:
+            validate_player_badge_flow_with_planned_claims(
+                game_state,
+                speaker,
+                request.badge_flow,
+                planned_claims,
+            )
+            public_speech = attach_canonical_badge_flow_speech_text(
+                public_speech,
+                game_state,
+                speaker,
+                request.badge_flow,
+                planned_claims,
+            )
+            parsed = parse_player_speech(game_state, public_speech)
+            planned_claims = parsed_claims_to_public_claims(
+                game_state,
+                speaker.id,
+                parsed.claims,
+            )
             validate_player_badge_flow_with_planned_claims(
                 game_state,
                 speaker,
@@ -7256,7 +7453,7 @@ def build_public_intel_views(game_state: WolfGameState) -> list[PublicIntelView]
             inferred_target = get_character(game_state, inferred_target_id)
             result_label = "金水" if claimed_result == "good" else "查杀"
             display_text = (
-                f"{event.detail.rstrip('。')}；按其警徽流v{flow.version}，"
+                f"{event.detail.rstrip('。')}；按其警徽流，"
                 f"这表达了其声称{format_full_character_name(inferred_target)}为"
                 f"{result_label}，不代表规则确认。"
             )
@@ -7480,7 +7677,14 @@ def parse_player_speech(
     compact_speech = re.sub(r"[\s\u3000]+", "", speech)
     role_claim_phrases = {
         "werewolf": ["我是狼人"],
-        "seer": ["我是预言家", "我跳预言家", "我起跳预言家"],
+        "seer": [
+            "我是预言家",
+            "我跳预言家",
+            "我起跳预言家",
+            "我报预言家",
+            "我认预言家",
+            "预言家在这里",
+        ],
         "witch": ["我是女巫", "我跳女巫"],
         "hunter": ["我是猎人", "我跳猎人"],
         "guard": ["我是守卫", "我跳守卫"],
@@ -7508,7 +7712,10 @@ def parse_player_speech(
     for sentence in re.split(r"[。！？!?；;\n]", speech):
         if "警徽流" in sentence or (
             "警徽" in sentence
-            and any(marker in sentence for marker in ["金水时", "查杀时"])
+            and any(
+                marker in sentence
+                for marker in ["金水时", "查杀时", "金水分支", "查杀分支"]
+            )
         ):
             continue
         if not any(keyword in sentence for keyword in ["查验", "验了", "验过", "验人", "查杀", "金水"]):
@@ -7548,7 +7755,10 @@ def parse_player_speech(
             "警徽流" in sentence
             or (
                 "警徽" in sentence
-                and any(marker in sentence for marker in ["金水时", "查杀时"])
+                and any(
+                    marker in sentence
+                    for marker in ["金水时", "查杀时", "金水分支", "查杀分支"]
+                )
             )
             or not any(
                 keyword in sentence for keyword in accusation_keywords
@@ -8211,12 +8421,16 @@ def build_public_claim_speech(
     )
     if role_claim is not None and claimed_role:
         if claimed_role == "seer":
-            prefix = "场上已经有人起跳，但我也把话说清楚。" if get_public_role_claimants(game_state, "seer") else "我起跳预言家。"
+            prefix = (
+                "有人起跳，我也跳预言家。"
+                if get_public_role_claimants(game_state, "seer")
+                else "我起跳预言家。"
+            )
             parts.append(prefix)
         else:
-            parts.append(f"我把身份拍出来，我是{ROLE_LABELS.get(claimed_role, claimed_role)}。")
+            parts.append(f"我跳{ROLE_LABELS.get(claimed_role, claimed_role)}。")
     elif claimed_role == "seer":
-        parts.append("我继续以预言家身份更新验人。")
+        parts.append("我继续以预言家身份报验人。")
 
     for claim in claims:
         if claim.target_id is None:
@@ -8225,15 +8439,15 @@ def build_public_claim_speech(
         target_label = format_full_character_name(target)
         if claim.claim_type == "seer_check":
             result = "狼人" if claim.result == "werewolf" else "好人"
-            parts.append(f"我的验人是：{target_label}为{result}。")
+            parts.append(f"我验{target_label}是{result}。")
         elif claim.claim_type == "witch_save":
-            parts.append(f"我对{target_label}用过解药，这条夜间信息由我负责。")
+            parts.append(f"我用解药救过{target_label}。")
         elif claim.claim_type == "witch_poison":
-            parts.append(f"我对{target_label}用过毒药，这条行动可以和出局结果核对。")
+            parts.append(f"我毒过{target_label}，可与出局结果核对。")
         elif claim.claim_type == "guard_success":
-            parts.append(f"我守护过{target_label}并挡下了狼刀，这个平安夜不是偶然。")
+            parts.append(f"我守{target_label}挡下了狼刀。")
     if role_claim is not None and claimed_role == "hunter":
-        parts.append("谁要推动放逐我，也要把我可能开枪的后果算进去。")
+        parts.append("放逐我之前，先考虑我的枪。")
     return "".join(parts)
 
 
@@ -8330,12 +8544,9 @@ def attach_canonical_witch_directive_text(
         return speech
     if directive.action == "poison" and directive.target_id is not None:
         target = get_character(game_state, directive.target_id)
-        sentence = (
-            f"如果女巫在场，我建议今晚毒掉{format_full_character_name(target)}，"
-            "这是我当前最怀疑的位置。"
-        )
+        sentence = f"建议女巫今晚毒掉{format_full_character_name(target)}，我最怀疑他。"
     else:
-        sentence = "如果女巫在场，我建议今晚先压毒，当前公开信息还不足。"
+        sentence = "建议女巫今晚压毒，信息不足。"
     return speech.rstrip("。") + "。" + sentence
 
 
@@ -8386,6 +8597,7 @@ def generate_current_npc_meeting_speech(
                 speaker,
                 planned_badge_flow,
                 allow_pending_seer_claim=True,
+                planned_claims=planned_claims,
             )
         evidence = choose_public_decision_evidence(rag_context)
         rule_speech = build_npc_public_speech(
@@ -8399,7 +8611,9 @@ def generate_current_npc_meeting_speech(
         if planned_badge_flow is not None:
             rule_speech += build_badge_flow_input_speech_text(
                 game_state,
+                speaker,
                 planned_badge_flow,
+                planned_claims,
             )
         rule_speech = apply_npc_voice(game_state, speaker, rule_speech, "meeting")
         llm_result = generate_public_speech_llm_text(
@@ -8432,6 +8646,7 @@ def generate_current_npc_meeting_speech(
                 speaker,
                 planned_badge_flow,
                 allow_pending_seer_claim=True,
+                planned_claims=planned_claims,
             )
     evidence_titles = get_safe_rag_titles(rag_context)
     speech = llm_result.text
@@ -8439,7 +8654,9 @@ def generate_current_npc_meeting_speech(
         speech = attach_canonical_badge_flow_speech_text(
             speech,
             game_state,
+            speaker,
             planned_badge_flow,
+            planned_claims,
         )
     witch_directive = plan_npc_witch_directive(
         game_state,
@@ -8466,7 +8683,7 @@ def generate_current_npc_meeting_speech(
         and game_state.meeting.temporary_nomination_target_id is not None
     ):
         nomination_target = get_character(game_state, game_state.meeting.temporary_nomination_target_id)
-        nomination_sentence = f"我暂时归票给{format_full_character_name(nomination_target)}，听完后面的发言还可以调整。"
+        nomination_sentence = f"我暂时归票给{format_full_character_name(nomination_target)}，听完可改。"
         if nomination_target.name not in speech or "暂时归票" not in speech:
             speech = speech.rstrip("。") + "。" + nomination_sentence
     speech_state = SpeechState(
@@ -8556,30 +8773,30 @@ def build_npc_public_speech(
         )
     if target is None:
         return append_public_rag_evidence(
-            "现在信息还不够，我先听听大家怎么说。",
+            "信息不足，我先听发言。",
             evidence,
         )
 
     suspicion_value = speaker.suspicion.get(str(target.id), 0)
     if speaker.role == "werewolf":
         if target.role == "werewolf":
-            base_speech = f"{target.name}现在已经成为焦点，我不会无条件替他解释，他需要自己回应矛盾。"
+            base_speech = f"{target.name}在焦点位，我不替他解释，请他回应矛盾。"
         else:
-            base_speech = f"我觉得{target.name}今天的发言有点模糊，可以先让他多解释一下。"
+            base_speech = f"{target.name}发言偏模糊，请他解释。"
     elif suspicion_value >= 18:
-        base_speech = f"我注意到{target.name}被提到得比较多，我也想听听他的解释。"
+        base_speech = f"{target.name}被多次点到，请他回应。"
     elif respond_to_player and suspicion_value > 0:
-        base_speech = f"1号玩家刚才提到{target.name}，这个点可以先记下来，但我还不想太快下结论。"
+        base_speech = f"1号点了{target.name}，我先记下，不急着定性。"
     elif speaker.role == "seer":
-        base_speech = f"我会更关注发言逻辑，目前先观察{target.name}的表态。"
+        base_speech = f"我先看{target.name}的发言逻辑。"
     elif speaker.role == "guard":
-        base_speech = f"现在先稳一点，我会观察{target.name}和其他人的互动。"
+        base_speech = f"我先看{target.name}与其他人的互动。"
     elif speaker.role == "witch":
-        base_speech = f"夜晚信息需要谨慎处理，我先观察{target.name}今天是否能保持前后一致。"
+        base_speech = f"我先看{target.name}能否前后一致。"
     elif speaker.role == "hunter":
-        base_speech = f"我会为自己的判断负责，目前重点看{target.name}接下来如何回应。"
+        base_speech = f"我为判断负责，重点看{target.name}怎么回应。"
     else:
-        base_speech = f"目前线索还少，我先观察{target.name}的发言。"
+        base_speech = f"线索不多，我先看{target.name}的发言。"
     return append_public_rag_evidence(base_speech, evidence)
 
 
@@ -8997,7 +9214,7 @@ def build_public_decision_signals(
                     target_id=inferred_target.id,
                     summary=(
                         f"第{event.day}天，按{format_full_character_name(actor)}"
-                        f"自己公布的警徽流v{flow.version}，其警徽动作表达了"
+                        "自己的警徽流，其警徽动作表达了"
                         f"‘{format_full_character_name(inferred_target)}是{result_label}’；"
                         "这是对其公开承诺的解释，不是规则确认的验人结果。"
                     ),
@@ -10082,6 +10299,12 @@ def build_selected_signal_basis_text(
         return ""
     summaries: list[str] = []
     for signal in selected_signals[:2]:
+        if signal.kind == "low_information_speech" and signal.actor_id is not None:
+            actor = get_character(game_state, signal.actor_id)
+            summaries.append(
+                f"{format_full_character_name(actor)}此前发言信息量偏低"
+            )
+            continue
         if (
             signal.kind == "seer_check_claim"
             and signal.target_id == speaker.id
@@ -10103,8 +10326,8 @@ def build_selected_signal_basis_text(
                 "金水" if claim is not None and claim.result == "good" else "查杀"
             )
             summary = (
-                f"{format_full_character_name(claimant)}公开给我发了{result_label}，"
-                "这与其他公开说法一样需要结合后续验人和票型判断"
+                f"{format_full_character_name(claimant)}给我发了{result_label}，"
+                "仍要看后续"
             )
             election_vote_target_id = get_sheriff_vote_target_for_received_check(
                 game_state,
@@ -10119,16 +10342,15 @@ def build_selected_signal_basis_text(
             ):
                 voted_target = get_character(game_state, election_vote_target_id)
                 summary += (
-                    f"；我的警长票投给了{format_full_character_name(voted_target)}，"
-                    "说明我没有只凭收到金水就认定预言家"
+                    f"；但我警长票投了{format_full_character_name(voted_target)}"
                 )
-            summaries.append(truncate_display_text(summary, 72).rstrip("。"))
+            summaries.append(truncate_display_text(summary, 42).rstrip("。"))
             continue
         summaries.append(
-            truncate_display_text(signal.summary.rstrip("。"), 72)
+            truncate_display_text(signal.summary.rstrip("。"), 42)
         )
     joined_summaries = "；".join(summaries)
-    return f"我的公开依据是：{joined_summaries}。"
+    return f"依据：{joined_summaries}。"
 
 
 def build_public_plan_follow_up_text(
@@ -10141,22 +10363,20 @@ def build_public_plan_follow_up_text(
         question_target = get_character(game_state, plan.question.target_id)
         question_label = format_full_character_name(question_target)
         question_text = {
-            QuestionTopic.CLAIM_BASIS: "你的公开身份或结论具体依据是什么？",
-            QuestionTopic.ACTION_MOTIVE: "你做出这个公开动作的动机是什么？",
-            QuestionTopic.STANCE: "你当前最怀疑谁，理由是什么？",
-            QuestionTopic.VOTE_INTENT: "你今天准备投谁，什么情况会让你改票？",
-            QuestionTopic.TIMELINE: "请按时间顺序复述你的判断变化。",
-            QuestionTopic.CONTRADICTION: "请解释你前后说法或动作中的矛盾。",
-            QuestionTopic.ROLE_RESULT: "你能公开核对的身份信息或结果是什么？",
-            QuestionTopic.RESPONSE_TO_PRESSURE: "面对当前质疑，你最核心的回应是什么？",
+            QuestionTopic.CLAIM_BASIS: "依据是什么",
+            QuestionTopic.ACTION_MOTIVE: "为什么这样做",
+            QuestionTopic.STANCE: "你最怀疑谁",
+            QuestionTopic.VOTE_INTENT: "你准备投谁、何时改票",
+            QuestionTopic.TIMELINE: "请说明判断变化",
+            QuestionTopic.CONTRADICTION: "请解释前后矛盾",
+            QuestionTopic.ROLE_RESULT: "哪些身份信息可核对",
+            QuestionTopic.RESPONSE_TO_PRESSURE: "请回应核心质疑",
         }[plan.question.topic]
-        parts.append(f"我具体问{question_label}：{question_text}")
+        parts.append(f"问{question_label}：{question_text}")
 
     if plan.provisional_vote_target_id is not None:
         vote_target = get_character(game_state, plan.provisional_vote_target_id)
-        parts.append(
-            f"在新证据出现前，我的暂定票会给{format_full_character_name(vote_target)}。"
-        )
+        parts.append(f"暂票{format_full_character_name(vote_target)}")
 
     if plan.verification is not None:
         verification_target = get_character(
@@ -10165,23 +10385,21 @@ def build_public_plan_follow_up_text(
         )
         verification_label = format_full_character_name(verification_target)
         criterion_text = {
-            VerificationCriterion.NEXT_SPEECH_CONSISTENCY: "下轮发言是否一致",
-            VerificationCriterion.CLAIM_CONSISTENCY: "声明能否互相印证",
-            VerificationCriterion.VOTE_ALIGNMENT: "票型是否符合站边",
-            VerificationCriterion.RESPONSE_QUALITY: "回应是否正面完整",
-            VerificationCriterion.ROLE_RESULT: "后续身份结果",
-            VerificationCriterion.NIGHT_RESULT: "下一夜公开结果",
+            VerificationCriterion.NEXT_SPEECH_CONSISTENCY: "下轮发言",
+            VerificationCriterion.CLAIM_CONSISTENCY: "声明",
+            VerificationCriterion.VOTE_ALIGNMENT: "票型",
+            VerificationCriterion.RESPONSE_QUALITY: "回应",
+            VerificationCriterion.ROLE_RESULT: "身份结果",
+            VerificationCriterion.NIGHT_RESULT: "夜间结果",
             VerificationCriterion.BADGE_ACTION: "警徽动作",
-            VerificationCriterion.FOLLOW_UP_ACTION: "后续动作是否兑现",
+            VerificationCriterion.FOLLOW_UP_ACTION: "后续动作",
         }[plan.verification.criterion]
-        parts.append(
-            f"若{verification_label}的{criterion_text}不符合，我会改票。"
-        )
+        parts.append(f"若{verification_label}{criterion_text}不符就改票")
 
     if not parts and plan.secondary_target_id is not None:
         secondary = get_character(game_state, plan.secondary_target_id)
-        parts.append(f"同时对照{format_full_character_name(secondary)}的后续站边。")
-    return "".join(parts)
+        parts.append(f"再看{format_full_character_name(secondary)}的站边")
+    return "；".join(parts) + "。" if parts else ""
 
 
 def build_structured_public_speech_rule_text(
@@ -10211,33 +10429,24 @@ def build_structured_public_speech_rule_text(
     ):
         text = append_public_rag_evidence(
             (
-                f"{format_full_character_name(target)}公开给我发了查杀，但我不接受他的预言家故事。"
-                "既然矛盾已经摆在台面上，我会要求他把身份和验人逻辑完整讲清楚。"
+                f"{format_full_character_name(target)}给我查杀，我不认这套预言家逻辑，"
+                "请他讲清身份和验人。"
             ),
             evidence,
         )
     elif decision.intent == PublicSpeechIntent.DEFEND and target is not None:
         text = append_public_rag_evidence(
-            (
-                f"我暂时不把{target.name}直接归为狼人。针对这些公开动作，"
-                "质疑他的人需要给出完整逻辑，我也会核对他后续的回应和票型。"
-            ),
+            f"我暂不打{target.name}，质疑者先给逻辑，再看回应和票型。",
             evidence,
         )
     elif decision.intent == PublicSpeechIntent.PRESSURE and target is not None:
         text = append_public_rag_evidence(
-            (
-                f"我目前把{target.name}放进重点压力位，请他正面给出站边和理由。"
-                "我的判断可能会错，但会用他后续的站边和票型继续验证。"
-            ),
+            f"我重点怀疑{target.name}，请他明确站边和理由。",
             evidence,
         )
     elif decision.intent == PublicSpeechIntent.OBSERVE and target is not None:
         text = append_public_rag_evidence(
-            (
-                f"我暂时把{target.name}放在观察位，但不会空过这一轮。"
-                "请他给出明确站边，我会用后续发言和票型检验这次判断。"
-            ),
+            f"我先观察{target.name}，请他明确站边，后续看票型。",
             evidence,
         )
     else:
@@ -11192,9 +11401,8 @@ def append_public_rag_evidence(
         return text
     title = str(evidence.get("title", "公开证据"))
     if evidence.get("kind") == "public":
-        content = truncate_display_text(str(evidence.get("content", "")), 52)
-        return f"参考{title}：“{content}” {text}"
-    return f"结合知识“{title}”中的判断原则，{text}"
+        return f"参考{title}，{text}"
+    return f"按“{title}”的判断原则，{text}"
 
 
 def get_npc_voice_profile(npc_name: str) -> dict[str, object]:
@@ -11216,6 +11424,8 @@ def apply_npc_voice(
 ) -> str:
     profile = NPC_PROFILES.get(npc.name)
     if profile is None:
+        return text
+    if context_kind == "meeting" and len(text) >= 96:
         return text
 
     used_text = "\n".join(
@@ -11375,12 +11585,12 @@ def generate_structured_speech_voice_prefix(
             "voice_profile": get_npc_voice_profile(speaker.name),
         },
         "output_contract": {
-            "text": "4 到 18 个汉字的纯语气开场，不包含任何游戏事实",
+            "text": "4 到 10 个汉字的纯语气开场，不包含任何游戏事实",
         },
     }
     system_prompt = (
         "你是狼人杀 NPC 的语气风格层。策略和完整发言已由 Python 生成。"
-        "你只生成一句 4 到 18 个汉字的角色化开场语气，不得出现姓名、号码、数字、身份、"
+        "你只生成一句 4 到 10 个汉字的角色化开场语气，不得出现姓名、号码、数字、身份、"
         "阵营、查验、技能、夜间结果、公开动作、投票、立场或判断，也不要复述策略。"
         "只返回 JSON 对象，格式为 {\"text\": \"开场语气\"}。"
     )
@@ -11412,7 +11622,7 @@ def generate_structured_speech_voice_prefix(
         else:
             prefix = " ".join(result.text.split()).strip().rstrip("。！？!?")
             errors = []
-            if len(prefix) < 4 or len(prefix) > 18:
+            if len(prefix) < 4 or len(prefix) > 10:
                 errors.append("voice prefix length is invalid")
             if forbidden_pattern.search(prefix):
                 errors.append("voice prefix contains game facts")
@@ -11528,7 +11738,7 @@ def generate_public_speech_llm_text(
         "对照，也可以基于公开信息直接表达对第三方阵营的判断；这种判断只是可能出错的场上观点，"
         "不得伪装成查验或规则事实。可以声称自己是好人，但不得自称狼人或披露狼队成员名单；"
         "不得新增查验结果或技能行动。"
-        "公开发言不得泄露私密信息。使用自然简洁的中文，最多 170 个汉字。"
+        f"公开发言不得泄露私密信息。使用自然简洁的中文，最多 {PUBLIC_SPEECH_LLM_MAX_CHARS} 个汉字。"
         "事实不完整时也要给出可能错误但有公开依据的判断，并留下明确目标、问题或后续验证标准；"
         "不得用‘没信息，过’作为完整发言。public_plan 是必须保持一致的公开计划投影，不能反转其立场"
         "或另报不同暂定票；后端会追加其中的追问与验证锚点。selected_public_signals 是必须准确保留的最低事实集合，"
@@ -12416,6 +12626,7 @@ def is_empty_pass_public_speech(text: str) -> bool:
         "站边",
         "票型",
         "投票",
+        "暂票",
         "上警",
         "退水",
         "警徽",
@@ -12522,7 +12733,8 @@ def validate_llm_rewrite(
         speaker is None or speaker.role != required_self_role
     ):
         rejection_reasons.append("LLM private role-reveal authorization is invalid")
-    if not candidate or len(candidate) > 320:
+    max_length = PUBLIC_SPEECH_LLM_MAX_CHARS if public_text else 320
+    if not candidate or len(candidate) > max_length:
         rejection_reasons.append("LLM text length is invalid")
     if "\ufffd" in candidate:
         rejection_reasons.append("LLM text contains a replacement character")

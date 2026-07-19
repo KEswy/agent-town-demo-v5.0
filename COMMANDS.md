@@ -88,6 +88,30 @@ V3.1-N 的 `cross_day_exile_chain.v1` 是纯赛后 shadow。它可以在 `GAME_O
 
 V3.1-O 的 `good_exile_cross_day.v1` 只让 `VOTE` 阶段非警长好人 NPC 实时消费公开票型：上一轮放逐得票不超过 `75%` 时，统一审查存活反对票中投向最集中的公开小团体；超过 `75%` 不触发。NPC 女巫第二夜起也把同一焦点纳入“最怀疑目标”，但理由合理的结构化压毒/毒人建议仍可覆盖。焦点不读取被放逐者或候选者身份；smoke 会交换隐藏角色/阵营并要求好人概率与女巫选择不变。
 
+## V3.2-B / M13-A 精炼 NPC 发言
+
+公开自然文案不再显示“警徽流 v1 / v2”，只显示“X 号的警徽流”或“我的警徽流”；结构化版本仍保留在后端历史和审计 ID 中。普通白天发言会紧凑表达公开依据、当前目标、追问、暂票与改票条件，公开 LLM 改写硬限制为 `120` 字，较长的规则正文不再叠加口头禅。
+
+20 个固定 seed 的规则样本共 555 条 NPC 发言：平均 `158.2 → 93.4` 字，P95 `225 → 128` 字，最大 `293 → 196` 字。同口径 100 seeds 为好人 `37`、狼人 `63`，平均 `3.45` 天。完整 smoke 会检查自然文案无版本号、结构化版本仍存在、长 LLM 候选被拒绝，以及紧凑正文仍保留目标、依据、追问、暂票和改票条件。该检查不启动 FastAPI 或 Godot 服务：
+
+```bash
+backend/.venv/bin/python scripts/smoke_check.py
+```
+
+## V3.2-A / M16-A 智能警徽流
+
+警上竞选或 PK 中首次跳预言家必须随同一发言提交警徽流；警下和普通白天发言可以首次发布或修改，但不强制每次重复。Godot 当前行动区默认折叠该模块，检测到警上预言家声明时会自动展开并锁定必填。
+
+后端的结构化输入使用下一夜 `primary_target_id`、可选下一顺验 `secondary_target_id` 和可选公开金水锚点 `claimed_good_anchor_id`。金水分支固定把警徽交给 `primary_target_id`；查杀分支只允许交给该声明者仍存活的公开金水，未指定时自动选择最近公开金水，没有则撕徽。不要把 `secondary_target_id` 当作查杀分支接徽人。
+
+固定 `20260719–20260818` 的 100 局 v13 轻量复验仍为好人 `38`、狼人 `62`，平均 `3.44` 天。
+
+完整自检会验证警上缺失警徽流的原子拒绝、同次首夜金水自动成为查杀分支锚点、NPC 起跳必带流、公开金水合法集合、两条移徽分支、隐藏角色不变性以及 Godot 折叠控件。命令不启动 FastAPI，但末尾会以 Godot CLI 做资源解析，因此仍由开发者手动运行：
+
+```bash
+backend/.venv/bin/python scripts/smoke_check.py
+```
+
 默认报告还包含 `belief_state.v2` 影子信念轨迹：证据台账、每次分数变化和 11 名 NPC 的最后信念。公开软证据逐日乘以 `0.75`，公开票型/警徽动作和合法私有知识不衰减；有效私聊只按已保存的结构化目标与方向进入对应 NPC 的私有视角，不解析自由文本。100 局文件可能达到数十 MB，其中包含所有 NPC 依法拥有的赛后私有视角，不要把它直接返回给进行中的游戏客户端。
 
 M04-A 默认还输出 `stance_summary.v1`：每名 NPC 的统一立场变化，以及公开发言、警长票、放逐票相对决定前摘要的 `aligned / explained_change / unexplained_change / unscored` 对照。完整 100 局 belief + stance 样本约 101MB；只分析 belief 时应使用 `--no-stance-trace`。终端写文件时会显示：
@@ -96,7 +120,7 @@ M04-A 默认还输出 `stance_summary.v1`：每名 NPC 的统一立场变化，�
 [STANCE] mode=shadow; observations=...; alignment=...; unexplained_change=...
 ```
 
-M04-B 把普通非警长白天发言接入 `public_speech_continuity.v1`，计划升级为 `public_speech_plan.v3`；警长票和放逐票仍保留 stance 对照。V3.1-O 当前模拟结果为 `agent_town_simulation.v12` / `agent_town_simulation_batch.v12`，并继续输出不含私有 belief 内容的 `speech_continuity_metrics.v1` 原因计数：
+M04-B 把普通非警长白天发言接入 `public_speech_continuity.v1`，计划升级为 `public_speech_plan.v3`；警长票和放逐票仍保留 stance 对照。V3.2-A 当前模拟结果为 `agent_town_simulation.v13` / `agent_town_simulation_batch.v13`，无 HTTP 玩家预言家会自动提交合法警徽流，并继续输出不含私有 belief 内容的 `speech_continuity_metrics.v1` 原因计数：
 
 ```text
 [CONTINUITY] controlled_speeches=...; reasons={'stance_aligned': ..., 'new_public_evidence': ..., 'deterministic_variance': ..., 'authorized_claim': ..., 'mandatory_rule_response': ..., 'unscored': ...}

@@ -99,14 +99,17 @@ const CHARACTER_SKIN_PATHS := {
 @onready var sheriff_speech_button: Button = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SheriffSpeechRow/SheriffSpeechButton
 @onready var sheriff_speech_row: HBoxContainer = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SheriffSpeechRow
 @onready var badge_flow_panel: PanelContainer = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel
+@onready var badge_flow_collapse_button: Button = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/HeaderRow/CollapseButton
 @onready var badge_flow_include_toggle: CheckButton = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/HeaderRow/IncludeToggle
 @onready var badge_flow_current_label: Label = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/CurrentLabel
+@onready var badge_flow_form_grid: GridContainer = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid
 @onready var badge_flow_primary_option: OptionButton = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid/PrimaryOption
 @onready var badge_flow_secondary_option: OptionButton = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid/SecondaryOption
 @onready var badge_flow_good_option: OptionButton = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid/GoodBadgeOption
 @onready var badge_flow_wolf_option: OptionButton = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid/WolfBadgeOption
 @onready var badge_flow_reason_option: OptionButton = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid/ReasonOption
 @onready var badge_flow_reason_target_option: OptionButton = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid/ReasonTargetOption
+@onready var badge_flow_hint_label: Label = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/HintLabel
 @onready var day_speech_label: Label = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/DaySpeechLabel
 @onready var temporary_nomination_row: HBoxContainer = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/TemporaryNominationRow
 @onready var temporary_nomination_option: OptionButton = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/TemporaryNominationRow/TemporaryNominationOption
@@ -215,6 +218,7 @@ var _pending_vote_reason_text := ""
 var _player_publicly_claimed_seer := false
 var _player_badge_flow_version := 0
 var _badge_flow_game_id := ""
+var _badge_flow_collapsed := true
 
 
 func _ready() -> void:
@@ -253,6 +257,7 @@ func _ready() -> void:
 	sheriff_speech_input.text_submitted.connect(_on_sheriff_speech_input_submitted)
 	sheriff_speech_input.text_changed.connect(_on_badge_flow_speech_draft_changed)
 	badge_flow_include_toggle.toggled.connect(_on_badge_flow_include_toggled)
+	badge_flow_collapse_button.pressed.connect(_on_badge_flow_collapse_pressed)
 	badge_flow_primary_option.item_selected.connect(_on_badge_flow_target_selected)
 	badge_flow_secondary_option.item_selected.connect(_on_badge_flow_target_selected)
 	submit_speech_button.pressed.connect(_on_submit_speech_button_pressed)
@@ -1064,6 +1069,11 @@ func _on_sheriff_speech_button_pressed() -> void:
 	if speech.is_empty():
 		wolf_status_label.text = "后端状态：警上发言不能为空"
 		return
+	if _is_sheriff_badge_flow_required() and not badge_flow_include_toggle.button_pressed:
+		_badge_flow_collapsed = false
+		_update_badge_flow_collapsed_state()
+		wolf_status_label.text = "后端状态：警上首次跳预言家时必须同时发布警徽流"
+		return
 	var badge_flow: Dictionary = {}
 	if badge_flow_include_toggle.button_pressed:
 		badge_flow = _build_selected_badge_flow()
@@ -1149,8 +1159,7 @@ func _build_selected_badge_flow() -> Dictionary:
 
 	var primary_target_id := int(_get_selected_option_metadata(badge_flow_primary_option, 0))
 	var secondary_target_id := int(_get_selected_option_metadata(badge_flow_secondary_option, 0))
-	var good_badge_target_id := int(_get_selected_option_metadata(badge_flow_good_option, 0))
-	var werewolf_badge_target_id := int(_get_selected_option_metadata(badge_flow_wolf_option, 0))
+	var claimed_good_anchor_id := int(_get_selected_option_metadata(badge_flow_wolf_option, 0))
 	var revision_reason := str(_get_selected_option_metadata(badge_flow_reason_option, ""))
 	var reason_target_id := int(_get_selected_option_metadata(badge_flow_reason_target_option, 0))
 
@@ -1160,18 +1169,6 @@ func _build_selected_badge_flow() -> Dictionary:
 	if secondary_target_id == primary_target_id:
 		wolf_status_label.text = "后端状态：两个警徽流验人目标不能相同"
 		return {}
-	var flow_target_ids: Array[int] = [primary_target_id]
-	if secondary_target_id > 0:
-		flow_target_ids.append(secondary_target_id)
-	if good_badge_target_id not in flow_target_ids:
-		wolf_status_label.text = "后端状态：金水传徽对象必须来自警徽流目标"
-		return {}
-	if werewolf_badge_target_id > 0 and werewolf_badge_target_id not in flow_target_ids:
-		wolf_status_label.text = "后端状态：查杀传徽对象必须来自警徽流目标，或选择撕徽"
-		return {}
-	if werewolf_badge_target_id > 0 and werewolf_badge_target_id == good_badge_target_id:
-		wolf_status_label.text = "后端状态：金水与查杀的警徽去向需要能够区分"
-		return {}
 	if revision_reason.is_empty():
 		wolf_status_label.text = "后端状态：请选择警徽流发布或调整理由"
 		return {}
@@ -1179,8 +1176,7 @@ func _build_selected_badge_flow() -> Dictionary:
 	return {
 		"primary_target_id": primary_target_id,
 		"secondary_target_id": secondary_target_id if secondary_target_id > 0 else null,
-		"good_badge_target_id": good_badge_target_id,
-		"werewolf_badge_target_id": werewolf_badge_target_id if werewolf_badge_target_id > 0 else null,
+		"claimed_good_anchor_id": claimed_good_anchor_id if claimed_good_anchor_id > 0 else null,
 		"revision_reason": revision_reason,
 		"reason_target_id": reason_target_id if reason_target_id > 0 else null,
 	}
@@ -2373,11 +2369,22 @@ func _current_badge_flow_speech_declares_seer() -> bool:
 		"我是预言家" in compact_speech
 		or "我跳预言家" in compact_speech
 		or "我起跳预言家" in compact_speech
+		or "我报预言家" in compact_speech
+		or "我认预言家" in compact_speech
+		or "预言家在这里" in compact_speech
 	)
 
 
 func _can_edit_badge_flow_draft() -> bool:
 	return _player_publicly_claimed_seer or _current_badge_flow_speech_declares_seer()
+
+
+func _is_sheriff_badge_flow_required() -> bool:
+	return (
+		_current_wolf_phase in ["SHERIFF_SPEECH", "SHERIFF_RUNOFF_SPEECH"]
+		and _player_badge_flow_version == 0
+		and (_player_publicly_claimed_seer or _current_badge_flow_speech_declares_seer())
+	)
 
 
 func _get_unpublished_badge_flow_status_text() -> String:
@@ -2426,6 +2433,7 @@ func _update_badge_flow_controls(game_data: Dictionary) -> void:
 		_badge_flow_game_id = incoming_game_id
 		_player_badge_flow_version = 0
 		badge_flow_include_toggle.button_pressed = false
+		_badge_flow_collapsed = true
 
 	_player_publicly_claimed_seer = _player_has_public_seer_claim(game_data)
 	badge_flow_panel.visible = _is_player_badge_flow_speech_turn()
@@ -2441,8 +2449,7 @@ func _update_badge_flow_controls(game_data: Dictionary) -> void:
 	)
 	var draft_primary := int(_get_selected_option_metadata(badge_flow_primary_option, 0)) if keep_draft else 0
 	var draft_secondary := int(_get_selected_option_metadata(badge_flow_secondary_option, 0)) if keep_draft else 0
-	var draft_good := int(_get_selected_option_metadata(badge_flow_good_option, 0)) if keep_draft else 0
-	var draft_wolf := int(_get_selected_option_metadata(badge_flow_wolf_option, 0)) if keep_draft else 0
+	var draft_anchor := int(_get_selected_option_metadata(badge_flow_wolf_option, 0)) if keep_draft else 0
 	var draft_reason := str(_get_selected_option_metadata(badge_flow_reason_option, "")) if keep_draft else ""
 	var draft_reason_target := int(_get_selected_option_metadata(badge_flow_reason_target_option, 0)) if keep_draft else 0
 
@@ -2452,6 +2459,10 @@ func _update_badge_flow_controls(game_data: Dictionary) -> void:
 	badge_flow_include_toggle.text = (
 		"随本次发言发布" if latest_version == 0 else "随本次发言更新"
 	)
+	if _is_sheriff_badge_flow_required():
+		badge_flow_include_toggle.text = "警上跳预言家：必须发布"
+		badge_flow_include_toggle.set_pressed_no_signal(true)
+		_badge_flow_collapsed = false
 	badge_flow_current_label.text = (
 		str(latest_flow.get("display_text", "已发布警徽流 v" + str(latest_version)))
 		if latest_version > 0
@@ -2470,13 +2481,14 @@ func _update_badge_flow_controls(game_data: Dictionary) -> void:
 	_populate_badge_flow_reason_options(latest_version, draft_reason)
 	_populate_badge_flow_reason_target_options(game_data, draft_reason_target)
 	_refresh_badge_flow_recipient_options(
-		draft_good if keep_draft else _optional_character_id(latest_flow.get("good_badge_target_id", null)),
-		draft_wolf if keep_draft else (
-			_optional_character_id(latest_flow.get("werewolf_badge_target_id", null))
+		game_data,
+		draft_anchor if keep_draft else (
+			_optional_character_id(latest_flow.get("claimed_good_anchor_id", null))
 			if latest_version > 0
 			else -1
 		),
 	)
+	_update_badge_flow_collapsed_state()
 	_update_badge_flow_enabled_state()
 
 
@@ -2564,13 +2576,11 @@ func _populate_badge_flow_reason_target_options(game_data: Dictionary, preferred
 
 
 func _refresh_badge_flow_recipient_options(
-	preferred_good: int = -1,
-	preferred_wolf: int = -1,
+	game_data: Dictionary,
+	preferred_anchor: int = -1,
 ) -> void:
-	if preferred_good < 0 and badge_flow_good_option.get_item_count() > 0:
-		preferred_good = int(_get_selected_option_metadata(badge_flow_good_option, 0))
-	if preferred_wolf < 0 and badge_flow_wolf_option.get_item_count() > 0:
-		preferred_wolf = int(_get_selected_option_metadata(badge_flow_wolf_option, 0))
+	if preferred_anchor < 0 and badge_flow_wolf_option.get_item_count() > 0:
+		preferred_anchor = int(_get_selected_option_metadata(badge_flow_wolf_option, 0))
 	var primary_target_id := int(_get_selected_option_metadata(badge_flow_primary_option, 0))
 	var secondary_target_id := int(_get_selected_option_metadata(badge_flow_secondary_option, 0))
 	if secondary_target_id == primary_target_id:
@@ -2579,31 +2589,52 @@ func _refresh_badge_flow_recipient_options(
 
 	badge_flow_good_option.clear()
 	badge_flow_wolf_option.clear()
-	badge_flow_wolf_option.add_item("查杀时撕毁警徽")
+	var primary_label := (
+		str(primary_target_id) + "号 " + str(_wolf_character_names.get(primary_target_id, "未知"))
+		if primary_target_id > 0
+		else "尚未选择今晚验人"
+	)
+	badge_flow_good_option.add_item("自动给 " + primary_label)
+	badge_flow_good_option.set_item_metadata(0, primary_target_id)
+	badge_flow_wolf_option.add_item("自动：最近存活公开金水；没有则撕徽")
 	badge_flow_wolf_option.set_item_metadata(0, 0)
-	for target_id in [primary_target_id, secondary_target_id]:
-		if target_id <= 0:
+
+	var alive_ids: Array[int] = []
+	for character in game_data.get("characters", []):
+		if typeof(character) == TYPE_DICTIONARY and bool(character.get("alive", true)):
+			alive_ids.append(int(character.get("id", 0)))
+	var latest_result_by_target := {}
+	var claim_order: Array[int] = []
+	for item in game_data.get("public_intel", []):
+		if (
+			typeof(item) != TYPE_DICTIONARY
+			or str(item.get("kind", "")) != "seer_check"
+			or int(item.get("actor_id", 0)) != _current_player_character_id
+		):
+			continue
+		var target_id := int(item.get("target_id", 0))
+		claim_order.erase(target_id)
+		claim_order.append(target_id)
+		latest_result_by_target[target_id] = str(item.get("result", ""))
+	claim_order.reverse()
+	for target_id in claim_order:
+		if (
+			target_id <= 0
+			or target_id == primary_target_id
+			or target_id not in alive_ids
+			or str(latest_result_by_target.get(target_id, "")) != "good"
+		):
 			continue
 		var label := str(target_id) + "号 " + str(_wolf_character_names.get(target_id, "未知"))
-		badge_flow_good_option.add_item("金水时给 " + label)
-		badge_flow_good_option.set_item_metadata(
-			badge_flow_good_option.get_item_count() - 1,
-			target_id
-		)
-		badge_flow_wolf_option.add_item("查杀时给 " + label)
+		badge_flow_wolf_option.add_item("查杀时给公开金水 " + label)
 		badge_flow_wolf_option.set_item_metadata(
 			badge_flow_wolf_option.get_item_count() - 1,
 			target_id
 		)
 
-	if not _select_option_by_metadata(badge_flow_good_option, preferred_good):
-		if badge_flow_good_option.get_item_count() > 0:
-			badge_flow_good_option.select(0)
-	if preferred_wolf < 0 or not _select_option_by_metadata(badge_flow_wolf_option, preferred_wolf):
-		if secondary_target_id > 0:
-			_select_option_by_metadata(badge_flow_wolf_option, secondary_target_id)
-		else:
-			badge_flow_wolf_option.select(0)
+	badge_flow_good_option.select(0)
+	if preferred_anchor < 0 or not _select_option_by_metadata(badge_flow_wolf_option, preferred_anchor):
+		badge_flow_wolf_option.select(0)
 
 
 func _select_option_by_metadata(option: OptionButton, target: Variant) -> bool:
@@ -2618,21 +2649,53 @@ func _optional_character_id(value: Variant) -> int:
 	return int(value) if value != null else 0
 
 
-func _on_badge_flow_include_toggled(_enabled: bool) -> void:
+func _on_badge_flow_include_toggled(enabled: bool) -> void:
+	if not enabled and _is_sheriff_badge_flow_required():
+		badge_flow_include_toggle.set_pressed_no_signal(true)
+		wolf_status_label.text = "后端状态：警上首次跳预言家必须发布警徽流"
+		return
+	if enabled:
+		_badge_flow_collapsed = false
+	_update_badge_flow_collapsed_state()
 	_update_badge_flow_enabled_state()
 
 
 func _on_badge_flow_speech_draft_changed(_speech: String) -> void:
-	if not badge_flow_panel.visible or _player_badge_flow_version > 0:
+	if not badge_flow_panel.visible:
+		return
+	if _is_sheriff_badge_flow_required():
+		badge_flow_include_toggle.set_pressed_no_signal(true)
+		badge_flow_include_toggle.text = "警上跳预言家：必须发布"
+		_badge_flow_collapsed = false
+	elif _player_badge_flow_version == 0:
+		badge_flow_include_toggle.text = "随本次发言发布"
+		if not _can_edit_badge_flow_draft():
+			badge_flow_include_toggle.set_pressed_no_signal(false)
+			_badge_flow_collapsed = true
+	if _player_badge_flow_version > 0:
+		_update_badge_flow_collapsed_state()
 		_update_badge_flow_enabled_state()
 		return
 	badge_flow_current_label.text = _get_unpublished_badge_flow_status_text()
+	_update_badge_flow_collapsed_state()
 	_update_badge_flow_enabled_state()
 
 
 func _on_badge_flow_target_selected(_index: int) -> void:
-	_refresh_badge_flow_recipient_options()
+	_refresh_badge_flow_recipient_options(_latest_wolf_game_data)
 	_update_badge_flow_enabled_state()
+
+
+func _on_badge_flow_collapse_pressed() -> void:
+	_badge_flow_collapsed = not _badge_flow_collapsed
+	_update_badge_flow_collapsed_state()
+	_update_badge_flow_enabled_state()
+
+
+func _update_badge_flow_collapsed_state() -> void:
+	badge_flow_collapse_button.text = "展开" if _badge_flow_collapsed else "收起"
+	badge_flow_form_grid.visible = not _badge_flow_collapsed
+	badge_flow_hint_label.visible = not _badge_flow_collapsed
 
 
 func _update_badge_flow_enabled_state() -> void:
@@ -2644,10 +2707,14 @@ func _update_badge_flow_enabled_state() -> void:
 		and not busy
 	)
 	badge_flow_include_toggle.disabled = not can_edit
-	var details_enabled := can_edit and badge_flow_include_toggle.button_pressed
+	var details_enabled := (
+		can_edit
+		and badge_flow_include_toggle.button_pressed
+		and not _badge_flow_collapsed
+	)
 	badge_flow_primary_option.disabled = not details_enabled
 	badge_flow_secondary_option.disabled = not details_enabled
-	badge_flow_good_option.disabled = not details_enabled
+	badge_flow_good_option.disabled = true
 	badge_flow_wolf_option.disabled = not details_enabled
 	badge_flow_reason_option.disabled = not details_enabled
 	badge_flow_reason_target_option.disabled = not details_enabled

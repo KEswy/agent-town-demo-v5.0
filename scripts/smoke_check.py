@@ -111,8 +111,8 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
 
-    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-O" not in root_readme:
-        raise SmokeCheckError("root README must identify the active V3.1-O iteration")
+    if not root_readme.startswith("# Agent Town Demo V3") or "V3.2-B" not in root_readme:
+        raise SmokeCheckError("root README must identify the active V3.2-B iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
@@ -124,8 +124,8 @@ def check_release_docs() -> None:
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
 
-    if "V3.1-O" not in backend_readme or "V3.1-O" not in roadmap:
-        raise SmokeCheckError("V3.1-O status must stay synchronized across development docs")
+    if "V3.2-B" not in backend_readme or "V3.2-B" not in roadmap:
+        raise SmokeCheckError("V3.2-B status must stay synchronized across development docs")
     if "scripts/simulate_games.py" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
     if "agent_town_metrics.v4" not in commands:
@@ -192,11 +192,25 @@ def check_release_docs() -> None:
     if (
         "cross_day_exile_chain.v1" not in commands
         or "[EXILE-CHAIN]" not in commands
-        or "agent_town_simulation.v12" not in commands
+        or "agent_town_simulation.v13" not in commands
     ):
         raise SmokeCheckError("COMMANDS.md must document V3.1-O balance policy")
+    if (
+        "M16-A" not in commands
+        or "claimed_good_anchor_id" not in commands
+        or "默认折叠" not in commands
+        or "警上竞选或 PK" not in commands
+    ):
+        raise SmokeCheckError("COMMANDS.md must document V3.2-A intelligent badge flow")
+    if (
+        "M13-A" not in commands
+        or "158.2 → 93.4" not in commands
+        or "120" not in commands
+        or "警徽流 v1 / v2" not in commands
+    ):
+        raise SmokeCheckError("COMMANDS.md must document V3.2-B concise NPC speech")
 
-    print("[OK] V3.1-O README, commands, and roadmap status are synchronized.")
+    print("[OK] V3.2-B README, commands, and roadmap status are synchronized.")
 
 
 def check_json_files() -> None:
@@ -1998,8 +2012,8 @@ if (
 ):
     raise SystemExit("a simulated game must expose versioned post-game metrics")
 if (
-    SIMULATION_SCHEMA_VERSION != "agent_town_simulation.v12"
-    or BATCH_SCHEMA_VERSION != "agent_town_simulation_batch.v12"
+    SIMULATION_SCHEMA_VERSION != "agent_town_simulation.v13"
+    or BATCH_SCHEMA_VERSION != "agent_town_simulation_batch.v13"
     or METRICS_SCHEMA_VERSION != "agent_town_metrics.v4"
 ):
     raise SystemExit("V3.1-O simulation and metrics schemas must stay explicit")
@@ -2313,8 +2327,8 @@ if any(
 batch = run_rule_simulation_batch(20260719, 6)
 if batch["games_completed"] != 6:
     raise SystemExit("batch simulation did not complete every requested game")
-if batch["summary"]["winner_counts"] != {"good": 3, "werewolf": 3}:
-    raise SystemExit("V3.1-O six-seed balance regression fixture changed")
+if batch["summary"]["winner_counts"] != {"good": 2, "werewolf": 4}:
+    raise SystemExit("V3.2-A six-seed balance regression fixture changed")
 if (
     batch["schema_version"] != BATCH_SCHEMA_VERSION
     or batch["metrics_schema_version"] != METRICS_SCHEMA_VERSION
@@ -4069,7 +4083,7 @@ print("headless simulation smoke test passed")
         cwd=BACKEND_DIR,
         fail_message="headless deterministic simulation smoke test failed",
     )
-    print("[OK] Simulations, hidden-information matrices, and V3.1-O public-vote balance policy are deterministic.")
+    print("[OK] Simulations, hidden-information matrices, V3.1-O balance, and V3.2 badge-flow/speech policies are deterministic.")
 
 
 def check_backend_search() -> None:
@@ -4548,7 +4562,10 @@ while game_state.phase in {"SHERIFF_VOTE", "SHERIFF_RUNOFF_SPEECH", "SHERIFF_RUN
             )
         continue
     active_candidates = main_module.get_active_sheriff_candidates(game_state)
-    player_can_vote = player.alive and player.id not in active_candidates
+    player_can_vote = (
+        player.alive
+        and player.id not in game_state.sheriff_election.candidates
+    )
     sheriff_vote_response = submit_and_resolve_sheriff_vote(
         SheriffVoteRequest(
             game_id=response.game_id,
@@ -4815,6 +4832,67 @@ seat_boundary_checks = [
 if len(seat_boundary_checks) != 1 or seat_boundary_checks[0].get("target_id") != 12:
     raise SystemExit("seat 12 black-check parsing must produce exactly one target")
 
+# A first seer claim made during the sheriff campaign (including PK) must carry
+# a badge flow. Rejection is mutation-free. When the same speech reports a
+# first-night gold, the backend automatically uses that public gold as the
+# black-check branch anchor.
+required_sheriff_flow_state = make_rule_test_game(
+    ["villager", "villager", "villager", "villager"]
+)
+required_sheriff_flow_state.phase = "SHERIFF_SPEECH"
+required_sheriff_flow_state.sheriff_election = SheriffElectionState(
+    day=1,
+    candidates=[1],
+    speech_order=[1],
+)
+try:
+    submit_player_sheriff_speech(
+        SheriffSpeechRequest(
+            game_id=required_sheriff_flow_state.game_id,
+            character_id=1,
+            speech="我是预言家，昨晚验了2号是金水。",
+        )
+    )
+    raise SystemExit("a first sheriff-campaign seer claim must require a badge flow")
+except HTTPException as exc:
+    if exc.status_code != 400 or "必须同时交代警徽流" not in str(exc.detail):
+        raise
+if (
+    required_sheriff_flow_state.public_claims
+    or required_sheriff_flow_state.badge_flows
+    or required_sheriff_flow_state.speeches
+    or required_sheriff_flow_state.public_logs
+    or required_sheriff_flow_state.sheriff_election.current_index != 0
+):
+    raise SystemExit("a missing mandatory sheriff badge flow must not mutate public state")
+submit_player_sheriff_speech(
+    SheriffSpeechRequest(
+        game_id=required_sheriff_flow_state.game_id,
+        character_id=1,
+        speech="我是预言家，昨晚验了2号是金水。",
+        badge_flow=main_module.BadgeFlowInput(
+            primary_target_id=3,
+            secondary_target_id=4,
+        ),
+    )
+)
+required_flow = required_sheriff_flow_state.badge_flows[-1]
+if (
+    required_flow.primary_target_id != 3
+    or required_flow.claimed_good_anchor_id != 2
+    or main_module.get_matching_badge_flow_transfer_result(
+        required_sheriff_flow_state,
+        required_flow,
+        3,
+    ) != "good"
+    or main_module.get_matching_badge_flow_transfer_result(
+        required_sheriff_flow_state,
+        required_flow,
+        2,
+    ) != "werewolf"
+):
+    raise SystemExit("a first-night public gold must anchor the next-night black-check branch")
+
 # Badge-flow submission is atomic with a first public seer claim. An invalid
 # structured flow must be rejected before any role claim, speech, log, or
 # meeting progress is committed.
@@ -4840,8 +4918,7 @@ try:
             badge_flow=main_module.BadgeFlowInput(
                 primary_target_id=2,
                 secondary_target_id=3,
-                good_badge_target_id=4,
-                werewolf_badge_target_id=3,
+                claimed_good_anchor_id=4,
             ),
         )
     )
@@ -4876,8 +4953,6 @@ for seer_alias_text in ["我是好人，我跳预言家", "我 是 预言家"]:
     alias_badge_flow_input = main_module.BadgeFlowInput(
         primary_target_id=2,
         secondary_target_id=3,
-        good_badge_target_id=2,
-        werewolf_badge_target_id=3,
     )
     submit_player_speech(
         PlayerSpeechRequest(
@@ -4923,8 +4998,6 @@ try:
             badge_flow=main_module.BadgeFlowInput(
                 primary_target_id=2,
                 secondary_target_id=3,
-                good_badge_target_id=2,
-                werewolf_badge_target_id=3,
             ),
         )
     )
@@ -4960,8 +5033,6 @@ canonical_submission_state.meeting = DayMeetingState(
 canonical_submission_input = main_module.BadgeFlowInput(
     primary_target_id=2,
     secondary_target_id=3,
-    good_badge_target_id=2,
-    werewolf_badge_target_id=3,
 )
 submit_player_speech(
     PlayerSpeechRequest(
@@ -4977,6 +5048,7 @@ submit_player_speech(
 canonical_submission_speech = canonical_submission_state.speeches[-1].speech
 expected_canonical_submission = main_module.build_badge_flow_input_speech_text(
     canonical_submission_state,
+    canonical_submission_state.characters[0],
     canonical_submission_input,
 )
 if (
@@ -4984,8 +5056,8 @@ if (
     or "第2夜生效" not in canonical_submission_speech
     or "8号" in canonical_submission_speech
     or "9号" in canonical_submission_speech
-    or canonical_submission_speech.count("金水时警徽给") != 1
-    or canonical_submission_speech.count("查杀时警徽给") != 1
+    or canonical_submission_speech.count("金水分支：警徽给") != 1
+    or canonical_submission_speech.count("查杀分支：撕徽") != 1
 ):
     raise SystemExit(
         "stored speech must retain only canonical badge-flow targets, branches, and effective night"
@@ -5015,8 +5087,6 @@ badge_flow_v1 = main_module.publish_badge_flow(
     main_module.BadgeFlowInput(
         primary_target_id=3,
         secondary_target_id=4,
-        good_badge_target_id=3,
-        werewolf_badge_target_id=4,
     ),
 )
 badge_flow_history_state.day = 2
@@ -5027,8 +5097,6 @@ badge_flow_v2 = main_module.publish_badge_flow(
     main_module.BadgeFlowInput(
         primary_target_id=4,
         secondary_target_id=5,
-        good_badge_target_id=4,
-        werewolf_badge_target_id=5,
         revision_reason="higher_value",
         reason_target_id=4,
     ),
@@ -5042,6 +5110,29 @@ if (
     or not badge_flow_v2.active
 ):
     raise SystemExit("badge-flow revisions must preserve version history and next-night scope")
+natural_badge_flow_text = main_module.build_badge_flow_display_text(
+    badge_flow_history_state,
+    badge_flow_v2,
+)
+natural_badge_position_text = main_module.render_public_position_summary(
+    badge_flow_history_state,
+    PublicPositionV1(
+        speaker_id=badge_flow_claimant.id,
+        day=2,
+        phase="DAY_MEETING",
+        badge_flow_version=badge_flow_v2.version,
+    ),
+)
+if (
+    f"{badge_flow_claimant.id}号 {badge_flow_claimant.name}的警徽流"
+    not in natural_badge_flow_text
+    or "警徽流v" in natural_badge_flow_text
+    or "警徽流v" in natural_badge_position_text
+    or "沿用既有警徽安排" not in natural_badge_position_text
+):
+    raise SystemExit(
+        "player-facing badge-flow text must stay natural while structured versions remain available"
+    )
 if main_module.get_badge_flow_for_night(
     badge_flow_history_state,
     badge_flow_claimant.id,
@@ -5054,20 +5145,105 @@ if main_module.get_badge_flow_for_night(
     3,
 ) is not badge_flow_v2:
     raise SystemExit("night 3 must use the day-2 badge-flow revision")
+
+# Once an NPC seer publicly reports the result of its current primary target,
+# its next normal speech advances the flow instead of leaving a stale plan.
+npc_flow_advance_state = make_rule_test_game(
+    ["villager", "seer", "villager", "villager", "villager"]
+)
+npc_flow_advance_claimant = npc_flow_advance_state.characters[1]
+main_module.register_public_claims(
+    npc_flow_advance_state,
+    [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=npc_flow_advance_claimant.id,
+            claim_type="role",
+            claimed_role="seer",
+            source="npc_flow_advance",
+        )
+    ],
+)
+main_module.publish_badge_flow(
+    npc_flow_advance_state,
+    npc_flow_advance_claimant,
+    main_module.BadgeFlowInput(
+        primary_target_id=3,
+        secondary_target_id=4,
+    ),
+)
+npc_flow_advance_state.day = 2
+main_module.register_public_claims(
+    npc_flow_advance_state,
+    [
+        main_module.PublicClaimState(
+            day=2,
+            character_id=npc_flow_advance_claimant.id,
+            claim_type="seer_check",
+            claimed_role="seer",
+            target_id=3,
+            result="good",
+            source="npc_flow_advance",
+        )
+    ],
+)
+advanced_npc_flow_input = main_module.plan_npc_badge_flow_input(
+    npc_flow_advance_state,
+    npc_flow_advance_claimant,
+    [],
+)
+if (
+    advanced_npc_flow_input is None
+    or advanced_npc_flow_input.primary_target_id == 3
+    or advanced_npc_flow_input.claimed_good_anchor_id != 3
+    or advanced_npc_flow_input.revision_reason != "other_public_reason"
+):
+    raise SystemExit("an NPC seer must advance a resolved flow and reuse its public gold as the black-check anchor")
 canonical_badge_flow_text = main_module.build_badge_flow_input_speech_text(
     badge_flow_history_state,
+    badge_flow_claimant,
     main_module.BadgeFlowInput(
         primary_target_id=4,
         secondary_target_id=5,
-        good_badge_target_id=4,
-        werewolf_badge_target_id=5,
         revision_reason="higher_value",
         reason_target_id=4,
     ),
 )
+if "警徽流v" in canonical_badge_flow_text or "我的警徽流：" not in canonical_badge_flow_text:
+    raise SystemExit("canonical badge-flow speech must not read its schema version aloud")
+overlong_public_rewrite = main_module.validate_llm_rewrite(
+    LLMGeneration(
+        text="短" * (main_module.PUBLIC_SPEECH_LLM_MAX_CHARS + 1),
+        used_llm=True,
+        provider="stub",
+        model="stub-model",
+    ),
+    "规则短句。",
+    badge_flow_history_state,
+    public_text=True,
+)
+same_length_private_rewrite = main_module.validate_llm_rewrite(
+    LLMGeneration(
+        text="短" * (main_module.PUBLIC_SPEECH_LLM_MAX_CHARS + 1),
+        used_llm=True,
+        provider="stub",
+        model="stub-model",
+    ),
+    "规则短句。",
+    badge_flow_history_state,
+)
+if (
+    overlong_public_rewrite.used_llm
+    or overlong_public_rewrite.text != "规则短句。"
+    or not same_length_private_rewrite.used_llm
+):
+    raise SystemExit(
+        "the 120-character hard budget must apply to public rewrites without shrinking private chat"
+    )
 canonical_badge_flow_parse = main_module.parse_player_speech(
     badge_flow_history_state,
     canonical_badge_flow_text,
+    speaker_id=badge_flow_claimant.id,
 )
 if (
     any(
@@ -5076,7 +5252,10 @@ if (
     )
     or canonical_badge_flow_parse.accusations
 ):
-    raise SystemExit("canonical badge-flow branches must not be parsed as completed checks or accusations")
+    raise SystemExit(
+        "canonical badge-flow branches must not be parsed as completed checks or accusations: "
+        + canonical_badge_flow_parse.model_dump_json()
+    )
 
 # Fact-based revision labels are legal only when the corresponding public fact
 # already exists. Rejection is mutation-free; adding the public elimination or
@@ -5103,9 +5282,7 @@ def make_fact_revision_state():
         claimant,
         main_module.BadgeFlowInput(
             primary_target_id=3,
-            secondary_target_id=4,
-            good_badge_target_id=3,
-            werewolf_badge_target_id=4,
+            secondary_target_id=5,
         ),
     )
     return state, claimant
@@ -5119,8 +5296,6 @@ try:
         main_module.BadgeFlowInput(
             primary_target_id=4,
             secondary_target_id=5,
-            good_badge_target_id=4,
-            werewolf_badge_target_id=5,
             revision_reason="target_eliminated",
             reason_target_id=3,
         ),
@@ -5151,8 +5326,6 @@ accepted_elimination_revision = main_module.publish_badge_flow(
     main_module.BadgeFlowInput(
         primary_target_id=4,
         secondary_target_id=5,
-        good_badge_target_id=4,
-        werewolf_badge_target_id=5,
         revision_reason="target_eliminated",
         reason_target_id=3,
     ),
@@ -5169,8 +5342,6 @@ try:
         main_module.BadgeFlowInput(
             primary_target_id=4,
             secondary_target_id=5,
-            good_badge_target_id=4,
-            werewolf_badge_target_id=5,
             revision_reason="role_reveal",
             reason_target_id=3,
         ),
@@ -5199,8 +5370,6 @@ accepted_role_revision = main_module.publish_badge_flow(
     main_module.BadgeFlowInput(
         primary_target_id=4,
         secondary_target_id=5,
-        good_badge_target_id=4,
-        werewolf_badge_target_id=5,
         revision_reason="role_reveal",
         reason_target_id=3,
     ),
@@ -5237,8 +5406,6 @@ main_module.publish_badge_flow(
     main_module.BadgeFlowInput(
         primary_target_id=3,
         secondary_target_id=4,
-        good_badge_target_id=3,
-        werewolf_badge_target_id=4,
     ),
 )
 night_badge_flow_state.day = 2
@@ -5307,8 +5474,6 @@ main_module.publish_badge_flow(
     main_module.BadgeFlowInput(
         primary_target_id=3,
         secondary_target_id=4,
-        good_badge_target_id=3,
-        werewolf_badge_target_id=4,
     ),
 )
 initial_flow_adjustment = main_module.get_public_badge_flow_credibility_adjustment(
@@ -5321,8 +5486,6 @@ main_module.publish_badge_flow(
     main_module.BadgeFlowInput(
         primary_target_id=4,
         secondary_target_id=5,
-        good_badge_target_id=4,
-        werewolf_badge_target_id=5,
         revision_reason="higher_value",
         reason_target_id=4,
     ),
@@ -5351,8 +5514,6 @@ main_module.publish_badge_flow(
     main_module.BadgeFlowInput(
         primary_target_id=5,
         secondary_target_id=6,
-        good_badge_target_id=5,
-        werewolf_badge_target_id=6,
         revision_reason="target_eliminated",
         reason_target_id=4,
     ),
@@ -5380,7 +5541,16 @@ main_module.register_public_claims(
             claim_type="role",
             claimed_role="seer",
             source="badge_transfer_flow",
-        )
+        ),
+        main_module.PublicClaimState(
+            day=1,
+            character_id=badge_transfer_claimant.id,
+            claim_type="seer_check",
+            claimed_role="seer",
+            target_id=4,
+            result="good",
+            source="badge_transfer_flow",
+        ),
     ],
 )
 transfer_flow = main_module.publish_badge_flow(
@@ -5388,11 +5558,25 @@ transfer_flow = main_module.publish_badge_flow(
     badge_transfer_claimant,
     main_module.BadgeFlowInput(
         primary_target_id=3,
-        secondary_target_id=4,
-        good_badge_target_id=3,
-        werewolf_badge_target_id=4,
+        secondary_target_id=5,
     ),
 )
+if transfer_flow.claimed_good_anchor_id != 4:
+    raise SystemExit("the latest living public gold must become the automatic black-check anchor")
+black_branch_inference = main_module.get_badge_transfer_flow_inference(
+    badge_transfer_flow_state,
+    SheriffEventState(
+        day=2,
+        event_type="badge_transfer",
+        actor_id=badge_transfer_claimant.id,
+        target_id=4,
+        context="after_night",
+        badge_flow_version=transfer_flow.version,
+        detail="测试查杀分支。",
+    ),
+)
+if black_branch_inference is None or black_branch_inference[1:] != (3, "werewolf"):
+    raise SystemExit("giving the badge to an earlier public gold must encode the planned target as a black check")
 badge_transfer_flow_state.day = 2
 badge_transfer_flow_state.sheriff_id = badge_transfer_claimant.id
 badge_transfer_flow_state.badge_destroyed = False
@@ -5431,7 +5615,7 @@ if (
 main_module.apply_badge_transfer(
     badge_transfer_flow_state,
     badge_transfer_claimant,
-    5,
+    6,
     continuation="after_night",
 )
 unlisted_night_transfer = badge_transfer_flow_state.sheriff_events[-1]
@@ -5444,7 +5628,7 @@ if (
     or main_module.get_matching_badge_flow_transfer_result(
         badge_transfer_flow_state,
         transfer_flow,
-        5,
+        6,
     )
 ):
     raise SystemExit("an unlisted badge recipient must not be forced into either badge-flow branch")
@@ -5458,7 +5642,7 @@ badge_consistency_signals = [
 if (
     len(badge_consistency_signals) != 1
     or badge_consistency_signals[0].target_id != 3
-    or any(signal.target_id in {5, 6} for signal in badge_consistency_signals)
+    or any(signal.target_id in {4, 5, 6} for signal in badge_consistency_signals)
 ):
     raise SystemExit("ordinary non-recipients must not receive inferred good-or-wolf badge-flow labels")
 
@@ -5478,7 +5662,16 @@ def build_public_badge_projection(claimant_role, claim_source):
                 claim_type="role",
                 claimed_role="seer",
                 source=claim_source,
-            )
+            ),
+            main_module.PublicClaimState(
+                day=1,
+                character_id=claimant.id,
+                claim_type="seer_check",
+                claimed_role="seer",
+                target_id=4,
+                result="good",
+                source=claim_source,
+            ),
         ],
     )
     main_module.publish_badge_flow(
@@ -5486,9 +5679,7 @@ def build_public_badge_projection(claimant_role, claim_source):
         claimant,
         main_module.BadgeFlowInput(
             primary_target_id=3,
-            secondary_target_id=4,
-            good_badge_target_id=3,
-            werewolf_badge_target_id=4,
+            secondary_target_id=5,
         ),
     )
     return (
@@ -6495,7 +6686,7 @@ try:
         raise SystemExit("the Python-rendered speech should preserve the selected signal summary")
     if not all(
         marker in llm_speech_response.speech.speech
-        for marker in ["重点压力位", "我具体问", "不符合", "暂定票"]
+        for marker in ["重点怀疑", "问", "不符就改票", "暂票"]
     ):
         raise SystemExit(
             "the Python-rendered V3 body must preserve stance, question, verification, and provisional vote"
@@ -7077,6 +7268,7 @@ if (
         marker in fallback_signal_text
         for marker in ["解释", "明确", "站边", "票型", "验证", "检验"]
     )
+    or len(fallback_signal_text) > 140
     or main_module.is_empty_pass_public_speech(fallback_signal_text)
 ):
     raise SystemExit("rule fallback should target the low-information speaker and make a concrete follow-up")
@@ -9057,7 +9249,7 @@ received_gold_speech = generate_npc_speech(
 received_gold_plan = natural_sheriff_state.speeches[-1].decision_plan
 if (
     "给我发了金水" not in received_gold_speech
-    or "我的警长票投给了" not in received_gold_speech
+    or "但我警长票投了" not in received_gold_speech
 ):
     raise SystemExit("a gold recipient must mention the claim and explain an opposite sheriff vote")
 if not any(
@@ -10423,6 +10615,10 @@ submit_player_sheriff_speech(
         game_id=wolf_coordination_state.game_id,
         character_id=1,
         speech="我是预言家，昨晚查验4号是好人，我来带队。",
+        badge_flow=main_module.BadgeFlowInput(
+            primary_target_id=5,
+            secondary_target_id=6,
+        ),
     )
 )
 fake_campaign = generate_npc_sheriff_campaign_speech(
@@ -10433,7 +10629,7 @@ fake_campaign = generate_npc_sheriff_campaign_speech(
 )
 if "起跳预言家" in fake_campaign.speech.speech:
     raise SystemExit("NPC wolf should be able to yield when a wolf player already makes a strong seer claim")
-generate_npc_sheriff_campaign_speech(
+true_seer_campaign = generate_npc_sheriff_campaign_speech(
     SheriffSpeechRequest(
         game_id=wolf_coordination_state.game_id,
         character_id=2,
@@ -10448,6 +10644,11 @@ if not any(claim.claim_type == "role" and claim.claimed_role == "seer" for claim
     raise SystemExit("NPC true seer must claim seer during the sheriff election")
 if not any(claim.claim_type == "seer_check" and claim.target_id == 3 and claim.result == "werewolf" for claim in true_seer_claims):
     raise SystemExit("NPC true seer must reveal the real first-night check")
+if (
+    main_module.get_active_badge_flow(wolf_coordination_state, 2) is None
+    or "警徽流" not in true_seer_campaign.speech.speech
+):
+    raise SystemExit("an NPC that claims seer during the sheriff campaign must publish its badge flow")
 submit_sheriff_withdrawal(
     SheriffWithdrawalRequest(
         game_id=wolf_coordination_state.game_id,
@@ -10809,7 +11010,7 @@ print("wolf game start smoke test passed")
         cwd=BACKEND_DIR,
         fail_message="wolf game start smoke test failed",
     )
-    print("[OK] Wolf game meeting, private chat, role, memory, social, and vote APIs work.")
+    print("[OK] Wolf game meeting, natural concise speech, intelligent badge flow, private chat, role, memory, social, and vote APIs work.")
 
 
 def check_godot_loads() -> None:
@@ -10927,6 +11128,10 @@ def check_godot_ui_layout() -> None:
         '[node name="WithdrawButton" type="Button"',
         'text = "退水"',
         '[node name="SheriffSpeechInput" type="LineEdit"',
+        '[node name="BadgeFlowPanel" type="PanelContainer"',
+        '[node name="CollapseButton" type="Button" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/HeaderRow"]',
+        'text = "今晚查验"',
+        'text = "下一顺验（可选）"',
         '[node name="VoteReasonInput" type="LineEdit"',
         '[node name="VoteResultLabel" type="Label"',
         '[node name="CombinedVoteRequest" type="HTTPRequest"',
@@ -11070,6 +11275,11 @@ def check_godot_ui_layout() -> None:
         'func _update_sheriff_controls(game_data: Dictionary)',
         'func _on_sheriff_continue_button_pressed()',
         'func _on_sheriff_withdraw_button_pressed()',
+        'func _is_sheriff_badge_flow_required() -> bool:',
+        'func _on_badge_flow_collapse_pressed() -> void:',
+        'func _update_badge_flow_collapsed_state() -> void:',
+        '"claimed_good_anchor_id": claimed_good_anchor_id if claimed_good_anchor_id > 0 else null',
+        '"自动：最近存活公开金水；没有则撕徽"',
         'func _submit_sheriff_action(withdraw_choice: Variant = null)',
         '"投警长并公布" if can_vote else "公布警长票型"',
         '"SHERIFF_WITHDRAWAL":',

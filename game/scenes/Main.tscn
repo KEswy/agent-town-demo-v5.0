@@ -727,6 +727,10 @@ theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 14
 text = "警徽流"
 
+[node name="CollapseButton" type="Button" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+text = "展开"
+
 [node name="IncludeToggle" type="CheckButton" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/HeaderRow"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0, 0, 0, 1)
@@ -750,7 +754,7 @@ theme_override_constants/v_separation = 5
 [node name="PrimaryLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0, 0, 0, 1)
-text = "第一验人"
+text = "今晚查验"
 
 [node name="PrimaryOption" type="OptionButton" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
 layout_mode = 2
@@ -759,7 +763,7 @@ size_flags_horizontal = 3
 [node name="SecondaryLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0, 0, 0, 1)
-text = "第二验人"
+text = "下一顺验（可选）"
 
 [node name="SecondaryOption" type="OptionButton" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
 layout_mode = 2
@@ -768,7 +772,7 @@ size_flags_horizontal = 3
 [node name="GoodBadgeLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0, 0, 0, 1)
-text = "验出金水"
+text = "若验出金水"
 
 [node name="GoodBadgeOption" type="OptionButton" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
 layout_mode = 2
@@ -777,7 +781,7 @@ size_flags_horizontal = 3
 [node name="WolfBadgeLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0, 0, 0, 1)
-text = "验出查杀"
+text = "若验出查杀"
 
 [node name="WolfBadgeOption" type="OptionButton" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox/FormGrid"]
 layout_mode = 2
@@ -805,7 +809,7 @@ size_flags_horizontal = 3
 layout_mode = 2
 theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 10
-text = "勾选后，警徽流会与本次公开发言一起提交；不勾选不会改动已有警徽流。"
+text = "金水分支固定把警徽交给今晚验人；查杀分支只会交给自己仍存活的公开金水，没有则撕徽。警上首次跳预言家时必须随发言发布。"
 autowrap_mode = 3
 
 [node name="DaySpeechLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]

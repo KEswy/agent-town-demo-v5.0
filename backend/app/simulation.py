@@ -42,8 +42,8 @@ from .vote_calibration import (
 )
 
 
-SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v12"
-BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v12"
+SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v13"
+BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v13"
 PLAYER_POLICY_VERSION = "legal_public_baseline.v1"
 SPEECH_CONTINUITY_METRICS_VERSION = "speech_continuity_metrics.v1"
 DEFAULT_MAX_DAYS = 20
@@ -296,6 +296,11 @@ def _advance_one_phase(game_state: rules.WolfGameState) -> None:
             game_id=game_state.game_id,
             character_id=speaker.id,
             speech=_build_player_sheriff_speech(game_state) if speaker.is_player else "",
+            badge_flow=(
+                _build_player_sheriff_badge_flow(game_state)
+                if speaker.is_player
+                else None
+            ),
         )
         if speaker.is_player:
             rules.submit_player_sheriff_speech(request)
@@ -592,6 +597,64 @@ def _build_player_sheriff_speech(game_state: rules.WolfGameState) -> str:
         return "我上警是为了整理公开信息，会对后续发言和票型负责。"
     target = rules.get_character(game_state, target_id)
     return f"我上警是为了整理信息，目前重点观察{target.id}号{target.name}的后续发言。"
+
+
+def _build_player_sheriff_badge_flow(
+    game_state: rules.WolfGameState,
+) -> Optional[rules.BadgeFlowInput]:
+    player = _player(game_state)
+    if player.role != "seer" or rules.get_active_badge_flow(game_state, player.id):
+        return None
+
+    checked_ids = {
+        target_id
+        for _day, target_id, _result in rules.get_character_seer_checks(
+            game_state,
+            player.id,
+        )
+    }
+    candidates = [
+        character
+        for character in game_state.characters
+        if character.alive
+        and character.id != player.id
+        and character.id not in checked_ids
+    ]
+    if not candidates:
+        return None
+    highest_public_pressure = max(
+        rules.get_public_suspicion_score(game_state, character.id)
+        for character in candidates
+    )
+    primary_ids = [
+        character.id
+        for character in candidates
+        if rules.get_public_suspicion_score(game_state, character.id)
+        == highest_public_pressure
+    ]
+    primary_id = _policy_choice(
+        game_state,
+        primary_ids,
+        "player_sheriff_badge_flow_primary",
+    )
+    secondary_ids = [
+        character.id
+        for character in candidates
+        if character.id != primary_id
+    ]
+    secondary_id = (
+        _policy_choice(
+            game_state,
+            secondary_ids,
+            "player_sheriff_badge_flow_secondary",
+        )
+        if secondary_ids
+        else None
+    )
+    return rules.BadgeFlowInput(
+        primary_target_id=primary_id,
+        secondary_target_id=secondary_id,
+    )
 
 
 def _build_player_day_speech(
