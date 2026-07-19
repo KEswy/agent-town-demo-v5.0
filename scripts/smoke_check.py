@@ -111,8 +111,8 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
 
-    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-N" not in root_readme:
-        raise SmokeCheckError("root README must identify the active V3.1-N iteration")
+    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-O" not in root_readme:
+        raise SmokeCheckError("root README must identify the active V3.1-O iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
@@ -124,8 +124,8 @@ def check_release_docs() -> None:
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
 
-    if "V3.1-N" not in backend_readme or "V3.1-N" not in roadmap:
-        raise SmokeCheckError("V3.1-N status must stay synchronized across development docs")
+    if "V3.1-O" not in backend_readme or "V3.1-O" not in roadmap:
+        raise SmokeCheckError("V3.1-O status must stay synchronized across development docs")
     if "scripts/simulate_games.py" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
     if "agent_town_metrics.v4" not in commands:
@@ -170,7 +170,7 @@ def check_release_docs() -> None:
     if (
         "vote_probability_trace.v2" not in commands
         or "vote_probability_summary.v2" not in commands
-        or "good_exile_calibration.v1" not in commands
+        or "good_exile_cross_day.v1" not in commands
         or "--no-vote-calibration-trace" not in commands
         or "[VOTE-CALIBRATION]" not in commands
         or "M15-B" not in commands
@@ -184,7 +184,7 @@ def check_release_docs() -> None:
     ):
         raise SmokeCheckError("COMMANDS.md must document V3.1-L witch diagnostics")
     if (
-        "fake_seer_campaign.v1" not in commands
+        "fake_seer_campaign.v2" not in commands
         or "fake_seer_check_mix.v1" not in commands
         or "[SEER]" not in commands
     ):
@@ -192,11 +192,11 @@ def check_release_docs() -> None:
     if (
         "cross_day_exile_chain.v1" not in commands
         or "[EXILE-CHAIN]" not in commands
-        or "agent_town_simulation.v11" not in commands
+        or "agent_town_simulation.v12" not in commands
     ):
-        raise SmokeCheckError("COMMANDS.md must document V3.1-N exile-chain diagnostics")
+        raise SmokeCheckError("COMMANDS.md must document V3.1-O balance policy")
 
-    print("[OK] V3.1-N README, commands, and roadmap status are synchronized.")
+    print("[OK] V3.1-O README, commands, and roadmap status are synchronized.")
 
 
 def check_json_files() -> None:
@@ -1696,7 +1696,8 @@ witch_policy_state = rules.create_wolf_game_state(
     random_seed=20260719,
 )
 if (
-    rules.FAKE_SEER_CAMPAIGN_POLICY_VERSION != "fake_seer_campaign.v1"
+    rules.FAKE_SEER_CAMPAIGN_POLICY_VERSION != "fake_seer_campaign.v2"
+    or rules.FAKE_SEER_CAMPAIGN_RANDOM_STREAM != "fake_seer_campaign.v1"
     or rules.FAKE_SEER_CHECK_POLICY_VERSION != "fake_seer_check_mix.v1"
 ):
     raise SystemExit("V3.1-M fake-seer policies must stay explicitly versioned")
@@ -1710,7 +1711,7 @@ selected_fake_ids = {
 }
 if (
     len(selected_fake_ids) != 1
-    or not 800 <= campaign_count <= 1_760
+    or not 560 <= campaign_count <= 1_240
 ):
     raise SystemExit("fake-seer campaign must reproducibly mix entry and restraint")
 random.seed(7)
@@ -1997,11 +1998,11 @@ if (
 ):
     raise SystemExit("a simulated game must expose versioned post-game metrics")
 if (
-    SIMULATION_SCHEMA_VERSION != "agent_town_simulation.v11"
-    or BATCH_SCHEMA_VERSION != "agent_town_simulation_batch.v11"
+    SIMULATION_SCHEMA_VERSION != "agent_town_simulation.v12"
+    or BATCH_SCHEMA_VERSION != "agent_town_simulation_batch.v12"
     or METRICS_SCHEMA_VERSION != "agent_town_metrics.v4"
 ):
-    raise SystemExit("V3.1-N simulation and metrics schemas must stay explicit")
+    raise SystemExit("V3.1-O simulation and metrics schemas must stay explicit")
 balance_diagnostics = first["metrics"]["balance_diagnostics"]
 if (
     balance_diagnostics["winner_reason"] != first["winner_reason"]
@@ -2312,6 +2313,8 @@ if any(
 batch = run_rule_simulation_batch(20260719, 6)
 if batch["games_completed"] != 6:
     raise SystemExit("batch simulation did not complete every requested game")
+if batch["summary"]["winner_counts"] != {"good": 3, "werewolf": 3}:
+    raise SystemExit("V3.1-O six-seed balance regression fixture changed")
 if (
     batch["schema_version"] != BATCH_SCHEMA_VERSION
     or batch["metrics_schema_version"] != METRICS_SCHEMA_VERSION
@@ -2858,6 +2861,175 @@ finally:
     )
 if fallback_probabilities != legacy_villager_probabilities:
     raise SystemExit("a rejected M15-B contract must use the legal legacy fallback")
+
+public_vote_policy_state = left_vote_shadow_state.model_copy(deep=True)
+public_vote_policy_state.day = 2
+public_vote_policy_state.phase = "VOTE"
+public_vote_policy_state.sheriff_id = None
+public_vote_policy_state.votes = []
+public_vote_policy_state.eliminations = []
+public_vote_witch = next(
+    character
+    for character in public_vote_policy_state.characters
+    if not character.is_player and character.role == "witch"
+)
+public_vote_actor = rules.get_character(
+    public_vote_policy_state,
+    villager_observer.id,
+)
+public_vote_exiled = next(
+    character
+    for character in public_vote_policy_state.characters
+    if character.id not in {public_vote_actor.id, public_vote_witch.id}
+)
+dissent_voters = [
+    character
+    for character in public_vote_policy_state.characters
+    if character.id
+    not in {public_vote_actor.id, public_vote_witch.id, public_vote_exiled.id}
+][:3]
+for character in public_vote_policy_state.characters:
+    target_id = public_vote_exiled.id
+    if character.id in {dissent_voters[0].id, dissent_voters[1].id}:
+        target_id = public_vote_actor.id
+    elif character.id == dissent_voters[2].id:
+        target_id = public_vote_witch.id
+    public_vote_policy_state.votes.append(
+        rules.VoteState(
+            day=1,
+            voter_id=character.id,
+            target_id=target_id,
+        )
+    )
+public_vote_exiled.alive = False
+public_vote_policy_state.eliminations = [
+    rules.EliminationState(
+        day=1,
+        character_id=public_vote_exiled.id,
+        cause="exiled",
+        source_action="day_vote",
+        source_actor_ids=[
+            character.id for character in public_vote_policy_state.characters
+        ],
+        source_target_id=public_vote_exiled.id,
+    )
+]
+expected_public_focus_id = min(
+    dissent_voters[0].id,
+    dissent_voters[1].id,
+)
+if rules.get_public_contested_exile_dissent_focus_id(
+    public_vote_policy_state
+) != expected_public_focus_id:
+    raise SystemExit("a contested public ballot must produce one shared dissent focus")
+public_vote_candidate_ids = [
+    character.id
+    for character in public_vote_policy_state.characters
+    if character.alive
+]
+public_vote_probabilities = rules.build_npc_exile_vote_probabilities(
+    public_vote_policy_state,
+    public_vote_actor,
+    public_vote_candidate_ids,
+)
+if (
+    max(public_vote_probabilities, key=public_vote_probabilities.get)
+    != expected_public_focus_id
+    or public_vote_probabilities[expected_public_focus_id] < 0.80
+):
+    raise SystemExit("V3.1-O good NPCs must converge on the public dissent focus")
+public_vote_witch_decision = rules.choose_npc_witch_action_decision(
+    public_vote_policy_state,
+    public_vote_witch,
+    attacked_target_id=None,
+)
+if (
+    public_vote_witch_decision.action_type != "witch_poison"
+    or public_vote_witch_decision.target_id != expected_public_focus_id
+):
+    raise SystemExit("V3.1-O witch suspicion must consume the same public vote focus")
+
+public_vote_hidden_swap = public_vote_policy_state.model_copy(deep=True)
+hidden_focus = rules.get_character(
+    public_vote_hidden_swap,
+    expected_public_focus_id,
+)
+hidden_peer = next(
+    character
+    for character in public_vote_hidden_swap.characters
+    if character.alive
+    and character.id
+    not in {
+        public_vote_actor.id,
+        public_vote_witch.id,
+        expected_public_focus_id,
+    }
+)
+hidden_focus.role, hidden_peer.role = hidden_peer.role, hidden_focus.role
+hidden_focus.camp, hidden_peer.camp = hidden_peer.camp, hidden_focus.camp
+hidden_public_vote_actor = rules.get_character(
+    public_vote_hidden_swap,
+    public_vote_actor.id,
+)
+hidden_public_vote_witch = rules.get_character(
+    public_vote_hidden_swap,
+    public_vote_witch.id,
+)
+if (
+    rules.get_public_contested_exile_dissent_focus_id(public_vote_hidden_swap)
+    != expected_public_focus_id
+    or rules.build_npc_exile_vote_probabilities(
+        public_vote_hidden_swap,
+        hidden_public_vote_actor,
+        public_vote_candidate_ids,
+    )
+    != public_vote_probabilities
+    or rules.choose_npc_witch_action_decision(
+        public_vote_hidden_swap,
+        hidden_public_vote_witch,
+        attacked_target_id=None,
+    ).model_dump(mode="json")
+    != public_vote_witch_decision.model_dump(mode="json")
+):
+    raise SystemExit("public cross-day policy must be hidden-role invariant")
+
+hidden_exile_truth_state = public_vote_policy_state.model_copy(deep=True)
+hidden_exile_truth = rules.get_character(
+    hidden_exile_truth_state,
+    public_vote_exiled.id,
+)
+if hidden_exile_truth.camp == "werewolf":
+    hidden_exile_truth.role = "villager"
+    hidden_exile_truth.camp = "good"
+else:
+    hidden_exile_truth.role = "werewolf"
+    hidden_exile_truth.camp = "werewolf"
+if (
+    rules.get_public_contested_exile_dissent_focus_id(hidden_exile_truth_state)
+    != expected_public_focus_id
+    or rules.build_npc_exile_vote_probabilities(
+        hidden_exile_truth_state,
+        rules.get_character(hidden_exile_truth_state, public_vote_actor.id),
+        public_vote_candidate_ids,
+    )
+    != public_vote_probabilities
+    or rules.choose_npc_witch_action_decision(
+        hidden_exile_truth_state,
+        rules.get_character(hidden_exile_truth_state, public_vote_witch.id),
+        attacked_target_id=None,
+    ).model_dump(mode="json")
+    != public_vote_witch_decision.model_dump(mode="json")
+):
+    raise SystemExit("cross-day policy must not learn the exiled hidden camp")
+
+overwhelming_vote_state = public_vote_policy_state.model_copy(deep=True)
+for vote in overwhelming_vote_state.votes:
+    if vote.voter_id == dissent_voters[1].id:
+        vote.target_id = public_vote_exiled.id
+if rules.get_public_contested_exile_dissent_focus_id(
+    overwhelming_vote_state
+) is not None:
+    raise SystemExit("an overwhelming prior exile must not create a dissent focus")
 
 strong_seer_state = left_vote_shadow_state.model_copy(deep=True)
 strong_seer = next(
@@ -3897,7 +4069,7 @@ print("headless simulation smoke test passed")
         cwd=BACKEND_DIR,
         fail_message="headless deterministic simulation smoke test failed",
     )
-    print("[OK] Simulations, hidden-information matrices, and V3.1-N cross-day exile diagnostics are deterministic.")
+    print("[OK] Simulations, hidden-information matrices, and V3.1-O public-vote balance policy are deterministic.")
 
 
 def check_backend_search() -> None:

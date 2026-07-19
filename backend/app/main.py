@@ -137,8 +137,11 @@ MAX_GAME_RANDOM_SEED = (1 << 63) - 1
 WITCH_DIRECTIVE_SCHEMA_VERSION = "witch_directive.v1"
 WITCH_STRATEGY_SCHEMA_VERSION = "witch_strategy_decision.v1"
 NPC_WITCH_FIRST_NIGHT_SAVE_RATE = 0.99
-FAKE_SEER_CAMPAIGN_POLICY_VERSION = "fake_seer_campaign.v1"
+FAKE_SEER_CAMPAIGN_POLICY_VERSION = "fake_seer_campaign.v2"
+# Keep the paired-cohort random stream stable while policy thresholds evolve.
+FAKE_SEER_CAMPAIGN_RANDOM_STREAM = "fake_seer_campaign.v1"
 FAKE_SEER_CHECK_POLICY_VERSION = "fake_seer_check_mix.v1"
+PUBLIC_CONTESTED_EXILE_MAX_SHARE = 0.75
 
 NPC_PERSONALITIES = {
     "梅西": {
@@ -5747,6 +5750,59 @@ def score_witch_directive(
     return round(max(0.0, min(100.0, score)), 4)
 
 
+def get_public_contested_exile_dissent_focus_id(
+    game_state: WolfGameState,
+) -> Optional[int]:
+    """Return one shared audit target from the latest public exile ballot.
+
+    The result uses only the public exile, ballot targets, and current alive
+    state. It deliberately does not inspect the exiled character's role or any
+    candidate's camp.
+    """
+
+    prior_exiles = [
+        elimination
+        for elimination in game_state.eliminations
+        if elimination.cause == "exiled" and elimination.day < game_state.day
+    ]
+    if not prior_exiles:
+        return None
+    latest_exile = max(prior_exiles, key=lambda elimination: elimination.day)
+    day_votes = [
+        vote for vote in game_state.votes if vote.day == latest_exile.day
+    ]
+    if not day_votes:
+        return None
+    coalition_share = sum(
+        vote.target_id == latest_exile.character_id for vote in day_votes
+    ) / len(day_votes)
+    if coalition_share > PUBLIC_CONTESTED_EXILE_MAX_SHARE:
+        return None
+    alive_ids = {
+        character.id for character in game_state.characters if character.alive
+    }
+    dissent_votes = [
+        vote
+        for vote in day_votes
+        if vote.target_id != latest_exile.character_id
+        and vote.voter_id in alive_ids
+    ]
+    if not dissent_votes:
+        return None
+    target_counts = {
+        vote.target_id: sum(
+            other.target_id == vote.target_id for other in dissent_votes
+        )
+        for vote in dissent_votes
+    }
+    largest_bloc = max(target_counts.values())
+    return min(
+        vote.voter_id
+        for vote in dissent_votes
+        if target_counts[vote.target_id] == largest_bloc
+    )
+
+
 def choose_npc_witch_action_decision(
     game_state: WolfGameState,
     witch: CharacterState,
@@ -5816,9 +5872,13 @@ def choose_npc_witch_action_decision(
             target_id=None,
             reason="no_legal_target",
         )
+    public_vote_focus_id = get_public_contested_exile_dissent_focus_id(
+        game_state
+    )
     ranked_candidates = sorted(
         candidates,
         key=lambda character: (
+            character.id != public_vote_focus_id,
             -int(witch.suspicion.get(str(character.id), 0)),
             -get_public_suspicion_score(game_state, character.id),
             character.id,
@@ -6738,20 +6798,20 @@ def choose_designated_fake_seer(
         for wolf in npc_wolves
     ) / len(npc_wolves)
     campaign_probability = max(
-        0.40,
+        0.28,
         min(
-            0.88,
-            0.28
-            + candidate_tuning.deception_strength * 0.28
-            + average_coordination * 0.18
-            + candidate.personality.get("leadership", 0.5) * 0.10,
+            0.62,
+            0.18
+            + candidate_tuning.deception_strength * 0.20
+            + average_coordination * 0.12
+            + candidate.personality.get("leadership", 0.5) * 0.07,
         ),
     )
     roll = (
         deterministic_seed_value(
             random_seed,
             (
-                f"{FAKE_SEER_CAMPAIGN_POLICY_VERSION}:"
+                f"{FAKE_SEER_CAMPAIGN_RANDOM_STREAM}:"
                 f"candidate:{candidate.id}"
             ),
         )

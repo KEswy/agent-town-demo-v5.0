@@ -82,9 +82,11 @@ backend/.venv/bin/python scripts/simulate_games.py --help
 
 V3.1-L 的 NPC 女巫第一夜本人被刀必定自救，其他合法刀口确定性 99% 使用解药；第二夜有毒且存活时默认毒本人最怀疑的合法目标。玩家或 NPC 在公开正式发言（警上或白天会议）中可明确建议女巫毒单一目标，或以公开信息不足为理由建议压毒；Python 保存 `witch_directive.v1`，女巫按自己的合法怀疑、信任和公开信息独立决定是否采信。含糊多目标、过去用药声明和无理由压毒不会被自动当成可靠指令。
 
-V3.1-M 使用 `fake_seer_campaign.v1` 决定最强 NPC 狼是否参加警长悍跳，不再每局强制参选；参选概率由既有 NPC tuning 和对局 seed 确定。`fake_seer_check_mix.v1` 在合法的队友金水、非狼查杀、非狼金水以及既有高压队友查杀之间混合。狼人只知道谁是狼队友，不读取非狼的预言家/女巫等精确身份；同一 seed 可重放，好人精确身份互换不得改变策略结果。
+V3.1-O 当前使用 `fake_seer_campaign.v2` 决定最强 NPC 狼是否参加警长悍跳，确定性参选区间为 `28%–62%`；用于同 seed 配对比较的随机流保持冻结。`fake_seer_check_mix.v1` 在合法的队友金水、非狼查杀、非狼金水以及既有高压队友查杀之间混合。狼人只知道谁是狼队友，不读取非狼的预言家/女巫等精确身份；同一 seed 可重放，好人精确身份互换不得改变策略结果。
 
 V3.1-N 的 `cross_day_exile_chain.v1` 是纯赛后 shadow。它可以在 `GAME_OVER` 后用真实阵营评价“投狼后是否继续投狼”和“误投后是否纠正”，但被放逐者的隐藏身份不会因此进入实时 NPC belief、投票器、LLM 或公开 API。下一阶段不得直接消费该真值标签，只能使用当时已经公开的票型、声明、本人 stance 与合法新证据。
+
+V3.1-O 的 `good_exile_cross_day.v1` 只让 `VOTE` 阶段非警长好人 NPC 实时消费公开票型：上一轮放逐得票不超过 `75%` 时，统一审查存活反对票中投向最集中的公开小团体；超过 `75%` 不触发。NPC 女巫第二夜起也把同一焦点纳入“最怀疑目标”，但理由合理的结构化压毒/毒人建议仍可覆盖。焦点不读取被放逐者或候选者身份；smoke 会交换隐藏角色/阵营并要求好人概率与女巫选择不变。
 
 默认报告还包含 `belief_state.v2` 影子信念轨迹：证据台账、每次分数变化和 11 名 NPC 的最后信念。公开软证据逐日乘以 `0.75`，公开票型/警徽动作和合法私有知识不衰减；有效私聊只按已保存的结构化目标与方向进入对应 NPC 的私有视角，不解析自由文本。100 局文件可能达到数十 MB，其中包含所有 NPC 依法拥有的赛后私有视角，不要把它直接返回给进行中的游戏客户端。
 
@@ -94,7 +96,7 @@ M04-A 默认还输出 `stance_summary.v1`：每名 NPC 的统一立场变化，�
 [STANCE] mode=shadow; observations=...; alignment=...; unexplained_change=...
 ```
 
-M04-B 把普通非警长白天发言接入 `public_speech_continuity.v1`，计划升级为 `public_speech_plan.v3`；警长票和放逐票仍保留 stance 对照。V3.1-N 后当前模拟结果为 `agent_town_simulation.v11` / `agent_town_simulation_batch.v11`，并继续输出不含私有 belief 内容的 `speech_continuity_metrics.v1` 原因计数：
+M04-B 把普通非警长白天发言接入 `public_speech_continuity.v1`，计划升级为 `public_speech_plan.v3`；警长票和放逐票仍保留 stance 对照。V3.1-O 当前模拟结果为 `agent_town_simulation.v12` / `agent_town_simulation_batch.v12`，并继续输出不含私有 belief 内容的 `speech_continuity_metrics.v1` 原因计数：
 
 ```text
 [CONTINUITY] controlled_speeches=...; reasons={'stance_aligned': ..., 'new_public_evidence': ..., 'deterministic_variance': ..., 'authorized_claim': ..., 'mandatory_rule_response': ..., 'unscored': ...}
@@ -116,7 +118,7 @@ M06-B 同样并入 smoke。`hidden_info_authorization.v1` 使用 `role_scoped_pr
 
 ## 运行 M15-A/B 投票概率校准
 
-默认批量模拟会在每次 NPC 警长票和放逐票前记录 `vote_probability_trace.v2`，并在批量根级输出 `vote_probability_summary.v2`。只有 `VOTE` 阶段非警长好人 NPC 放逐票使用 `consumer_mode=controlled` / `good_exile_calibration.v1`；警长票、狼人票和规则硬约束继续为 shadow。推荐用 100 个 seed 回归，同时关闭更大的 belief/stance 明细：
+默认批量模拟会在每次 NPC 警长票和放逐票前记录 `vote_probability_trace.v2`，并在批量根级输出 `vote_probability_summary.v2`。只有 `VOTE` 阶段非警长好人 NPC 放逐票使用 `consumer_mode=controlled` / `good_exile_cross_day.v1`；警长票、狼人票和规则硬约束继续为 shadow。推荐用固定 100 个 seed 做配对回归，同时关闭更大的 belief/stance 明细：
 
 ```bash
 backend/.venv/bin/python scripts/simulate_games.py \
@@ -125,6 +127,8 @@ backend/.venv/bin/python scripts/simulate_games.py \
   --no-belief-trace \
   --output /tmp/agent-town-vote-calibration.json
 ```
+
+V3.1-O 固定 `20260719–20260818` 的验收结果为好人 `38/100`、狼人 `62/100`；好人误投率 `51.80%`，首放狼人后下一次继续放狼 `28/31`，女巫毒狼率 `71.01%`，悍跳参选/当选 `51/39`。这些是真值赛后回归指标，不进入实时策略；后续还需换起始 seed 并扩大到 1000 局。
 
 `--no-belief-trace` 只关闭 belief/stance 轨迹；M15-A/B 会按投票阶段即时构造 actor-scoped `belief_state.v2`，因此仍保留较小的校准轨迹。终端会显示：
 

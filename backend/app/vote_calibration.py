@@ -23,7 +23,7 @@ VOTE_CALIBRATION_SCHEMA_VERSION = "vote_probability_trace.v2"
 VOTE_CALIBRATION_SUMMARY_VERSION = "vote_probability_summary.v2"
 VOTE_CALIBRATION_MODE = "mixed_shadow_controlled"
 SHADOW_POLICY_VERSION = "shadow_vote_baseline.v1"
-GOOD_EXILE_POLICY_VERSION = "good_exile_calibration.v1"
+GOOD_EXILE_POLICY_VERSION = "good_exile_cross_day.v1"
 GOOD_EXILE_TEMPERATURE_OFFSET = 5.0
 VoteKind = Literal["sheriff_vote", "exile_vote"]
 ConsumerMode = Literal["shadow", "controlled"]
@@ -82,7 +82,7 @@ class VoteProbabilityObservationV1(StrictVoteCalibrationModel):
     consumer_mode: ConsumerMode
     policy_version: Literal[
         "shadow_vote_baseline.v1",
-        "good_exile_calibration.v1",
+        "good_exile_cross_day.v1",
     ]
     vote_round: int = Field(ge=0)
     voter_id: int = Field(gt=0)
@@ -934,12 +934,80 @@ def _build_controlled_good_exile_components(
         - social_utility
         - variance_utility
     )
+    public_utility += _build_cross_day_public_vote_utility(
+        game_state,
+        voter,
+        candidate,
+        tuning,
+    )
     return {
         "belief_utility": belief_utility,
         "public_influence_utility": public_utility,
         "social_utility": social_utility,
         "variance_utility": variance_utility,
     }
+
+
+def _build_cross_day_public_vote_utility(
+    game_state: rules.WolfGameState,
+    voter: rules.CharacterState,
+    candidate: rules.CharacterState,
+    tuning: object,
+) -> float:
+    """Carry a contested winning ballot forward using public facts only.
+
+    A voter does not learn the exiled character's role. The policy activates
+    only after a publicly contested exile and asks every ordinary good NPC to
+    audit the same surviving dissent bloc. An overwhelming result remains
+    neutral because it is too likely to reflect social following rather than
+    a meaningful split.
+    """
+
+    focus_candidate_id = rules.get_public_contested_exile_dissent_focus_id(
+        game_state
+    )
+    if focus_candidate_id is None:
+        return 0.0
+    latest_exile = max(
+        (
+            elimination
+            for elimination in game_state.eliminations
+            if elimination.cause == "exiled"
+            and elimination.day < game_state.day
+        ),
+        key=lambda elimination: elimination.day,
+    )
+    day_votes = [
+        vote
+        for vote in game_state.votes
+        if vote.day == latest_exile.day
+    ]
+    if not day_votes:
+        return 0.0
+    exiled_target_id = latest_exile.character_id
+    candidate_vote = next(
+        (
+            vote
+            for vote in day_votes
+            if vote.voter_id == candidate.id
+        ),
+        None,
+    )
+    if candidate_vote is None:
+        return 0.0
+    plan_consistency = float(tuning.plan_consistency)
+    reasoning_skill = float(tuning.reasoning_skill)
+    if candidate_vote.target_id != exiled_target_id:
+        if candidate.id == focus_candidate_id:
+            return round(
+                155.0 + plan_consistency * 14.0 + reasoning_skill * 10.0,
+                4,
+            )
+        return round(
+            18.0 + plan_consistency * 5.0 + reasoning_skill * 3.0,
+            4,
+        )
+    return round(-(10.0 + plan_consistency * 8.0), 4)
 
 
 def _build_coordination_utilities(
