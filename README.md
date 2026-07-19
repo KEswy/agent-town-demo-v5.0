@@ -37,7 +37,7 @@ V3.1-A 的 100 局规则基线全部合法结束，但只得到好人 6 胜、�
 M02-A 已在可复现模拟上增加独立的赛后指标层：
 
 - `backend/app/simulation_metrics.py` 只接受已经进入 `GAME_OVER` 的状态；真实身份只用于评价已经发生的选择，不会进入实时 API、NPC 上下文或玩家决策。
-- 每局和批量报告使用 `agent_town_metrics.v1`；M02-A 当时升级到 simulation v2，M03-A 升级为 v3，当前 M03-B 为 v4，并完整保留这些指标。
+- 每局和批量报告使用 `agent_town_metrics.v1`；M02-A 当时升级到 simulation v2，M03-A/B 升级为 v3/v4，当前 M04-A 为 v5，并完整保留这些指标。
 - 指标覆盖阵营胜率、平均局长、警长票熵、逐日放逐票熵、好人正确投狼率/误投好人率、假预言家好人警长票支持率与公开查杀跟票率。
 - 报告按模拟玩家身份、投票者角色和游戏天数聚合；所有比率保留原始分子/分母，无适用样本使用 `null`，不伪装成 0%。
 - 票熵按每张未加权选票计算，归一化口径为 `H / log2(选票数)`；它衡量选择是否集中，不把警长的 1.5 票重复视作多个玩家。
@@ -85,6 +85,19 @@ M03-B 将影子 schema 升级为 `belief_state.v2`，仍不驱动任何发言、
 - 指代不明、没有明确目标、彩蛋和当日重复追问不产生私聊信念证据；目标隐藏身份互换不会改变普通好人的私聊信念。
 - `BeliefChangeV1.updated_contributions` 记录同一证据因跨日衰减而发生的权重更新；证据台账仍只追加，不修改旧证据含义。
 - 模拟结果升级为 `agent_town_simulation.v4` / `agent_town_simulation_batch.v4`。shadow on/off 的 `gameplay_digest` 继续一致，M02 指标和规则结果不受影响。
+
+## V3.1-E 统一立场摘要与连续性 shadow M04-A
+
+M04-A 新增 `stance_summary.v1`，把合法信念与本人已经公开的结构化承诺归并成统一摘要，但仍不让摘要驱动实时决策：
+
+- 每名 NPC 的摘要包含最多两个信任目标、主/次怀疑、暂定票、结构化验证目标/条件、置信度和 belief evidence ID。存活目标来自 `belief_state.v2`；暂定票和验证条件优先保留本人当天最新 `public_position.v1`。
+- `backend/app/stance.py` 只读取合法视角 belief snapshot 和结构化公开立场，不解析发言自由文本，不读取好人无权知道的角色或阵营标签。
+- shadow 对照在决定发生前保存摘要，再观察 NPC 的公开发言、警长票和放逐票；结果分为 `aligned / explained_change / unexplained_change / unscored`。新证据必须来自两次本人决定之间新增的合法 belief evidence ID。
+- 一次决定自身生成的公开证据会进入“决定后基线”，不能在下一次改口时循环充当新理由。阶段变化但没有新信息时不会产生立场变化。
+- 这些分类是诊断代理，不是平衡阈值，也不会禁止狼人欺骗、概率扰动或合法改票。M04-A 不修改 `choose_npc_*`、发言计划、投票或胜负规则。
+- 模拟 schema 升级为 `agent_town_simulation.v5` / `agent_town_simulation_batch.v5`，输出 `stance_trace` 与批量 `stance_summary`；可用 `--no-stance-trace` 仅关闭连续性明细，`--no-belief-trace` 会同时关闭依赖 belief 的 stance 轨迹。
+
+同一组 100 个 seed 共得到 6,133 次对照，其中 4,516 次有可比较目标：一致率 88.93%，未解释变化率 4.78%，另有 1,617 次明确记为 `unscored`。按类型看，放逐票/公开发言/警长票分别有 62/112/42 次未解释变化；警长票另有 661 次因统一摘要没有信任任何合法候选人而不评分。完整 belief + stance 报告约 101MB，这些数值只用于后续 M04-B 审查，不作为自动门槛。
 
 ## 当前版本
 
@@ -358,6 +371,7 @@ backend/.venv/bin/python scripts/smoke_check.py
 - 无 HTTP 批量模拟的同 seed 精确重放、合法终局、显式 seed 隔离、内存清理、LLM/RAG 禁用和隐藏身份互换不变性。
 - `agent_town_metrics.v1` 的赛后权限、schema 版本、空样本 `null`、票数守恒、数值范围、有限值、按玩家身份/投票角色/天数完整聚合及跨进程精确重放。
 - `belief_state.v2` 的公开/行动者私有/狼队权限、证据 ID 引用、席位覆盖、分数范围、软证据跨日衰减、硬事实与合法私有知识不衰减、结构化私聊隔离、隐藏身份与未公布夜间结果差分，以及 shadow on/off 玩法摘要一致。
+- `stance_summary.v1` 的目标/证据权限、隐藏身份与自由文本不变性、阶段空转稳定性、同目标一致、无新证据变化、新证据后变化、分类计数守恒，以及 stance-on/off belief 与 gameplay 一致。
 - JSON 配置格式和知识条目数量。
 - Python 后端编译。
 - LLM mock、OpenAI-compatible 请求、完整 JSON 对象适配、正式发言与私聊接入，以及超时/限流/坏 JSON 回退。
@@ -432,6 +446,7 @@ agent-town-demo/
       rag.py
       simulation.py
       simulation_metrics.py
+      stance.py
     config/
       npc_profiles.json
       knowledge_base.json
@@ -662,11 +677,18 @@ backend/.venv/bin/python scripts/check_llm_connection.py
 
 ## V3 进度与下一阶段
 
-V3.1-A 已建立可复现模拟，V3.1-B/M02-A 已建立第一版核心指标，V3.1-C/M03-A 锁住合法证据和变化链，V3.1-D/M03-B 已补齐公开软证据衰减与结构化私聊边界。下一步进入 M04-A：先生成统一立场摘要并继续 shadow 对照，再逐步让发言与投票安全消费；M06、M09 和 M15 继续按路线推进，不直接针对 100 个 seed 调参。
+V3.1-A 已建立可复现模拟，V3.1-B/M02-A 已建立第一版核心指标，V3.1-C/M03-A 锁住合法证据和变化链，V3.1-D/M03-B 补齐衰减与私聊边界，V3.1-E/M04-A 已生成统一立场摘要并完成 shadow 连续性对照。下一步先跑多种子诊断并审查未解释变化，再由 M04-B 选择普通白天发言作为第一个受控消费点；M06、M09 和 M15 继续按路线推进，不直接把单批样本设成硬阈值。
 
 完整任务、优先级、依赖、工作量和验收口径见独立的 [`V3 改进与开发路线表`](docs/V3_ROADMAP.md)。V2.0 的规则边界在 V3 继续保持：身份、合法行动、投票、出局、警徽与胜负仍由 Python 决定，LLM 只能在合法上下文和结构化契约内进行策略选择与表达。
 
 ## 开发记录
+
+### 2026-07-19 V3.1-E 统一立场摘要与连续性 shadow M04-A
+
+- 新增 `stance_summary.v1`：从 actor-scoped belief 和本人 `public_position.v1` 生成信任、主次怀疑、暂定票、验证条件、置信度及证据引用，不包含隐藏角色/阵营，也不解析自由文本。
+- 离线对照公开发言、警长票和放逐票，区分一致、有新证据变化、无新证据变化与无法评分；每次决定后的摘要成为新基线，决定本身不会为未来改口提供循环理由。
+- simulation schema 升级到 v5，并增加 `--no-stance-trace`；合成反例、同 seed、隐藏身份差分、stance-on/off belief/gameplay 及 v4/v5 规则载荷逐项回归均通过，实时决策保持原样。
+- 100 局记录 6,133 次连续性观察；4,516 次可评分观察的一致率为 88.93%，未解释变化率为 4.78%。1,617 次无合法可比目标单列为 `unscored`，不伪装成失败。
 
 ### 2026-07-19 V3.1-D 信念衰减与结构化私聊 M03-B
 

@@ -54,7 +54,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-belief-trace",
         action="store_true",
-        help="omit detailed belief snapshots for smaller high-volume reports",
+        help="omit belief and dependent stance traces for smaller reports",
+    )
+    parser.add_argument(
+        "--no-stance-trace",
+        action="store_true",
+        help="keep beliefs but omit detailed shadow stance continuity traces",
     )
     parser.add_argument(
         "--output",
@@ -73,6 +78,10 @@ def main() -> int:
         max_days=args.max_days,
         max_steps=args.max_steps,
         capture_beliefs=not args.no_belief_trace,
+        capture_stances=(
+            not args.no_belief_trace
+            and not args.no_stance_trace
+        ),
     )
     rendered = json.dumps(
         report,
@@ -88,6 +97,7 @@ def main() -> int:
         summary = report["summary"]
         metrics = report["metrics"]
         belief_summary = report["belief_summary"]
+        stance_summary = report["stance_summary"]
         good_vote = metrics["good_exile_vote"]
         fake_seer = metrics["fake_seer_acceptance"]
         print(
@@ -111,6 +121,17 @@ def main() -> int:
                 f"avg_evidence={belief_summary['average_evidence_per_game']}; "
                 f"avg_changes={belief_summary['average_changes_per_game']}; "
                 f"avg_final_confidence={_format_rate(belief_summary['average_final_confidence'])}"
+            )
+        if stance_summary is None:
+            print("[STANCE] detailed trace disabled")
+        else:
+            print(
+                "[STANCE] "
+                f"mode={stance_summary['mode']}; "
+                f"observations={stance_summary['observation_count']}; "
+                f"alignment={_format_rate(stance_summary['alignment_rate'])}; "
+                "unexplained_change="
+                f"{_format_rate(stance_summary['unexplained_change_rate'])}"
             )
     return 0
 

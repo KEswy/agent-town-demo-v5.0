@@ -24,10 +24,15 @@ from .simulation_metrics import (
     aggregate_batch_metrics,
     build_game_metrics,
 )
+from .stance import (
+    STANCE_SCHEMA_VERSION,
+    StanceTraceRecorder,
+    aggregate_stance_traces,
+)
 
 
-SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v4"
-BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v4"
+SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v5"
+BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v5"
 PLAYER_POLICY_VERSION = "legal_public_baseline.v1"
 DEFAULT_MAX_DAYS = 20
 DEFAULT_MAX_STEPS = 5_000
@@ -44,6 +49,7 @@ def run_rule_simulation(
     max_days: int = DEFAULT_MAX_DAYS,
     max_steps: int = DEFAULT_MAX_STEPS,
     capture_beliefs: bool = True,
+    capture_stances: bool = True,
 ) -> dict[str, object]:
     """Run one complete rule-only game and return a normalized result."""
 
@@ -74,8 +80,15 @@ def run_rule_simulation(
 
     phase_trace: list[str] = []
     belief_recorder = BeliefTraceRecorder() if capture_beliefs else None
+    stance_recorder = (
+        StanceTraceRecorder()
+        if capture_beliefs and capture_stances
+        else None
+    )
     if belief_recorder is not None:
-        belief_recorder.capture(game_state)
+        belief_snapshot = belief_recorder.capture(game_state)
+        if stance_recorder is not None and belief_snapshot is not None:
+            stance_recorder.capture(game_state, belief_snapshot)
     try:
         for _step in range(max_steps):
             phase_trace.append(f"day:{game_state.day}:{game_state.phase}")
@@ -87,7 +100,9 @@ def run_rule_simulation(
                 break
             _advance_one_phase(game_state)
             if belief_recorder is not None:
-                belief_recorder.capture(game_state)
+                belief_snapshot = belief_recorder.capture(game_state)
+                if stance_recorder is not None and belief_snapshot is not None:
+                    stance_recorder.capture(game_state, belief_snapshot)
         else:
             raise SimulationError(
                 f"seed {seed} exceeded max_steps={max_steps} in {game_state.phase}"
@@ -100,6 +115,11 @@ def run_rule_simulation(
             belief_trace=(
                 belief_recorder.build_result()
                 if belief_recorder is not None
+                else None
+            ),
+            stance_trace=(
+                stance_recorder.build_result()
+                if stance_recorder is not None
                 else None
             ),
         )
@@ -116,6 +136,7 @@ def run_rule_simulation_batch(
     max_days: int = DEFAULT_MAX_DAYS,
     max_steps: int = DEFAULT_MAX_STEPS,
     capture_beliefs: bool = True,
+    capture_stances: bool = True,
 ) -> dict[str, object]:
     """Run sequential seeds and return deterministic per-game and aggregate data."""
 
@@ -134,6 +155,7 @@ def run_rule_simulation_batch(
             max_days=max_days,
             max_steps=max_steps,
             capture_beliefs=capture_beliefs,
+            capture_stances=capture_stances,
         )
         for offset in range(games)
     ]
@@ -144,6 +166,7 @@ def run_rule_simulation_batch(
         "simulation_schema_version": SIMULATION_SCHEMA_VERSION,
         "metrics_schema_version": METRICS_SCHEMA_VERSION,
         "belief_schema_version": BELIEF_SCHEMA_VERSION,
+        "stance_schema_version": STANCE_SCHEMA_VERSION,
         "player_policy_version": PLAYER_POLICY_VERSION,
         "start_seed": start_seed,
         "games_requested": games,
@@ -160,6 +183,11 @@ def run_rule_simulation_batch(
         "belief_summary": (
             aggregate_belief_traces(results)
             if capture_beliefs
+            else None
+        ),
+        "stance_summary": (
+            aggregate_stance_traces(results)
+            if capture_beliefs and capture_stances
             else None
         ),
         "games": results,
@@ -587,6 +615,7 @@ def build_simulation_result(
     phase_trace: list[str],
     *,
     belief_trace: Optional[dict[str, object]] = None,
+    stance_trace: Optional[dict[str, object]] = None,
 ) -> dict[str, object]:
     """Build a timestamp- and game-id-free result suitable for exact replay."""
 
@@ -635,6 +664,8 @@ def build_simulation_result(
     }
     result["gameplay_digest"] = _payload_digest(result)
     result["belief_trace"] = belief_trace
+    result["stance_schema_version"] = STANCE_SCHEMA_VERSION
+    result["stance_trace"] = stance_trace
     result["result_digest"] = _payload_digest(result)
     return result
 
@@ -666,6 +697,7 @@ __all__ = [
     "METRICS_SCHEMA_VERSION",
     "PLAYER_POLICY_VERSION",
     "SIMULATION_SCHEMA_VERSION",
+    "STANCE_SCHEMA_VERSION",
     "SimulationError",
     "build_simulation_result",
     "run_rule_simulation",

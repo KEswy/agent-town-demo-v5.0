@@ -78,6 +78,22 @@ backend/.venv/bin/python scripts/simulate_games.py --help
 
 默认报告还包含 `belief_state.v2` 影子信念轨迹：证据台账、每次分数变化和 11 名 NPC 的最后信念。公开软证据逐日乘以 `0.75`，公开票型/警徽动作和合法私有知识不衰减；有效私聊只按已保存的结构化目标与方向进入对应 NPC 的私有视角，不解析自由文本。100 局文件可能达到数十 MB，其中包含所有 NPC 依法拥有的赛后私有视角，不要把它直接返回给进行中的游戏客户端。
 
+M04-A 默认还输出 `stance_summary.v1`：每名 NPC 的统一立场变化，以及公开发言、警长票、放逐票相对决定前摘要的 `aligned / explained_change / unexplained_change / unscored` 对照。完整 100 局 belief + stance 样本约 101MB；只分析 belief 时应使用 `--no-stance-trace`。终端写文件时会显示：
+
+```text
+[STANCE] mode=shadow; observations=...; alignment=...; unexplained_change=...
+```
+
+只关闭 stance 明细、仍保留 belief 时使用：
+
+```bash
+backend/.venv/bin/python scripts/simulate_games.py \
+  --seed 20260719 \
+  --games 100 \
+  --no-stance-trace \
+  --output /tmp/agent-town-belief-only.json
+```
+
 只需要胜负和 M02 指标、或者准备运行 1000 局时，可关闭详细信念轨迹：
 
 ```bash
@@ -88,7 +104,7 @@ backend/.venv/bin/python scripts/simulate_games.py \
   --output /tmp/agent-town-simulation-1000.json
 ```
 
-关闭轨迹不会改变 `gameplay_digest`、胜负或指标，只会把每局 `belief_trace` 和批量 `belief_summary` 设为 `null`。
+关闭 belief 轨迹不会改变 `gameplay_digest`、胜负或指标，会把每局 `belief_trace / stance_trace` 和批量 `belief_summary / stance_summary` 设为 `null`。单独使用 `--no-stance-trace` 时，只有 stance 两项为 `null`。
 
 ## 启动后端和 LLM
 

@@ -2,6 +2,35 @@
 
 Agent Town Demo 的 Python FastAPI 后端，负责小镇 NPC 对话、知识检索、长期记忆，以及狼人杀规则和对局内 NPC 状态。
 
+## V3.1-E 统一立场摘要与连续性 shadow M04-A
+
+`app/stance.py` 提供 `stance_summary.v1`，只由离线模拟导入，`STANCE_MODE="shadow"`。它不被 `app/main.py` 的发言、警长票、放逐票、夜间技能或规则结算读取。
+
+`ActorStanceSummaryV1` 的输入只有 `belief_state.v2` actor snapshot、公开存活状态和本人当天最新的 `public_position.v1`：
+
+- `trusted_target_ids`：最多两个负向怀疑分目标。
+- `primary_suspect_id / secondary_suspect_id`：按怀疑分、置信度和席位号稳定排序。
+- `provisional_vote_target_id`：优先保留本人当天公开的结构化暂定票，否则使用当前主怀疑。
+- `verification_target_id / verification_condition`：只复制本人当天公开立场卡里的 allowlist 验证条件。
+- `confidence / basis_evidence_ids`：所选目标的最高 belief 置信度及排序去重后的合法证据引用。
+
+摘要不保存 actor 的 `role / camp`，不解析 `SpeechState.speech`，也不读取其他 NPC 的私聊。普通好人隐藏身份互换、公开自由文本改写均不得改变摘要；狼人依法拥有的队友 belief 仍可改变自己的内部 stance。
+
+`StanceTraceRecorder` 在每次规则推进前后使用同一组 belief capture：
+
+| alignment | 含义 |
+| --- | --- |
+| `aligned` | 实际目标符合决定前统一摘要 |
+| `explained_change` | 实际目标不同，但自上次本人决定后出现了摘要引用的新合法证据 |
+| `unexplained_change` | 实际目标不同，且没有新的摘要证据 ID |
+| `unscored` | 决定前没有可比较目标，或发言没有结构化目标 |
+
+对照覆盖 `public_speech / sheriff_vote / exile_vote`。一次决定完成后使用包含该决定公开结果的摘要更新基线，避免把决定自身当成未来变化的理由。分类只用于离线诊断，不证明新证据与改票存在因果，也不在 M04-A 阻止任何合法选择。
+
+模拟 schema 为 `agent_town_simulation.v5` / `agent_town_simulation_batch.v5`：每局增加 `stance_trace.changes / observations / final_states`，批量 `stance_summary` 汇总观察数、四类计数、按阶段类型计数、一致率和未解释变化率。`--no-stance-trace` 保留 belief 但关闭 stance；`--no-belief-trace` 同时关闭二者。
+
+seed `20260719–20260818` 的首份 100 局 shadow 诊断包含 6,133 次观察、4,516 次可评分观察和 1,617 次 `unscored`；可评分样本一致率 88.93%，未解释变化率 4.78%。放逐票、公开发言、警长票分别有 62、112、42 次未解释变化；警长票有 661 次因摘要没有信任任何当轮合法候选人而不评分。完整 JSON 约 101MB，不能把这批数值设成硬阈值或直接返回进行中客户端。
+
 ## V3.1-D 信念衰减与结构化私聊 M03-B
 
 `app/belief.py` 提供 `belief_state.v2`。它只被离线模拟导入，当前 `BELIEF_MODE="shadow"`：生成的分数、置信度和证据链不会被 `app/main.py` 的任何发言、技能或投票函数读取。
@@ -415,6 +444,6 @@ global_defaults < factions.good / factions.werewolf < roles.<role> < npcs.<name>
 backend/.venv/bin/python scripts/smoke_check.py
 ```
 
-本轮自动化覆盖 `belief_state.v2` 的 evidence ID、visibility、observer 权限、11×11 席位、分数/置信度、只追加台账和同 ID 权重更新；验证公开软证据跨日衰减、公开票型与预言家/狼队合法知识不衰减，以及有效私聊的目标/方向、单 NPC 隔离、自由文本不变、隐藏身份不变、歧义/重复无证据。原有隐藏身份、悍跳内部指定、未公布夜间结果、声明内部来源、旧 mutable 状态和 shadow on/off 玩法一致回归继续保留。
+本轮自动化新增 `stance_summary.v1` 的 schema、11 名最终摘要、目标/证据权限、隐藏身份与自由文本不变、无信息阶段稳定、同目标一致、无新证据变化、新证据后变化、分类计数守恒，以及 stance-on/off belief/gameplay 一致；`belief_state.v2`、M02 指标、既有规则与 UI 回归全部保留。
 
 批量模拟不启动 FastAPI/Godot。完整 smoke 会短暂运行 Godot headless 资源检查，但不会启动编辑器或常驻服务；实际服务由开发者按“运行”一节手动启动。

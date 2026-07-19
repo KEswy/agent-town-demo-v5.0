@@ -144,14 +144,17 @@ class BeliefTraceRecorder:
         self._final_actor_states: dict[int, dict[str, object]] = {}
         self._changes: list[dict[str, object]] = []
 
-    def capture(self, game_state: rules.WolfGameState) -> None:
+    def capture(
+        self,
+        game_state: rules.WolfGameState,
+    ) -> Optional[dict[str, object]]:
         active_observer_ids = [
             character.id
             for character in game_state.characters
             if not character.is_player and character.alive
         ]
         if not active_observer_ids:
-            return
+            return None
         snapshot = build_belief_snapshot(
             game_state,
             observer_ids=active_observer_ids,
@@ -188,6 +191,7 @@ class BeliefTraceRecorder:
                 frozen_state = dict(frozen_state)
                 frozen_state["alive"] = False
                 self._final_actor_states[character.id] = frozen_state
+        return snapshot
 
     def _build_change(
         self,

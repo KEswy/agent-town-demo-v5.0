@@ -57,6 +57,7 @@ BACKEND_LLM_FILE = BACKEND_DIR / "app" / "llm.py"
 BACKEND_NPC_DECISION_FILE = BACKEND_DIR / "app" / "npc_decision.py"
 BACKEND_NPC_TUNING_FILE = BACKEND_DIR / "app" / "npc_tuning.py"
 BACKEND_BELIEF_FILE = BACKEND_DIR / "app" / "belief.py"
+BACKEND_STANCE_FILE = BACKEND_DIR / "app" / "stance.py"
 BACKEND_SIMULATION_FILE = BACKEND_DIR / "app" / "simulation.py"
 BACKEND_SIMULATION_METRICS_FILE = BACKEND_DIR / "app" / "simulation_metrics.py"
 SIMULATION_SCRIPT_FILE = ROOT_DIR / "scripts" / "simulate_games.py"
@@ -106,8 +107,8 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
 
-    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-D" not in root_readme:
-        raise SmokeCheckError("root README must identify the active V3.1-D iteration")
+    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-E" not in root_readme:
+        raise SmokeCheckError("root README must identify the active V3.1-E iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
@@ -119,8 +120,8 @@ def check_release_docs() -> None:
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
 
-    if "V3.1-D" not in backend_readme or "V3.1-D" not in roadmap:
-        raise SmokeCheckError("V3.1-D status must stay synchronized across development docs")
+    if "V3.1-E" not in backend_readme or "V3.1-E" not in roadmap:
+        raise SmokeCheckError("V3.1-E status must stay synchronized across development docs")
     if "scripts/simulate_games.py" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
     if "agent_town_metrics.v1" not in commands:
@@ -131,8 +132,13 @@ def check_release_docs() -> None:
         or "--no-belief-trace" not in commands
     ):
         raise SmokeCheckError("COMMANDS.md must document M03 shadow belief handling")
+    if (
+        "stance_summary.v1" not in commands
+        or "--no-stance-trace" not in commands
+    ):
+        raise SmokeCheckError("COMMANDS.md must document M04 shadow stance handling")
 
-    print("[OK] V3.1-D README, commands, and roadmap status are synchronized.")
+    print("[OK] V3.1-E README, commands, and roadmap status are synchronized.")
 
 
 def check_json_files() -> None:
@@ -253,6 +259,7 @@ def check_json_files() -> None:
         BACKEND_NPC_DECISION_FILE,
         BACKEND_NPC_TUNING_FILE,
         BACKEND_BELIEF_FILE,
+        BACKEND_STANCE_FILE,
         BACKEND_SIMULATION_FILE,
         BACKEND_SIMULATION_METRICS_FILE,
         SIMULATION_SCRIPT_FILE,
@@ -274,6 +281,7 @@ def check_backend_compiles() -> None:
             str(BACKEND_NPC_DECISION_FILE),
             str(BACKEND_NPC_TUNING_FILE),
             str(BACKEND_BELIEF_FILE),
+            str(BACKEND_STANCE_FILE),
             str(BACKEND_SIMULATION_FILE),
             str(BACKEND_SIMULATION_METRICS_FILE),
             str(SIMULATION_SCRIPT_FILE),
@@ -1102,9 +1110,16 @@ from app.simulation import (
     BELIEF_SCHEMA_VERSION as SIMULATION_BELIEF_SCHEMA_VERSION,
     METRICS_SCHEMA_VERSION,
     SIMULATION_SCHEMA_VERSION,
+    STANCE_SCHEMA_VERSION as SIMULATION_STANCE_SCHEMA_VERSION,
     _choose_public_player_target,
     run_rule_simulation,
     run_rule_simulation_batch,
+)
+from app.stance import (
+    STANCE_MODE,
+    STANCE_SCHEMA_VERSION,
+    StanceTraceRecorder,
+    build_stance_snapshot,
 )
 from app.simulation_metrics import (
     build_game_metrics,
@@ -1123,6 +1138,8 @@ for public_model in (
         raise SystemExit("post-game simulation metrics must not enter live API schemas")
     if "belief_trace" in public_model.model_fields:
         raise SystemExit("shadow belief traces must not enter live API schemas")
+    if "stance_trace" in public_model.model_fields:
+        raise SystemExit("shadow stance traces must not enter live API schemas")
 
 empty_distribution = summarize_ballot_distribution([])
 if empty_distribution["entropy_bits"] is not None:
@@ -1206,6 +1223,75 @@ for actor_state in belief_trace["final_states"]:
                 and actor_state["actor_id"] not in evidence["observer_ids"]
             ):
                 raise SystemExit("an NPC belief consumed another actor's private evidence")
+stance_trace = first["stance_trace"]
+if (
+    first["stance_schema_version"] != STANCE_SCHEMA_VERSION
+    or SIMULATION_STANCE_SCHEMA_VERSION != STANCE_SCHEMA_VERSION
+    or stance_trace["schema_version"] != STANCE_SCHEMA_VERSION
+    or stance_trace["belief_schema_version"] != BELIEF_SCHEMA_VERSION
+    or stance_trace["mode"] != STANCE_MODE
+):
+    raise SystemExit("a simulated game must expose a versioned shadow stance trace")
+if stance_trace["capture_count"] != belief_trace["capture_count"]:
+    raise SystemExit("stance and belief snapshots must cover the same transitions")
+if len(stance_trace["final_states"]) != 11:
+    raise SystemExit("stance trace must retain one final summary for every NPC")
+for stance_state in stance_trace["final_states"]:
+    if "role" in stance_state or "camp" in stance_state:
+        raise SystemExit("a stance card must not embed hidden role or camp labels")
+    target_ids = [
+        target_id
+        for target_id in (
+            stance_state["trusted_target_ids"]
+            + [
+                stance_state["primary_suspect_id"],
+                stance_state["secondary_suspect_id"],
+                stance_state["provisional_vote_target_id"],
+                stance_state["verification_target_id"],
+            ]
+        )
+        if target_id is not None
+    ]
+    if stance_state["actor_id"] in target_ids:
+        raise SystemExit("an NPC stance must not target itself")
+    if len(stance_state["basis_evidence_ids"]) != len(
+        set(stance_state["basis_evidence_ids"])
+    ):
+        raise SystemExit("stance basis evidence ids must be unique")
+    for evidence_id in stance_state["basis_evidence_ids"]:
+        evidence = evidence_by_id[evidence_id]
+        if (
+            evidence["visibility"] != "public"
+            and stance_state["actor_id"] not in evidence["observer_ids"]
+        ):
+            raise SystemExit("a stance summary consumed another actor's private evidence")
+stance_observation_ids = [
+    observation["observation_id"]
+    for observation in stance_trace["observations"]
+]
+if len(stance_observation_ids) != len(set(stance_observation_ids)):
+    raise SystemExit("stance observation ids must be unique")
+for observation in stance_trace["observations"]:
+    if len(observation["expected_target_ids"]) != len(
+        set(observation["expected_target_ids"])
+    ):
+        raise SystemExit("stance observation expectations must be unique")
+    for evidence_id in observation["new_evidence_ids"]:
+        evidence = evidence_by_id.get(evidence_id)
+        if evidence is None:
+            raise SystemExit("stance continuity changes must cite belief evidence")
+        if (
+            evidence["visibility"] != "public"
+            and observation["actor_id"] not in evidence["observer_ids"]
+        ):
+            raise SystemExit("stance continuity consumed another actor's evidence")
+for change in stance_trace["changes"]:
+    for evidence_id in (
+        change["added_evidence_ids"]
+        + change["removed_evidence_ids"]
+    ):
+        if evidence_id not in evidence_by_id:
+            raise SystemExit("stance changes must cite existing belief evidence")
 if first["llm_validation_failure_count"] != 0:
     raise SystemExit("rule simulation must not call the LLM")
 good_vote = first["metrics"]["good_exile_vote"]
@@ -1247,6 +1333,43 @@ if (
     or batch["belief_summary"]["game_count"] != 6
 ):
     raise SystemExit("batch simulation must aggregate compatible shadow beliefs")
+if (
+    batch["stance_schema_version"] != STANCE_SCHEMA_VERSION
+    or batch["stance_summary"]["schema_version"] != STANCE_SCHEMA_VERSION
+    or batch["stance_summary"]["mode"] != STANCE_MODE
+    or batch["stance_summary"]["game_count"] != 6
+):
+    raise SystemExit("batch simulation must aggregate compatible shadow stances")
+stance_alignment_total = sum(
+    batch["stance_summary"]["alignment_counts"].values()
+)
+if stance_alignment_total != batch["stance_summary"]["observation_count"]:
+    raise SystemExit("stance alignment classes must conserve observations")
+stance_scored_total = sum(
+    batch["stance_summary"]["alignment_counts"][alignment]
+    for alignment in (
+        "aligned",
+        "explained_change",
+        "unexplained_change",
+    )
+)
+if stance_scored_total != batch["stance_summary"]["scored_observation_count"]:
+    raise SystemExit("scored stance alignment classes must conserve observations")
+for rate_name in ("alignment_rate", "unexplained_change_rate"):
+    rate = batch["stance_summary"][rate_name]
+    if rate is not None and not 0.0 <= rate <= 1.0:
+        raise SystemExit("stance continuity rates must stay between zero and one")
+if set(batch["stance_summary"]["by_kind"]) != {
+    "public_speech",
+    "sheriff_vote",
+    "exile_vote",
+}:
+    raise SystemExit("stance summary must retain every observed decision kind")
+if sum(
+    sum(counts.values())
+    for counts in batch["stance_summary"]["by_kind"].values()
+) != batch["stance_summary"]["observation_count"]:
+    raise SystemExit("stance kind groups must conserve observations")
 if [game["seed"] for game in batch["games"]] != list(range(20260719, 20260725)):
     raise SystemExit("batch simulation must preserve its sequential seed range")
 if sum(batch["summary"]["winner_counts"].values()) != 6:
@@ -1312,15 +1435,35 @@ compact_batch = run_rule_simulation_batch(
     2,
     capture_beliefs=False,
 )
-if compact_batch["belief_summary"] is not None or any(
-    game["belief_trace"] is not None
-    for game in compact_batch["games"]
+if (
+    compact_batch["belief_summary"] is not None
+    or compact_batch["stance_summary"] is not None
+    or any(
+        game["belief_trace"] is not None
+        or game["stance_trace"] is not None
+        for game in compact_batch["games"]
+    )
 ):
-    raise SystemExit("compact batch mode must omit detailed belief traces")
+    raise SystemExit("compact batch mode must omit belief and stance traces")
 if [game["gameplay_digest"] for game in compact_batch["games"]] != [
     game["gameplay_digest"] for game in batch["games"][:2]
 ]:
-    raise SystemExit("compact belief mode must preserve gameplay digests")
+    raise SystemExit("compact shadow mode must preserve gameplay digests")
+
+belief_only_batch = run_rule_simulation_batch(
+    20260719,
+    2,
+    capture_stances=False,
+)
+if belief_only_batch["belief_summary"] is None or (
+    belief_only_batch["stance_summary"] is not None
+) or any(
+    game["belief_trace"] is None or game["stance_trace"] is not None
+    for game in belief_only_batch["games"]
+):
+    raise SystemExit("belief-only mode must omit only stance traces")
+if belief_only_batch["games"][0]["belief_trace"] != batch["games"][0]["belief_trace"]:
+    raise SystemExit("stance capture must not change the underlying belief trace")
 
 request = rules.GameStartRequest(
     player_name="确定性测试玩家",
@@ -1441,6 +1584,286 @@ if claim_snapshot != build_belief_snapshot(
     observer_ids=[villager_observer.id],
 ):
     raise SystemExit("public-claim beliefs must not inspect claimant or target truth")
+
+villager_stance = build_stance_snapshot(
+    left,
+    belief_snapshot=villager_snapshot,
+)
+hidden_role_stance = build_stance_snapshot(
+    hidden_role_swap,
+    belief_snapshot=build_belief_snapshot(
+        hidden_role_swap,
+        observer_ids=[villager_observer.id],
+    ),
+)
+if villager_stance != hidden_role_stance:
+    raise SystemExit("villager stances must be invariant to unseen role swaps")
+
+claim_stance_snapshot = build_stance_snapshot(
+    public_claim_left,
+    belief_snapshot=claim_snapshot,
+)
+claim_stance_actor = claim_stance_snapshot["actors"][0]
+claim_evidence_id = next(
+    evidence["evidence_id"]
+    for evidence in claim_snapshot["evidence_ledger"]
+    if evidence["kind"] == "public_seer_black_check"
+)
+if (
+    claim_stance_actor["primary_suspect_id"] != hidden_good.id
+    or claim_stance_actor["provisional_vote_target_id"] != hidden_good.id
+    or claim_evidence_id not in claim_stance_actor["basis_evidence_ids"]
+):
+    raise SystemExit("a stance card must derive its primary read from cited beliefs")
+
+declared_stance_state = public_claim_left.model_copy(deep=True)
+declared_stance_state.phase = "DAY_MEETING"
+declared_stance_state.speeches = [
+    rules.SpeechState(
+        day=1,
+        character_id=villager_observer.id,
+        name=villager_observer.name,
+        speech="公开结构化立场测试。",
+        is_player=False,
+        phase="DAY_MEETING",
+        public_position=rules.PublicPositionV1(
+            speaker_id=villager_observer.id,
+            day=1,
+            phase="DAY_MEETING",
+            suspected_target_ids=[hidden_wolf.id],
+            provisional_vote_target_id=hidden_wolf.id,
+            change_condition_target_id=hidden_good.id,
+            change_condition="vote_alignment",
+        ),
+    )
+]
+declared_belief_snapshot = build_belief_snapshot(
+    declared_stance_state,
+    observer_ids=[villager_observer.id],
+)
+declared_stance_snapshot = build_stance_snapshot(
+    declared_stance_state,
+    belief_snapshot=declared_belief_snapshot,
+)
+declared_stance_actor = declared_stance_snapshot["actors"][0]
+if (
+    declared_stance_actor["provisional_vote_target_id"] != hidden_wolf.id
+    or declared_stance_actor["verification_target_id"] != hidden_good.id
+    or declared_stance_actor["verification_condition"] != "vote_alignment"
+):
+    raise SystemExit("a stance card must retain structured public commitments")
+declared_text_variant = declared_stance_state.model_copy(deep=True)
+declared_text_variant.speeches[0].speech = "完全不同的自由文本表达。"
+if declared_stance_snapshot != build_stance_snapshot(
+    declared_text_variant,
+    belief_snapshot=build_belief_snapshot(
+        declared_text_variant,
+        observer_ids=[villager_observer.id],
+    ),
+):
+    raise SystemExit("stance summaries must not reinterpret public speech text")
+
+stable_stance_recorder = StanceTraceRecorder()
+stable_stance_recorder.capture(
+    declared_stance_state,
+    declared_belief_snapshot,
+)
+stable_change_count = len(stable_stance_recorder.build_result()["changes"])
+phase_only_stance_state = declared_stance_state.model_copy(deep=True)
+phase_only_stance_state.phase = "FREE_ACTIVITY"
+stable_stance_recorder.capture(
+    phase_only_stance_state,
+    build_belief_snapshot(
+        phase_only_stance_state,
+        observer_ids=[villager_observer.id],
+    ),
+)
+if len(stable_stance_recorder.build_result()["changes"]) != stable_change_count:
+    raise SystemExit("a phase change without new information must not change stance")
+
+continuity_state = public_claim_left.model_copy(deep=True)
+continuity_state.phase = "DAY_MEETING"
+continuity_state.speeches = []
+continuity_state.votes = []
+continuity_recorder = StanceTraceRecorder()
+continuity_recorder.capture(
+    continuity_state,
+    build_belief_snapshot(
+        continuity_state,
+        observer_ids=[villager_observer.id],
+    ),
+)
+continuity_state.speeches = [
+    rules.SpeechState(
+        day=1,
+        character_id=villager_observer.id,
+        name=villager_observer.name,
+        speech="我暂时投查杀目标。",
+        is_player=False,
+        phase="DAY_MEETING",
+        public_position=rules.PublicPositionV1(
+            speaker_id=villager_observer.id,
+            day=1,
+            phase="DAY_MEETING",
+            suspected_target_ids=[hidden_good.id],
+            provisional_vote_target_id=hidden_good.id,
+        ),
+    )
+]
+continuity_recorder.capture(
+    continuity_state,
+    build_belief_snapshot(
+        continuity_state,
+        observer_ids=[villager_observer.id],
+    ),
+)
+speech_observation = continuity_recorder.build_result()["observations"][-1]
+if speech_observation["alignment"] != "aligned":
+    raise SystemExit("a speech matching the prior stance must be marked aligned")
+
+unexplained_vote_state = continuity_state.model_copy(deep=True)
+unexplained_vote_state.phase = "FREE_ACTIVITY"
+unexplained_vote_state.votes = [
+    rules.VoteState(
+        day=1,
+        voter_id=villager_observer.id,
+        target_id=hidden_wolf.id,
+        reason="无新证据换票测试",
+    )
+]
+continuity_recorder.capture(
+    unexplained_vote_state,
+    build_belief_snapshot(
+        unexplained_vote_state,
+        observer_ids=[villager_observer.id],
+    ),
+)
+unexplained_observation = continuity_recorder.build_result()["observations"][-1]
+if (
+    unexplained_observation["alignment"] != "unexplained_change"
+    or unexplained_observation["new_evidence_ids"]
+):
+    raise SystemExit("a vote switch without intervening evidence must be unexplained")
+
+explained_state = continuity_state.model_copy(deep=True)
+explained_recorder = StanceTraceRecorder()
+explained_pre_speech_state = public_claim_left.model_copy(deep=True)
+explained_pre_speech_state.phase = "DAY_MEETING"
+explained_pre_speech_state.speeches = []
+explained_pre_speech_state.votes = []
+explained_recorder.capture(
+    explained_pre_speech_state,
+    build_belief_snapshot(
+        explained_pre_speech_state,
+        observer_ids=[villager_observer.id],
+    ),
+)
+explained_recorder.capture(
+    explained_state,
+    build_belief_snapshot(
+        explained_state,
+        observer_ids=[villager_observer.id],
+    ),
+)
+explained_state.public_claims.append(
+    rules.PublicClaimState(
+        day=1,
+        character_id=hidden_good.id,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=hidden_wolf.id,
+        result="werewolf",
+        source="structured_test_source",
+    )
+)
+explained_recorder.capture(
+    explained_state,
+    build_belief_snapshot(
+        explained_state,
+        observer_ids=[villager_observer.id],
+    ),
+)
+explained_state.phase = "FREE_ACTIVITY"
+explained_state.votes = [
+    rules.VoteState(
+        day=1,
+        voter_id=villager_observer.id,
+        target_id=hidden_wolf.id,
+        reason="新证据后换票测试",
+    )
+]
+explained_recorder.capture(
+    explained_state,
+    build_belief_snapshot(
+        explained_state,
+        observer_ids=[villager_observer.id],
+    ),
+)
+explained_observation = explained_recorder.build_result()["observations"][-1]
+if (
+    explained_observation["alignment"] != "explained_change"
+    or not explained_observation["new_evidence_ids"]
+):
+    raise SystemExit("a vote switch after new belief evidence must be explained")
+
+sheriff_filter_state = left.model_copy(deep=True)
+sheriff_filter_state.phase = "SHERIFF_VOTE"
+sheriff_filter_state.speeches = []
+sheriff_filter_state.votes = []
+sheriff_filter_state.sheriff_events = []
+sheriff_filter_state.public_claims = [
+    rules.PublicClaimState(
+        day=1,
+        character_id=hidden_wolf.id,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=hidden_good.id,
+        result="good",
+        source="structured_test_source",
+    )
+]
+sheriff_candidate_ids = [
+    character.id
+    for character in sheriff_filter_state.characters
+    if character.id not in {villager_observer.id, hidden_good.id}
+][:2]
+sheriff_filter_state.sheriff_election = rules.SheriffElectionState(
+    day=1,
+    candidates=sheriff_candidate_ids,
+)
+sheriff_filter_recorder = StanceTraceRecorder()
+sheriff_filter_recorder.capture(
+    sheriff_filter_state,
+    build_belief_snapshot(
+        sheriff_filter_state,
+        observer_ids=[villager_observer.id],
+    ),
+)
+sheriff_filter_state.sheriff_events = [
+    rules.SheriffEventState(
+        day=1,
+        event_type="sheriff_vote",
+        actor_id=villager_observer.id,
+        target_id=sheriff_candidate_ids[0],
+        context="round:0",
+        detail="合法候选过滤测试",
+    )
+]
+sheriff_filter_recorder.capture(
+    sheriff_filter_state,
+    build_belief_snapshot(
+        sheriff_filter_state,
+        observer_ids=[villager_observer.id],
+    ),
+)
+sheriff_filter_observation = sheriff_filter_recorder.build_result()[
+    "observations"
+][-1]
+if (
+    sheriff_filter_observation["alignment"] != "unscored"
+    or sheriff_filter_observation["expected_target_ids"]
+):
+    raise SystemExit("non-candidate trust must not count against a sheriff ballot")
 
 def get_belief_contribution(snapshot, actor_id, target_id, evidence_id):
     actor = next(
@@ -1663,10 +2086,21 @@ if build_belief_snapshot(
     raise SystemExit("a wolf observer must retain its authorized teammate knowledge")
 
 without_beliefs = run_rule_simulation(20260719, capture_beliefs=False)
-if without_beliefs["belief_trace"] is not None:
-    raise SystemExit("the shadow-off regression run must omit its belief trace")
+if (
+    without_beliefs["belief_trace"] is not None
+    or without_beliefs["stance_trace"] is not None
+):
+    raise SystemExit("the shadow-off regression run must omit both traces")
 if first["gameplay_digest"] != without_beliefs["gameplay_digest"]:
     raise SystemExit("shadow belief capture must not change any gameplay outcome")
+
+without_stances = run_rule_simulation(20260719, capture_stances=False)
+if without_stances["stance_trace"] is not None:
+    raise SystemExit("stance-off mode must omit only its stance trace")
+if without_stances["belief_trace"] != first["belief_trace"]:
+    raise SystemExit("shadow stance capture must not change belief history")
+if without_stances["gameplay_digest"] != first["gameplay_digest"]:
+    raise SystemExit("shadow stance capture must not change gameplay")
 
 left.phase = "VOTE"
 choice_before_hidden_swap = _choose_public_player_target(left, "hidden_swap_check")
@@ -1697,7 +2131,7 @@ print("headless simulation smoke test passed")
         cwd=BACKEND_DIR,
         fail_message="headless deterministic simulation smoke test failed",
     )
-    print("[OK] Simulations, metrics, and legal-perspective shadow beliefs are deterministic.")
+    print("[OK] Simulations, metrics, beliefs, and shadow stance continuity are deterministic.")
 
 
 def check_backend_search() -> None:
