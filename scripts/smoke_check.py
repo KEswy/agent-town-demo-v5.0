@@ -108,8 +108,8 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
 
-    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-G" not in root_readme:
-        raise SmokeCheckError("root README must identify the active V3.1-G iteration")
+    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-H" not in root_readme:
+        raise SmokeCheckError("root README must identify the active V3.1-H iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
@@ -121,8 +121,8 @@ def check_release_docs() -> None:
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
 
-    if "V3.1-G" not in backend_readme or "V3.1-G" not in roadmap:
-        raise SmokeCheckError("V3.1-G status must stay synchronized across development docs")
+    if "V3.1-H" not in backend_readme or "V3.1-H" not in roadmap:
+        raise SmokeCheckError("V3.1-H status must stay synchronized across development docs")
     if "scripts/simulate_games.py" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
     if "agent_town_metrics.v1" not in commands:
@@ -151,8 +151,14 @@ def check_release_docs() -> None:
         or "M06-A" not in commands
     ):
         raise SmokeCheckError("COMMANDS.md must document the M06-A invariance matrix")
+    if (
+        "hidden_info_authorization.v1" not in commands
+        or "role_scoped_private_npc" not in commands
+        or "M06-B" not in commands
+    ):
+        raise SmokeCheckError("COMMANDS.md must document the M06-B authorization matrix")
 
-    print("[OK] V3.1-G README, commands, and roadmap status are synchronized.")
+    print("[OK] V3.1-H README, commands, and roadmap status are synchronized.")
 
 
 def check_json_files() -> None:
@@ -1264,12 +1270,17 @@ from app.belief import (
 )
 from app.invariance import (
     ACTOR_PROJECTION_NAMES,
+    AUTHORIZATION_MODE,
+    AUTHORIZATION_SCHEMA_VERSION,
     INVARIANCE_MODE,
     INVARIANCE_PROJECTION_VERSION,
     INVARIANCE_SCHEMA_VERSION,
+    AuthorizedPrivateCase,
     HiddenInfoInvarianceError,
+    build_hidden_info_authorization_report,
     build_hidden_info_invariance_report,
     build_m06a_hidden_variants,
+    build_m06b_authorized_cases,
 )
 from app.simulation import (
     BATCH_SCHEMA_VERSION,
@@ -1956,6 +1967,186 @@ except HiddenInfoInvarianceError:
 else:
     raise SystemExit("M06-A must reject a role-privileged player projection")
 
+m06b_state = left.model_copy(deep=True)
+m06b_seer = next(
+    character
+    for character in m06b_state.characters
+    if not character.is_player and character.role == "seer"
+)
+m06b_witch = next(
+    character
+    for character in m06b_state.characters
+    if not character.is_player and character.role == "witch"
+)
+m06b_wolves = [
+    character
+    for character in m06b_state.characters
+    if not character.is_player and character.role == "werewolf"
+]
+m06b_villagers = [
+    character
+    for character in m06b_state.characters
+    if not character.is_player and character.role == "villager"
+]
+m06b_seer_baseline_target = m06b_villagers[0]
+m06b_seer_new_target = m06b_wolves[0]
+m06b_witch_baseline_target = m06b_villagers[1]
+m06b_witch_new_target = m06b_villagers[2]
+m06b_wolf_member_out = next(
+    character
+    for character in m06b_wolves
+    if character.id != m06b_state.wolf_fake_seer_id
+)
+m06b_wolf_member_in = next(
+    character
+    for character in m06b_state.characters
+    if not character.is_player and character.role in {"guard", "hunter"}
+)
+m06b_state.night_actions = [
+    action
+    for action in m06b_state.night_actions
+    if not (
+        action.actor_id == m06b_seer.id
+        and action.action_type == "seer_check"
+    )
+]
+m06b_state.night_actions.append(
+    rules.NightActionState(
+        day=1,
+        actor_id=m06b_seer.id,
+        action_type="seer_check",
+        target_id=m06b_seer_baseline_target.id,
+    )
+)
+m06b_state.night_resolutions = [
+    rules.NightResolutionState(
+        day=1,
+        attacked_target_id=m06b_witch_baseline_target.id,
+    )
+]
+m06b_state.phase = "DAY_MEETING"
+m06b_state.sheriff_id = None
+m06b_state.meeting = rules.DayMeetingState(
+    day=m06b_state.day,
+    direction="clockwise",
+    order=[
+        character.id
+        for character in m06b_state.characters
+        if not character.is_player
+    ],
+)
+m06b_cases = build_m06b_authorized_cases(
+    m06b_state,
+    seer_id=m06b_seer.id,
+    seer_new_target_id=m06b_seer_new_target.id,
+    witch_id=m06b_witch.id,
+    witch_new_attack_target_id=m06b_witch_new_target.id,
+    wolf_member_out_id=m06b_wolf_member_out.id,
+    wolf_member_in_id=m06b_wolf_member_in.id,
+)
+expected_m06b_case_ids = {
+    "seer_private_check_change",
+    "witch_private_attack_change",
+    "wolf_team_membership_change",
+}
+if set(m06b_cases) != expected_m06b_case_ids:
+    raise SystemExit("M06-B must retain every canonical role-private case")
+m06b_report = build_hidden_info_authorization_report(
+    m06b_state,
+    m06b_cases,
+)
+m06b_observer_count = sum(
+    1
+    for character in m06b_state.characters
+    if not character.is_player and character.alive
+)
+expected_m06b_checks = sum(
+    1
+    + (
+        m06b_observer_count - len(case.excluded_observer_ids)
+    ) * len(ACTOR_PROJECTION_NAMES)
+    for case in m06b_cases.values()
+)
+if (
+    m06b_report["schema_version"] != AUTHORIZATION_SCHEMA_VERSION
+    or m06b_report["projection_version"] != INVARIANCE_PROJECTION_VERSION
+    or m06b_report["mode"] != AUTHORIZATION_MODE
+    or m06b_report["check_count"] != expected_m06b_checks
+    or m06b_report["satisfied_check_count"] != expected_m06b_checks
+    or expected_m06b_checks != 158
+    or not m06b_report["passed"]
+    or any(not case["passed"] for case in m06b_report["cases"])
+):
+    raise SystemExit("the M06-B role authorization matrix must pass all 158 checks")
+
+m06b_observed_by_kind = {
+    case["authorization_kind"]: list(
+        case["observed_changed_by_observer"].values()
+    )
+    for case in m06b_report["cases"]
+}
+if (
+    m06b_observed_by_kind["seer_private_check"]
+    != [list(ACTOR_PROJECTION_NAMES)]
+    or m06b_observed_by_kind["witch_private_attack"]
+    != [["belief", "stance", "continuity", "fallback_plan"]]
+    or len(m06b_observed_by_kind["wolf_team_membership"]) != 3
+    or any(
+        changed_names
+        != ["belief", "stance", "decision_context", "continuity"]
+        for changed_names in m06b_observed_by_kind["wolf_team_membership"]
+    )
+):
+    raise SystemExit("M06-B private facts must propagate only through legal role layers")
+
+m06b_reordered_report = build_hidden_info_authorization_report(
+    m06b_state,
+    dict(reversed(list(m06b_cases.items()))),
+)
+if m06b_report != m06b_reordered_report:
+    raise SystemExit("M06-B reports must be independent of case input ordering")
+if any(
+    value.startswith("belief:private")
+    or value in {"werewolf_teammate", "m06b_hidden_truth"}
+    for value in iter_report_strings(m06b_report)
+):
+    raise SystemExit("M06-B reports must not serialize private evidence payloads")
+if any("state" in case for case in m06b_report["cases"]):
+    raise SystemExit("M06-B reports must not serialize variant game states")
+
+m06b_misdeclared_observer = m06b_villagers[0].id
+m06b_seer_case = m06b_cases["seer_private_check_change"]
+m06b_negative_report = build_hidden_info_authorization_report(
+    m06b_state,
+    {
+        "misdeclared_seer_authorization": AuthorizedPrivateCase(
+            state=m06b_seer_case.state,
+            authorization_kind="misdeclared_private_fact",
+            required_changed_by_observer={
+                m06b_misdeclared_observer: ("belief",),
+            },
+            allowed_changed_by_observer={
+                m06b_misdeclared_observer: ("belief",),
+            },
+        )
+    },
+)
+m06b_negative_violations = m06b_negative_report["cases"][0]["violations"]
+if (
+    m06b_negative_report["passed"]
+    or not any(
+        violation["expectation"] == "changed"
+        and not violation["changed"]
+        for violation in m06b_negative_violations
+    )
+    or not any(
+        violation["expectation"] == "unchanged"
+        and violation["changed"]
+        for violation in m06b_negative_violations
+    )
+):
+    raise SystemExit("M06-B must detect missing and misrouted private authorization")
+
 villager_stance = build_stance_snapshot(
     left,
     belief_snapshot=villager_snapshot,
@@ -2502,7 +2693,7 @@ print("headless simulation smoke test passed")
         cwd=BACKEND_DIR,
         fail_message="headless deterministic simulation smoke test failed",
     )
-    print("[OK] Simulations and the M06-A hidden-information projection matrix are deterministic.")
+    print("[OK] Simulations and the M06-A/B hidden-information matrices are deterministic.")
 
 
 def check_backend_search() -> None:

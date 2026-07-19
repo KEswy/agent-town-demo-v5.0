@@ -2,6 +2,24 @@
 
 Agent Town Demo 的 Python FastAPI 后端，负责小镇 NPC 对话、知识检索、长期记忆，以及狼人杀规则和对局内 NPC 状态。
 
+## V3.1-H 授权私有视角矩阵 M06-B
+
+`app/invariance.py` 现同时提供 `hidden_info_authorization.v1`，其模式为 `role_scoped_private_npc`。M06-A 要求无权普通村民的投影完全相同；M06-B 则声明每个私有事实的 required/allowed actor projection，要求合法观察者至少出现指定变化，同时禁止变化传播给公开视角或其他 NPC。
+
+三个规范案例为：
+
+| authorization kind | 内部变化 | 必须变化 | 允许变化 |
+| --- | --- | --- | --- |
+| `seer_private_check` | 同一 NPC 预言家的未公开验人由好人目标改为狼人目标 | 该预言家的 belief、decision context | 该预言家全部五层 M04-B 投影 |
+| `witch_private_attack` | 女巫依法看到的未公开刀口换为另一个存活目标 | 该女巫的 belief | belief、stance、continuity、fallback；decision context 必须不变 |
+| `wolf_team_membership` | 一名非悍跳狼与守卫/猎人交换内部 `role/camp` | 其余狼人的 belief、decision context | 其余狼人全部五层；两个被换身份 actor 不参与对比 |
+
+固定 seed 的实际传播为：预言家五层全部变化；女巫四层变化；其余三名狼人均变化 belief、stance、decision context、continuity，fallback 在该夹具中保持不变。三类案例合计 `158/158` 项满足授权契约，包含每案一个必须不变的玩家公开投影，以及所有角色未变 NPC 的五层策略投影。
+
+矩阵会校验 checked actor 的 `role/camp` 在变体前后相同，required 必须属于 allowed，observer/projection 必须存在且唯一。负对照把预言家的授权故意声明给普通村民，报告必须同时捕获真正预言家的越权变化和普通村民缺失的必需变化。报告不序列化 `WolfGameState` 或 belief evidence 正文，只保留授权类别、计数、摘要和首个差异路径。
+
+M06-B 仍是离线测试模块；实时后端不导入它，模拟 schema、规则结果、LLM 输入和 Godot 均未改变。新增角色私有字段时，应同时声明它允许影响的 observer/layer，并加入该矩阵。
+
 ## V3.1-G 隐藏信息不变性矩阵 M06-A
 
 `app/invariance.py` 是离线测试模块，实时 `app/main.py`、API 路由和规则结算不会导入它。它提供两个版本化层次：
@@ -151,7 +169,7 @@ V2.0 基线来自 [`Agent Town Demo V2.0`](https://github.com/KEswy/agent-town-d
 
 进入 V3 后仍有四项明确限制：当前对局主要保存在进程内存中；严格结构化策略重点覆盖普通非警长白天发言，其他路径仍以规则决策加角色化改写为主；LLM 校验、回退、延迟和成本只有日志，没有统一指标面板；批量模拟与第一版 NPC 指标已经可用，但投票概率和自动平衡阈值尚未校准。
 
-V3 下一步推荐完成 M06-B 授权私有视角矩阵和 M09 LLM 可观测性，再用 M15 对投票概率做多种子校准。完整拆分和 V3.1-A 至 V3.1-G 实施状态见 [`V3 改进与开发路线表`](../docs/V3_ROADMAP.md)。
+V3 下一步推荐做 M09 LLM 可观测性，再用 M15 对投票概率做多种子校准。完整拆分和 V3.1-A 至 V3.1-H 实施状态见 [`V3 改进与开发路线表`](../docs/V3_ROADMAP.md)。
 
 ## 运行
 
