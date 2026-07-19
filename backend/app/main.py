@@ -137,6 +137,8 @@ MAX_GAME_RANDOM_SEED = (1 << 63) - 1
 WITCH_DIRECTIVE_SCHEMA_VERSION = "witch_directive.v1"
 WITCH_STRATEGY_SCHEMA_VERSION = "witch_strategy_decision.v1"
 NPC_WITCH_FIRST_NIGHT_SAVE_RATE = 0.99
+FAKE_SEER_CAMPAIGN_POLICY_VERSION = "fake_seer_campaign.v1"
+FAKE_SEER_CHECK_POLICY_VERSION = "fake_seer_check_mix.v1"
 
 NPC_PERSONALITIES = {
     "梅西": {
@@ -1247,7 +1249,10 @@ def create_wolf_game_state(
         created_at=now,
         updated_at=now,
     )
-    game_state.wolf_fake_seer_id = choose_designated_fake_seer(game_state.characters)
+    game_state.wolf_fake_seer_id = choose_designated_fake_seer(
+        game_state.characters,
+        game_state.random_seed,
+    )
     initialize_role_resources(game_state)
     ensure_npc_night_actions(game_state)
     game_state.player_private_info = build_player_private_info_dict(game_state)
@@ -6700,7 +6705,17 @@ def get_latest_seer_check(
     return None
 
 
-def choose_designated_fake_seer(characters: list[CharacterState]) -> Optional[int]:
+def choose_designated_fake_seer(
+    characters: list[CharacterState],
+    random_seed: int,
+) -> Optional[int]:
+    """Select whether the strongest NPC wolf enters the sheriff counterclaim.
+
+    The old policy forced one fake seer into every game. This version keeps
+    wolf coordination legal and strong, but makes the campaign itself a
+    reproducible strategic choice derived from existing tuning and persona.
+    """
+
     npc_wolves = [
         character
         for character in characters
@@ -6708,7 +6723,7 @@ def choose_designated_fake_seer(characters: list[CharacterState]) -> Optional[in
     ]
     if not npc_wolves:
         return None
-    return max(
+    candidate = max(
         npc_wolves,
         key=lambda character: (
             get_character_strategy_tuning(character).deception_strength * 1.3
@@ -6716,7 +6731,33 @@ def choose_designated_fake_seer(characters: list[CharacterState]) -> Optional[in
             + character.personality.get("leadership", 0.5)
             + character.personality.get("logic", 0.5) * 0.35
         ),
-    ).id
+    )
+    candidate_tuning = get_character_strategy_tuning(candidate)
+    average_coordination = sum(
+        get_character_strategy_tuning(wolf).team_coordination
+        for wolf in npc_wolves
+    ) / len(npc_wolves)
+    campaign_probability = max(
+        0.40,
+        min(
+            0.88,
+            0.28
+            + candidate_tuning.deception_strength * 0.28
+            + average_coordination * 0.18
+            + candidate.personality.get("leadership", 0.5) * 0.10,
+        ),
+    )
+    roll = (
+        deterministic_seed_value(
+            random_seed,
+            (
+                f"{FAKE_SEER_CAMPAIGN_POLICY_VERSION}:"
+                f"candidate:{candidate.id}"
+            ),
+        )
+        % 1_000_000
+    ) / 999_999
+    return candidate.id if roll < campaign_probability else None
 
 
 def get_public_role_claim(
@@ -7798,24 +7839,77 @@ def choose_fake_seer_check(
         if character.role == "werewolf"
         and get_public_suspicion_score(game_state, character.id) < 55
     ]
-    if shieldable_teammates and (game_state.day + speaker.id) % 2 == 0:
+    tuning = get_character_strategy_tuning(speaker)
+    tactic_roll = deterministic_strategy_roll(
+        game_state,
+        speaker,
+        (
+            f"{FAKE_SEER_CHECK_POLICY_VERSION}:"
+            + ":".join(str(character.id) for character in candidates)
+        ),
+    )
+    teammate_gold_cutoff = 0.18 + tuning.team_coordination * 0.12
+    if shieldable_teammates and tactic_roll < teammate_gold_cutoff:
         target = min(
             shieldable_teammates,
-            key=lambda character: get_public_suspicion_score(game_state, character.id),
+            key=lambda character: (
+                get_public_suspicion_score(game_state, character.id),
+                -float(
+                    speaker.relationships.get(str(character.id), {}).get(
+                        "trust",
+                        0.5,
+                    )
+                ),
+                character.id,
+            ),
         )
         return target.id, "good"
 
-    non_wolves = [character for character in candidates if character.role != "werewolf"]
+    non_wolves = [
+        character
+        for character in candidates
+        if character.role != "werewolf"
+    ]
     if non_wolves:
+        black_check_cutoff = min(
+            0.82,
+            teammate_gold_cutoff + 0.38 + tuning.deception_strength * 0.10,
+        )
+        if tactic_roll < black_check_cutoff:
+            ranked_targets = sorted(
+                non_wolves,
+                key=lambda character: (
+                    -speaker.suspicion.get(str(character.id), 0),
+                    -get_public_suspicion_score(game_state, character.id),
+                    character.id,
+                ),
+            )
+            target_pool = ranked_targets[: min(3, len(ranked_targets))]
+            target = deterministic_game_choice(
+                game_state,
+                target_pool,
+                (
+                    f"{FAKE_SEER_CHECK_POLICY_VERSION}:"
+                    f"black_target:{speaker.id}"
+                ),
+            )
+            return target.id, "werewolf"
+
         target = max(
             non_wolves,
             key=lambda character: (
-                speaker.suspicion.get(str(character.id), 0),
-                get_public_suspicion_score(game_state, character.id),
+                get_public_persuasion_strength(game_state, character),
+                float(
+                    speaker.relationships.get(str(character.id), {}).get(
+                        "trust",
+                        0.5,
+                    )
+                ),
+                -get_public_suspicion_score(game_state, character.id),
                 -character.id,
             ),
         )
-        return target.id, "werewolf"
+        return target.id, "good"
 
     target = candidates[0]
     return target.id, "good"

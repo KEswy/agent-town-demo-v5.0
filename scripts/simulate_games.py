@@ -110,6 +110,7 @@ def main() -> int:
         fake_seer = metrics["fake_seer_acceptance"]
         balance = metrics["balance_diagnostics"]
         witch = balance["witch"]
+        seer_balance = metrics["seer_claim_balance"]
         print(
             f"[OK] simulated {report['games_completed']} game(s); "
             f"winner_counts={summary['winner_counts']}; output={args.output}"
@@ -133,6 +134,14 @@ def main() -> int:
             f"second_night_poison={_format_rate(witch['second_night_poison_rate'])}; "
             f"accepted_hold={witch['accepted_hold_count']}; "
             f"poison_wolf_hit={_format_rate(witch['wolf_poison_rate'])}"
+        )
+        print(
+            "[SEER] "
+            f"fake_campaign={_format_rate(seer_balance['fake_campaign_rate'])}; "
+            f"fake_elected={seer_balance['fake_elected']}; "
+            "fake_black_checked_true="
+            f"{seer_balance['fake_black_checked_true_seer']}; "
+            f"true_first_exiled={seer_balance['true_seer_first_exiled']}"
         )
         if belief_summary is None:
             print("[BELIEF] detailed trace disabled")

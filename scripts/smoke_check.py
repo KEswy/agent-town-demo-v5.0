@@ -111,8 +111,8 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
 
-    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-L" not in root_readme:
-        raise SmokeCheckError("root README must identify the active V3.1-L iteration")
+    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-M" not in root_readme:
+        raise SmokeCheckError("root README must identify the active V3.1-M iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
@@ -124,11 +124,11 @@ def check_release_docs() -> None:
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
 
-    if "V3.1-L" not in backend_readme or "V3.1-L" not in roadmap:
-        raise SmokeCheckError("V3.1-L status must stay synchronized across development docs")
+    if "V3.1-M" not in backend_readme or "V3.1-M" not in roadmap:
+        raise SmokeCheckError("V3.1-M status must stay synchronized across development docs")
     if "scripts/simulate_games.py" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
-    if "agent_town_metrics.v2" not in commands:
+    if "agent_town_metrics.v3" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the M02 metrics schema")
     if (
         "belief_state.v2" not in commands
@@ -181,11 +181,17 @@ def check_release_docs() -> None:
         or "99%" not in commands
         or "[BALANCE]" not in commands
         or "[WITCH]" not in commands
-        or "agent_town_simulation.v9" not in commands
     ):
         raise SmokeCheckError("COMMANDS.md must document V3.1-L witch diagnostics")
+    if (
+        "fake_seer_campaign.v1" not in commands
+        or "fake_seer_check_mix.v1" not in commands
+        or "[SEER]" not in commands
+        or "agent_town_simulation.v10" not in commands
+    ):
+        raise SmokeCheckError("COMMANDS.md must document V3.1-M seer diagnostics")
 
-    print("[OK] V3.1-L README, commands, and roadmap status are synchronized.")
+    print("[OK] V3.1-M README, commands, and roadmap status are synchronized.")
 
 
 def check_json_files() -> None:
@@ -1633,6 +1639,99 @@ witch_policy_state = rules.create_wolf_game_state(
     game_id="witch_policy_contract",
     random_seed=20260719,
 )
+if (
+    rules.FAKE_SEER_CAMPAIGN_POLICY_VERSION != "fake_seer_campaign.v1"
+    or rules.FAKE_SEER_CHECK_POLICY_VERSION != "fake_seer_check_mix.v1"
+):
+    raise SystemExit("V3.1-M fake-seer policies must stay explicitly versioned")
+campaign_choices = [
+    rules.choose_designated_fake_seer(witch_policy_state.characters, seed)
+    for seed in range(2_000)
+]
+campaign_count = sum(choice is not None for choice in campaign_choices)
+selected_fake_ids = {
+    choice for choice in campaign_choices if choice is not None
+}
+if (
+    len(selected_fake_ids) != 1
+    or not 800 <= campaign_count <= 1_760
+):
+    raise SystemExit("fake-seer campaign must reproducibly mix entry and restraint")
+random.seed(7)
+campaign_replay = [
+    rules.choose_designated_fake_seer(witch_policy_state.characters, seed)
+    for seed in range(2_000)
+]
+random.seed(700_007)
+if campaign_choices != campaign_replay:
+    raise SystemExit("fake-seer campaign selection must ignore global random state")
+
+good_role_swap_state = witch_policy_state.model_copy(deep=True)
+good_role_swap_candidates = [
+    character
+    for character in good_role_swap_state.characters
+    if not character.is_player and character.camp == "good"
+]
+good_role_swap_candidates[0].role, good_role_swap_candidates[1].role = (
+    good_role_swap_candidates[1].role,
+    good_role_swap_candidates[0].role,
+)
+if campaign_choices != [
+    rules.choose_designated_fake_seer(good_role_swap_state.characters, seed)
+    for seed in range(2_000)
+]:
+    raise SystemExit("fake-seer campaign must not inspect exact hidden good roles")
+
+fake_seer_id = next(iter(selected_fake_ids))
+fake_check_state = witch_policy_state.model_copy(deep=True)
+fake_check_state.wolf_fake_seer_id = fake_seer_id
+fake_check_state.wolf_checked_wolf_used = True
+fake_speaker = rules.get_character(fake_check_state, fake_seer_id)
+fake_check_results = []
+fake_check_kinds = set()
+for seed in range(2_000):
+    fake_check_state.random_seed = seed
+    check = rules.choose_fake_seer_check(fake_check_state, fake_speaker)
+    if check is None:
+        raise SystemExit("a fake seer with legal targets must always choose a check")
+    target_id, result = check
+    target = rules.get_character(fake_check_state, target_id)
+    target_camp = "werewolf" if target.role == "werewolf" else "good"
+    fake_check_results.append((target_id, result))
+    fake_check_kinds.add((target_camp, result))
+if fake_check_kinds != {
+    ("good", "werewolf"),
+    ("good", "good"),
+    ("werewolf", "good"),
+}:
+    raise SystemExit("fake-seer checks must mix non-wolf black/gold and wolf gold")
+
+fake_check_role_swap_state = fake_check_state.model_copy(deep=True)
+fake_check_role_swap_candidates = [
+    character
+    for character in fake_check_role_swap_state.characters
+    if not character.is_player and character.camp == "good"
+]
+fake_check_role_swap_candidates[0].role, fake_check_role_swap_candidates[1].role = (
+    fake_check_role_swap_candidates[1].role,
+    fake_check_role_swap_candidates[0].role,
+)
+fake_check_role_swap_speaker = rules.get_character(
+    fake_check_role_swap_state,
+    fake_seer_id,
+)
+hidden_role_check_results = []
+for seed in range(2_000):
+    fake_check_role_swap_state.random_seed = seed
+    hidden_role_check_results.append(
+        rules.choose_fake_seer_check(
+            fake_check_role_swap_state,
+            fake_check_role_swap_speaker,
+        )
+    )
+if fake_check_results != hidden_role_check_results:
+    raise SystemExit("fake-seer checks must not inspect exact hidden good roles")
+
 npc_witch = next(
     character
     for character in witch_policy_state.characters
@@ -1842,11 +1941,11 @@ if (
 ):
     raise SystemExit("a simulated game must expose versioned post-game metrics")
 if (
-    SIMULATION_SCHEMA_VERSION != "agent_town_simulation.v9"
-    or BATCH_SCHEMA_VERSION != "agent_town_simulation_batch.v9"
-    or METRICS_SCHEMA_VERSION != "agent_town_metrics.v2"
+    SIMULATION_SCHEMA_VERSION != "agent_town_simulation.v10"
+    or BATCH_SCHEMA_VERSION != "agent_town_simulation_batch.v10"
+    or METRICS_SCHEMA_VERSION != "agent_town_metrics.v3"
 ):
-    raise SystemExit("V3.1-L simulation and metrics schemas must stay explicit")
+    raise SystemExit("V3.1-M simulation and metrics schemas must stay explicit")
 balance_diagnostics = first["metrics"]["balance_diagnostics"]
 if (
     balance_diagnostics["winner_reason"] != first["winner_reason"]
@@ -1864,6 +1963,23 @@ if (
     )
 ):
     raise SystemExit("V3.1-L balance and witch diagnostics must conserve outcomes")
+seer_balance = first["metrics"]["seer_claim_balance"]
+if (
+    bool(seer_balance["fake_seer_id"] is not None)
+    != seer_balance["fake_campaign"]
+    or (
+        seer_balance["fake_candidate"]
+        and not seer_balance["fake_campaign"]
+    )
+    or seer_balance["fake_check_count"]
+    != (
+        seer_balance["fake_black_check_good_count"]
+        + seer_balance["fake_black_check_wolf_count"]
+        + seer_balance["fake_gold_check_good_count"]
+        + seer_balance["fake_gold_check_wolf_count"]
+    )
+):
+    raise SystemExit("V3.1-M per-game seer diagnostics must conserve decisions")
 continuity_metrics = first["speech_continuity"]
 continuity_reasons = {
     "stance_aligned",
@@ -2142,6 +2258,39 @@ if (
     )
 ):
     raise SystemExit("batch V3.1-L balance diagnostics must conserve games and poison targets")
+batch_seer = batch["metrics"]["seer_claim_balance"]
+seer_conditions = {
+    "fake_campaign",
+    "fake_elected",
+    "fake_black_checked_true_seer",
+    "true_seer_first_exiled",
+}
+if (
+    not 0 <= batch_seer["fake_campaign"] <= 6
+    or not 0 <= batch_seer["fake_candidate"] <= batch_seer["fake_campaign"]
+    or batch_seer["fake_check_count"]
+    != (
+        batch_seer["fake_black_check_good_count"]
+        + batch_seer["fake_black_check_wolf_count"]
+        + batch_seer["fake_gold_check_good_count"]
+        + batch_seer["fake_gold_check_wolf_count"]
+    )
+    or set(batch_seer["winner_counts_by_condition"]) != seer_conditions
+    or any(
+        sum(batch_seer["winner_counts_by_condition"][condition].values())
+        != batch_seer[condition]
+        for condition in seer_conditions
+    )
+):
+    raise SystemExit("batch V3.1-M seer diagnostics must conserve games and checks")
+for rate_name in (
+    "fake_campaign_rate",
+    "fake_election_rate",
+    "true_seer_election_rate",
+):
+    rate = batch_seer[rate_name]
+    if rate is not None and not 0.0 <= rate <= 1.0:
+        raise SystemExit("V3.1-M seer diagnostic rates must stay bounded")
 if (
     batch["belief_schema_version"] != BELIEF_SCHEMA_VERSION
     or batch["belief_summary"]["schema_version"] != BELIEF_SCHEMA_VERSION
@@ -2430,6 +2579,19 @@ if [character.role for character in left.characters] != [
     character.role for character in right.characters
 ]:
     raise SystemExit("role assignment must depend on the explicit seed, not game id")
+if left.wolf_fake_seer_id is None:
+    left.wolf_fake_seer_id = next(
+        fake_id
+        for seed in range(1_000)
+        if (
+            fake_id := rules.choose_designated_fake_seer(
+                left.characters,
+                seed,
+            )
+        )
+        is not None
+    )
+    right.wolf_fake_seer_id = left.wolf_fake_seer_id
 
 villager_observer = next(
     character
@@ -3636,7 +3798,7 @@ print("headless simulation smoke test passed")
         cwd=BACKEND_DIR,
         fail_message="headless deterministic simulation smoke test failed",
     )
-    print("[OK] Simulations, M06-A/B matrices, M15-A/B votes, and V3.1-L witch strategy are deterministic.")
+    print("[OK] Simulations, M06-A/B matrices, V3.1-L witch, and V3.1-M seer strategies are deterministic.")
 
 
 def check_backend_search() -> None:
@@ -4295,6 +4457,21 @@ state_after_vote = get_wolf_game_state(response.game_id)
 if any(character.trust_to_player is None for character in state_after_vote.characters if not character.is_player):
     raise SystemExit("NPC character views should expose trust_to_player")
 
+def select_test_fake_seer(characters):
+    if not any(
+        not character.is_player and character.role == "werewolf"
+        for character in characters
+    ):
+        return None
+    for test_seed in range(1_000):
+        fake_seer_id = main_module.choose_designated_fake_seer(
+            characters,
+            test_seed,
+        )
+        if fake_seer_id is not None:
+            return fake_seer_id
+    raise SystemExit("test fixture must find a deterministic fake-seer campaign seed")
+
 def make_rule_test_game(roles):
     if len(roles) > 12:
         raise SystemExit("rule test role list cannot exceed 12 characters")
@@ -4346,7 +4523,7 @@ def make_rule_test_game(roles):
     game_state.pending_hunter_continuation = ""
     game_state.winner = None
     game_state.winner_reason = ""
-    game_state.wolf_fake_seer_id = main_module.choose_designated_fake_seer(game_state.characters)
+    game_state.wolf_fake_seer_id = select_test_fake_seer(game_state.characters)
     main_module.initialize_role_resources(game_state)
     player = game_state.characters[0]
     game_state.player_private_info = main_module.build_player_private_info_dict(game_state)
@@ -7291,6 +7468,21 @@ fake_seer_state.meeting = DayMeetingState(
     direction="clockwise",
     order=[2],
 )
+fake_seer_actor = main_module.get_character(fake_seer_state, 2)
+for fake_check_seed in range(1_000):
+    fake_seer_state.random_seed = fake_check_seed
+    planned_fake_check = main_module.choose_fake_seer_check(
+        fake_seer_state,
+        fake_seer_actor,
+    )
+    if planned_fake_check is not None and planned_fake_check[1] == "werewolf":
+        break
+else:
+    raise SystemExit("fake-seer fixture must find a deterministic black-check seed")
+pre_fake_check_suspicion = {
+    character.id: dict(character.suspicion)
+    for character in fake_seer_state.characters
+}
 generate_npc_speech(
     NpcSpeechRequest(game_id=fake_seer_state.game_id, character_id=2)
 )
@@ -7302,9 +7494,26 @@ day_one_fake_checks = [
 if len(day_one_fake_checks) != 1 or day_one_fake_checks[0].source != "wolf_fake_seer":
     raise SystemExit("designated NPC wolf should counterclaim seer with a fake check")
 fake_target_id = day_one_fake_checks[0].target_id
-good_listener = fake_seer_state.characters[4]
-if good_listener.suspicion.get(str(fake_target_id), 0) <= 0:
-    raise SystemExit("a fake wolf check should influence ordinary NPC suspicion")
+good_listener = next(
+    character
+    for character in fake_seer_state.characters
+    if (
+        not character.is_player
+        and character.camp == "good"
+        and character.role != "seer"
+        and character.id != fake_target_id
+    )
+)
+fake_check_suspicion_before = pre_fake_check_suspicion[good_listener.id].get(
+    str(fake_target_id),
+    0,
+)
+fake_check_suspicion_after = good_listener.suspicion.get(str(fake_target_id), 0)
+if (
+    day_one_fake_checks[0].result != "werewolf"
+    or fake_check_suspicion_after <= fake_check_suspicion_before
+):
+    raise SystemExit("a fake black check should influence ordinary NPC suspicion")
 
 fake_seer_state.day = 2
 fake_seer_state.phase = "DAY_MEETING"
@@ -9925,8 +10134,13 @@ wolf_coordination_state.night_actions = [
     NightActionState(day=1, actor_id=2, action_type="seer_check", target_id=3),
 ]
 wolf_coordination_state.wolf_fake_seer_id = main_module.choose_designated_fake_seer(
-    wolf_coordination_state.characters
+    wolf_coordination_state.characters,
+    wolf_coordination_state.random_seed,
 )
+if wolf_coordination_state.wolf_fake_seer_id is None:
+    wolf_coordination_state.wolf_fake_seer_id = select_test_fake_seer(
+        wolf_coordination_state.characters
+    )
 fake_seer_id = wolf_coordination_state.wolf_fake_seer_id
 wolf_coordination_state.sheriff_election = SheriffElectionState(
     candidates=[1, fake_seer_id, 2],

@@ -14,7 +14,13 @@ from typing import Iterable, Optional
 from . import main as rules
 
 
-METRICS_SCHEMA_VERSION = "agent_town_metrics.v2"
+METRICS_SCHEMA_VERSION = "agent_town_metrics.v3"
+SEER_BALANCE_WINNER_CONDITIONS = (
+    "fake_campaign",
+    "fake_elected",
+    "fake_black_checked_true_seer",
+    "true_seer_first_exiled",
+)
 
 
 def summarize_ballot_distribution(target_ids: Iterable[int]) -> dict[str, object]:
@@ -153,6 +159,10 @@ def build_game_metrics(game_state: rules.WolfGameState) -> dict[str, object]:
             game_state,
             characters,
         ),
+        "seer_claim_balance": _build_seer_claim_balance_metrics(
+            game_state,
+            characters,
+        ),
     }
     _validate_game_metric_conservation(metrics)
     return metrics
@@ -193,6 +203,8 @@ def aggregate_batch_metrics(
     first_exile_role_counts: Counter[str] = Counter()
     elimination_cause_camp_counts: dict[str, Counter[str]] = defaultdict(Counter)
     witch_totals: Counter[str] = Counter()
+    seer_totals: Counter[str] = Counter()
+    seer_condition_winners: dict[str, Counter[str]] = defaultdict(Counter)
 
     for game in game_results:
         metrics = _require_game_metrics(game)
@@ -248,6 +260,16 @@ def aggregate_batch_metrics(
                 witch_totals[key] += int(value)
             elif isinstance(value, int):
                 witch_totals[key] += value
+        seer_balance = metrics["seer_claim_balance"]
+        for key, value in seer_balance.items():
+            if isinstance(value, bool):
+                seer_totals[key] += int(value)
+            elif isinstance(value, int) and not key.endswith("_id"):
+                seer_totals[key] += value
+        winner = str(game["winner"])
+        for condition in SEER_BALANCE_WINNER_CONDITIONS:
+            if bool(seer_balance[condition]):
+                seer_condition_winners[condition][winner] += 1
         _add_player_role_game(by_player_role, game)
 
     aggregate = {
@@ -310,6 +332,34 @@ def aggregate_batch_metrics(
                 ),
             },
         },
+        "seer_claim_balance": {
+            **{
+                key: seer_totals[key]
+                for key in sorted(seer_totals)
+            },
+            "fake_campaign_rate": _rate(
+                seer_totals["fake_campaign"],
+                len(game_results),
+            ),
+            "fake_election_rate": _rate(
+                seer_totals["fake_elected"],
+                seer_totals["fake_candidate"],
+            ),
+            "true_seer_election_rate": _rate(
+                seer_totals["true_seer_elected"],
+                seer_totals["true_seer_candidate"],
+            ),
+            "winner_counts_by_condition": {
+                condition: {
+                    "good": seer_condition_winners[condition].get("good", 0),
+                    "werewolf": seer_condition_winners[condition].get(
+                        "werewolf",
+                        0,
+                    ),
+                }
+                for condition in SEER_BALANCE_WINNER_CONDITIONS
+            },
+        },
         "by_player_role": _finalize_player_role_groups(by_player_role),
         "by_voter_role": {
             role: _finalize_alignment_counts(by_voter_role_totals[role])
@@ -336,6 +386,109 @@ def aggregate_batch_metrics(
     }
     _validate_batch_metric_conservation(aggregate)
     return aggregate
+
+
+def _build_seer_claim_balance_metrics(
+    game_state: rules.WolfGameState,
+    characters: dict[int, rules.CharacterState],
+) -> dict[str, object]:
+    true_seer = next(
+        character
+        for character in game_state.characters
+        if character.role == "seer"
+    )
+    fake_seer_id = game_state.wolf_fake_seer_id
+    election = game_state.sheriff_election
+    elected_id = next(
+        (
+            event.actor_id
+            for event in game_state.sheriff_events
+            if event.event_type == "elected"
+        ),
+        None,
+    )
+    first_exile_id = next(
+        (
+            elimination.character_id
+            for elimination in game_state.eliminations
+            if elimination.cause == "exiled"
+        ),
+        None,
+    )
+    exiled_ids = {
+        elimination.character_id
+        for elimination in game_state.eliminations
+        if elimination.cause == "exiled"
+    }
+    true_public_claim = any(
+        claim.character_id == true_seer.id
+        and claim.claim_type == "role"
+        and claim.claimed_role == "seer"
+        for claim in game_state.public_claims
+    )
+    fake_checks = [
+        claim
+        for claim in game_state.public_claims
+        if fake_seer_id is not None
+        and claim.character_id == fake_seer_id
+        and claim.claim_type == "seer_check"
+        and claim.target_id is not None
+    ]
+    fake_public_claim = bool(
+        fake_seer_id is not None
+        and any(
+            claim.character_id == fake_seer_id
+            and claim.claim_type == "role"
+            and claim.claimed_role == "seer"
+            for claim in game_state.public_claims
+        )
+    )
+
+    def count_fake_checks(result: str, target_camp: str) -> int:
+        return sum(
+            claim.result == result
+            and characters[int(claim.target_id)].camp == target_camp
+            for claim in fake_checks
+            if claim.target_id is not None
+        )
+
+    fake_campaign = fake_seer_id is not None
+    fake_candidate = bool(
+        fake_seer_id is not None
+        and election is not None
+        and fake_seer_id in election.candidates
+    )
+    return {
+        "true_seer_id": true_seer.id,
+        "true_seer_candidate": bool(
+            election is not None and true_seer.id in election.candidates
+        ),
+        "true_seer_elected": elected_id == true_seer.id,
+        "true_seer_publicly_claimed": true_public_claim,
+        "true_seer_first_exiled": first_exile_id == true_seer.id,
+        "true_seer_exiled": true_seer.id in exiled_ids,
+        "fake_seer_id": fake_seer_id,
+        "fake_campaign": fake_campaign,
+        "fake_candidate": fake_candidate,
+        "fake_elected": fake_seer_id is not None and elected_id == fake_seer_id,
+        "fake_publicly_claimed": fake_public_claim,
+        "fake_first_exiled": (
+            fake_seer_id is not None and first_exile_id == fake_seer_id
+        ),
+        "fake_exiled": fake_seer_id is not None and fake_seer_id in exiled_ids,
+        "fake_black_checked_true_seer": any(
+            claim.result == "werewolf" and claim.target_id == true_seer.id
+            for claim in fake_checks
+        ),
+        "fake_check_count": len(fake_checks),
+        "fake_black_check_good_count": count_fake_checks("werewolf", "good"),
+        "fake_black_check_wolf_count": count_fake_checks(
+            "werewolf",
+            "werewolf",
+        ),
+        "fake_gold_check_good_count": count_fake_checks("good", "good"),
+        "fake_gold_check_wolf_count": count_fake_checks("good", "werewolf"),
+    }
 
 
 def _build_balance_diagnostics(
@@ -841,6 +994,19 @@ def _validate_game_metric_conservation(metrics: dict[str, object]) -> None:
         + int(witch["second_night_hold_accepted"])
     ):
         raise ValueError("night-two witch choices must be poison or accepted hold")
+    seer = metrics["seer_claim_balance"]
+    if int(seer["fake_check_count"]) != sum(
+        int(seer[key])
+        for key in (
+            "fake_black_check_good_count",
+            "fake_black_check_wolf_count",
+            "fake_gold_check_good_count",
+            "fake_gold_check_wolf_count",
+        )
+    ):
+        raise ValueError("fake-seer check mix does not conserve public checks")
+    if bool(seer["fake_candidate"]) and not bool(seer["fake_campaign"]):
+        raise ValueError("a fake-seer candidate requires a selected campaign")
 
 
 def _validate_batch_metric_conservation(metrics: dict[str, object]) -> None:
@@ -869,6 +1035,24 @@ def _validate_batch_metric_conservation(metrics: dict[str, object]) -> None:
         + int(witch["second_night_hold_accepted"])
     ):
         raise ValueError("batch night-two witch choices do not conserve opportunities")
+    seer = metrics["seer_claim_balance"]
+    if int(seer["fake_check_count"]) != sum(
+        int(seer[key])
+        for key in (
+            "fake_black_check_good_count",
+            "fake_black_check_wolf_count",
+            "fake_gold_check_good_count",
+            "fake_gold_check_wolf_count",
+        )
+    ):
+        raise ValueError("batch fake-seer check mix does not conserve checks")
+    for condition, winner_counts in seer["winner_counts_by_condition"].items():
+        if sum(int(count) for count in winner_counts.values()) != int(
+            seer[condition]
+        ):
+            raise ValueError(
+                f"seer condition winner counts do not conserve {condition}"
+            )
 
 
 __all__ = [
