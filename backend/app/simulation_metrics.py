@@ -14,7 +14,14 @@ from typing import Iterable, Optional
 from . import main as rules
 
 
-METRICS_SCHEMA_VERSION = "agent_town_metrics.v3"
+METRICS_SCHEMA_VERSION = "agent_town_metrics.v4"
+CROSS_DAY_EXILE_CHAIN_SCHEMA_VERSION = "cross_day_exile_chain.v1"
+VOTE_TRANSITION_COUNT_KEYS = (
+    "correct_to_correct_count",
+    "correct_to_misvote_count",
+    "misvote_to_correct_count",
+    "misvote_to_misvote_count",
+)
 SEER_BALANCE_WINNER_CONDITIONS = (
     "fake_campaign",
     "fake_elected",
@@ -163,6 +170,10 @@ def build_game_metrics(game_state: rules.WolfGameState) -> dict[str, object]:
             game_state,
             characters,
         ),
+        "cross_day_exile_chain": _build_cross_day_exile_chain_metrics(
+            game_state,
+            characters,
+        ),
     }
     _validate_game_metric_conservation(metrics)
     return metrics
@@ -205,6 +216,12 @@ def aggregate_batch_metrics(
     witch_totals: Counter[str] = Counter()
     seer_totals: Counter[str] = Counter()
     seer_condition_winners: dict[str, Counter[str]] = defaultdict(Counter)
+    first_exile_wolf_winners: Counter[str] = Counter()
+    next_exile_after_first_wolf_camps: Counter[str] = Counter()
+    cross_day_transition_totals: Counter[str] = Counter()
+    first_wolf_transition_totals: Counter[str] = Counter()
+    first_exile_wolf_game_count = 0
+    no_next_exile_after_first_wolf_count = 0
 
     for game in game_results:
         metrics = _require_game_metrics(game)
@@ -270,6 +287,23 @@ def aggregate_batch_metrics(
         for condition in SEER_BALANCE_WINNER_CONDITIONS:
             if bool(seer_balance[condition]):
                 seer_condition_winners[condition][winner] += 1
+        exile_chain = metrics["cross_day_exile_chain"]
+        _add_vote_transition_counts(
+            cross_day_transition_totals,
+            exile_chain["good_npc_vote_transitions"],
+        )
+        _add_vote_transition_counts(
+            first_wolf_transition_totals,
+            exile_chain["after_first_wolf_exile_good_npc_vote_transitions"],
+        )
+        if bool(exile_chain["first_exile_wolf"]):
+            first_exile_wolf_game_count += 1
+            first_exile_wolf_winners[winner] += 1
+            next_camp = exile_chain["next_exile_after_first_wolf_camp"]
+            if next_camp is None:
+                no_next_exile_after_first_wolf_count += 1
+            else:
+                next_exile_after_first_wolf_camps[str(next_camp)] += 1
         _add_player_role_game(by_player_role, game)
 
     aggregate = {
@@ -359,6 +393,46 @@ def aggregate_batch_metrics(
                 }
                 for condition in SEER_BALANCE_WINNER_CONDITIONS
             },
+        },
+        "cross_day_exile_chain": {
+            "schema_version": CROSS_DAY_EXILE_CHAIN_SCHEMA_VERSION,
+            "game_count": len(game_results),
+            "first_exile_wolf_game_count": first_exile_wolf_game_count,
+            "first_exile_wolf_game_rate": _rate(
+                first_exile_wolf_game_count,
+                len(game_results),
+            ),
+            "first_exile_wolf_winner_counts": {
+                "good": first_exile_wolf_winners.get("good", 0),
+                "werewolf": first_exile_wolf_winners.get("werewolf", 0),
+            },
+            "first_exile_wolf_good_win_rate": _rate(
+                first_exile_wolf_winners.get("good", 0),
+                first_exile_wolf_game_count,
+            ),
+            "next_exile_after_first_wolf_count": sum(
+                next_exile_after_first_wolf_camps.values()
+            ),
+            "next_exile_after_first_wolf_camp_counts": {
+                "good": next_exile_after_first_wolf_camps.get("good", 0),
+                "werewolf": next_exile_after_first_wolf_camps.get(
+                    "werewolf",
+                    0,
+                ),
+            },
+            "no_next_exile_after_first_wolf_count": (
+                no_next_exile_after_first_wolf_count
+            ),
+            "next_exile_wolf_rate": _rate(
+                next_exile_after_first_wolf_camps.get("werewolf", 0),
+                sum(next_exile_after_first_wolf_camps.values()),
+            ),
+            "good_npc_vote_transitions": _finalize_vote_transition_counts(
+                cross_day_transition_totals
+            ),
+            "after_first_wolf_exile_good_npc_vote_transitions": (
+                _finalize_vote_transition_counts(first_wolf_transition_totals)
+            ),
         },
         "by_player_role": _finalize_player_role_groups(by_player_role),
         "by_voter_role": {
@@ -488,6 +562,140 @@ def _build_seer_claim_balance_metrics(
         ),
         "fake_gold_check_good_count": count_fake_checks("good", "good"),
         "fake_gold_check_wolf_count": count_fake_checks("good", "werewolf"),
+    }
+
+
+def _build_cross_day_exile_chain_metrics(
+    game_state: rules.WolfGameState,
+    characters: dict[int, rules.CharacterState],
+) -> dict[str, object]:
+    """Score cross-day NPC vote quality without feeding role truth back in-game."""
+
+    exiles = [
+        elimination
+        for elimination in game_state.eliminations
+        if elimination.cause == "exiled"
+    ]
+    exile_camp_sequence = [
+        characters[elimination.character_id].camp
+        for elimination in exiles
+    ]
+    first_exile_wolf = bool(
+        exile_camp_sequence and exile_camp_sequence[0] == "werewolf"
+    )
+    next_exile_camp = (
+        exile_camp_sequence[1]
+        if first_exile_wolf and len(exile_camp_sequence) > 1
+        else None
+    )
+    correctness_by_day = _build_good_npc_vote_correctness_by_day(
+        game_state.votes,
+        characters,
+    )
+    vote_days = sorted(correctness_by_day)
+    all_day_pairs = list(zip(vote_days, vote_days[1:]))
+    first_wolf_day_pairs: list[tuple[int, int]] = []
+    if first_exile_wolf:
+        first_exile_day = exiles[0].day
+        next_vote_day = next(
+            (day for day in vote_days if day > first_exile_day),
+            None,
+        )
+        if next_vote_day is not None:
+            first_wolf_day_pairs.append((first_exile_day, next_vote_day))
+
+    return {
+        "schema_version": CROSS_DAY_EXILE_CHAIN_SCHEMA_VERSION,
+        "exile_camp_sequence": exile_camp_sequence,
+        "first_exile_wolf": first_exile_wolf,
+        "next_exile_after_first_wolf_camp": next_exile_camp,
+        "good_npc_vote_transitions": _summarize_vote_transition_pairs(
+            correctness_by_day,
+            all_day_pairs,
+        ),
+        "after_first_wolf_exile_good_npc_vote_transitions": (
+            _summarize_vote_transition_pairs(
+                correctness_by_day,
+                first_wolf_day_pairs,
+            )
+        ),
+    }
+
+
+def _build_good_npc_vote_correctness_by_day(
+    votes: Iterable[rules.VoteState],
+    characters: dict[int, rules.CharacterState],
+) -> dict[int, dict[int, bool]]:
+    correctness_by_day: dict[int, dict[int, bool]] = defaultdict(dict)
+    for vote in votes:
+        voter = characters[vote.voter_id]
+        if voter.is_player or voter.camp != "good":
+            continue
+        correctness_by_day[vote.day][vote.voter_id] = (
+            characters[vote.target_id].camp == "werewolf"
+        )
+    return dict(correctness_by_day)
+
+
+def _summarize_vote_transition_pairs(
+    correctness_by_day: dict[int, dict[int, bool]],
+    day_pairs: Iterable[tuple[int, int]],
+) -> dict[str, object]:
+    counts: Counter[str] = Counter()
+    transition_names = {
+        (True, True): "correct_to_correct_count",
+        (True, False): "correct_to_misvote_count",
+        (False, True): "misvote_to_correct_count",
+        (False, False): "misvote_to_misvote_count",
+    }
+    for previous_day, current_day in day_pairs:
+        previous_votes = correctness_by_day.get(previous_day, {})
+        current_votes = correctness_by_day.get(current_day, {})
+        for voter_id in sorted(set(previous_votes) & set(current_votes)):
+            counts[
+                transition_names[
+                    (previous_votes[voter_id], current_votes[voter_id])
+                ]
+            ] += 1
+    return _finalize_vote_transition_counts(counts)
+
+
+def _add_vote_transition_counts(
+    total: Counter[str],
+    transitions: dict[str, object],
+) -> None:
+    for key in VOTE_TRANSITION_COUNT_KEYS:
+        total[key] += int(transitions[key])
+
+
+def _finalize_vote_transition_counts(
+    counts: Counter[str],
+) -> dict[str, object]:
+    values = {
+        key: int(counts.get(key, 0))
+        for key in VOTE_TRANSITION_COUNT_KEYS
+    }
+    previous_correct_count = (
+        values["correct_to_correct_count"]
+        + values["correct_to_misvote_count"]
+    )
+    previous_misvote_count = (
+        values["misvote_to_correct_count"]
+        + values["misvote_to_misvote_count"]
+    )
+    return {
+        **values,
+        "transition_count": sum(values.values()),
+        "previous_correct_count": previous_correct_count,
+        "previous_misvote_count": previous_misvote_count,
+        "correct_retention_rate": _rate(
+            values["correct_to_correct_count"],
+            previous_correct_count,
+        ),
+        "misvote_correction_rate": _rate(
+            values["misvote_to_correct_count"],
+            previous_misvote_count,
+        ),
     }
 
 
@@ -1007,6 +1215,27 @@ def _validate_game_metric_conservation(metrics: dict[str, object]) -> None:
         raise ValueError("fake-seer check mix does not conserve public checks")
     if bool(seer["fake_candidate"]) and not bool(seer["fake_campaign"]):
         raise ValueError("a fake-seer candidate requires a selected campaign")
+    exile_chain = metrics["cross_day_exile_chain"]
+    if exile_chain["schema_version"] != CROSS_DAY_EXILE_CHAIN_SCHEMA_VERSION:
+        raise ValueError("cross-day exile-chain schema is incompatible")
+    exile_sequence = exile_chain["exile_camp_sequence"]
+    if bool(exile_chain["first_exile_wolf"]) != bool(
+        exile_sequence and exile_sequence[0] == "werewolf"
+    ):
+        raise ValueError("first-wolf exile flag must match the exile sequence")
+    expected_next_camp = (
+        exile_sequence[1]
+        if exile_chain["first_exile_wolf"] and len(exile_sequence) > 1
+        else None
+    )
+    if exile_chain["next_exile_after_first_wolf_camp"] != expected_next_camp:
+        raise ValueError("next exile after a first wolf must match the sequence")
+    _validate_vote_transition_conservation(
+        exile_chain["good_npc_vote_transitions"]
+    )
+    _validate_vote_transition_conservation(
+        exile_chain["after_first_wolf_exile_good_npc_vote_transitions"]
+    )
 
 
 def _validate_batch_metric_conservation(metrics: dict[str, object]) -> None:
@@ -1053,9 +1282,59 @@ def _validate_batch_metric_conservation(metrics: dict[str, object]) -> None:
             raise ValueError(
                 f"seer condition winner counts do not conserve {condition}"
             )
+    exile_chain = metrics["cross_day_exile_chain"]
+    if (
+        exile_chain["schema_version"] != CROSS_DAY_EXILE_CHAIN_SCHEMA_VERSION
+        or int(exile_chain["game_count"]) != int(metrics["game_count"])
+    ):
+        raise ValueError("batch cross-day exile-chain schema is incompatible")
+    first_wolf_games = int(exile_chain["first_exile_wolf_game_count"])
+    if (
+        sum(exile_chain["first_exile_wolf_winner_counts"].values())
+        != first_wolf_games
+    ):
+        raise ValueError("first-wolf winner counts do not conserve games")
+    if (
+        int(exile_chain["next_exile_after_first_wolf_count"])
+        + int(exile_chain["no_next_exile_after_first_wolf_count"])
+        != first_wolf_games
+    ):
+        raise ValueError("first-wolf follow-up counts do not conserve games")
+    if sum(exile_chain["next_exile_after_first_wolf_camp_counts"].values()) != int(
+        exile_chain["next_exile_after_first_wolf_count"]
+    ):
+        raise ValueError("next-exile camp counts do not conserve follow-ups")
+    _validate_vote_transition_conservation(
+        exile_chain["good_npc_vote_transitions"]
+    )
+    _validate_vote_transition_conservation(
+        exile_chain["after_first_wolf_exile_good_npc_vote_transitions"]
+    )
+
+
+def _validate_vote_transition_conservation(
+    transitions: dict[str, object],
+) -> None:
+    transition_count = sum(
+        int(transitions[key])
+        for key in VOTE_TRANSITION_COUNT_KEYS
+    )
+    if transition_count != int(transitions["transition_count"]):
+        raise ValueError("cross-day vote transitions do not conserve observations")
+    if int(transitions["previous_correct_count"]) != (
+        int(transitions["correct_to_correct_count"])
+        + int(transitions["correct_to_misvote_count"])
+    ):
+        raise ValueError("previous-correct transition counts do not conserve")
+    if int(transitions["previous_misvote_count"]) != (
+        int(transitions["misvote_to_correct_count"])
+        + int(transitions["misvote_to_misvote_count"])
+    ):
+        raise ValueError("previous-misvote transition counts do not conserve")
 
 
 __all__ = [
+    "CROSS_DAY_EXILE_CHAIN_SCHEMA_VERSION",
     "METRICS_SCHEMA_VERSION",
     "aggregate_batch_metrics",
     "build_game_metrics",

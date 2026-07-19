@@ -75,13 +75,16 @@ backend/.venv/bin/python scripts/simulate_games.py --help
 [BALANCE] winner_reasons={...}; first_exile_camps={...}
 [WITCH] first_night_save=...; second_night_poison=...; accepted_hold=...; poison_wolf_hit=...
 [SEER] fake_campaign=...; fake_elected=...; fake_black_checked_true=...; true_first_exiled=...
+[EXILE-CHAIN] first_wolf_exile=...; next_exile_wolf=...; npc_correct_retention=...; after_first_wolf_retention=...
 ```
 
-完整 JSON 的根级 `metrics` 使用 `agent_town_metrics.v3`，除原有阵营胜率、局长、票熵、好人误票和假预言家采信外，`balance_diagnostics` 还包含终局原因、首放阵营/身份、按出局原因/阵营计数，以及女巫救人、用毒、压毒、建议采信和毒药命中；`seer_claim_balance` 记录真假预言家参选/当选/出局、假验人四类组合和条件胜负。无适用样本的比率是 `null`，不是 0。
+完整 JSON 的根级 `metrics` 使用 `agent_town_metrics.v4`，除原有阵营胜率、局长、票熵、好人误票和假预言家采信外，`balance_diagnostics` 还包含终局原因、首放阵营/身份、按出局原因/阵营计数，以及女巫救人、用毒、压毒、建议采信和毒药命中；`seer_claim_balance` 记录真假预言家链路；`cross_day_exile_chain.v1` 记录首放狼人条件胜负、下一次放逐阵营和非玩家好人 NPC 的四类跨轮选票转移。无适用样本的比率是 `null`，不是 0。
 
 V3.1-L 的 NPC 女巫第一夜本人被刀必定自救，其他合法刀口确定性 99% 使用解药；第二夜有毒且存活时默认毒本人最怀疑的合法目标。玩家或 NPC 在公开正式发言（警上或白天会议）中可明确建议女巫毒单一目标，或以公开信息不足为理由建议压毒；Python 保存 `witch_directive.v1`，女巫按自己的合法怀疑、信任和公开信息独立决定是否采信。含糊多目标、过去用药声明和无理由压毒不会被自动当成可靠指令。
 
 V3.1-M 使用 `fake_seer_campaign.v1` 决定最强 NPC 狼是否参加警长悍跳，不再每局强制参选；参选概率由既有 NPC tuning 和对局 seed 确定。`fake_seer_check_mix.v1` 在合法的队友金水、非狼查杀、非狼金水以及既有高压队友查杀之间混合。狼人只知道谁是狼队友，不读取非狼的预言家/女巫等精确身份；同一 seed 可重放，好人精确身份互换不得改变策略结果。
+
+V3.1-N 的 `cross_day_exile_chain.v1` 是纯赛后 shadow。它可以在 `GAME_OVER` 后用真实阵营评价“投狼后是否继续投狼”和“误投后是否纠正”，但被放逐者的隐藏身份不会因此进入实时 NPC belief、投票器、LLM 或公开 API。下一阶段不得直接消费该真值标签，只能使用当时已经公开的票型、声明、本人 stance 与合法新证据。
 
 默认报告还包含 `belief_state.v2` 影子信念轨迹：证据台账、每次分数变化和 11 名 NPC 的最后信念。公开软证据逐日乘以 `0.75`，公开票型/警徽动作和合法私有知识不衰减；有效私聊只按已保存的结构化目标与方向进入对应 NPC 的私有视角，不解析自由文本。100 局文件可能达到数十 MB，其中包含所有 NPC 依法拥有的赛后私有视角，不要把它直接返回给进行中的游戏客户端。
 
@@ -91,7 +94,7 @@ M04-A 默认还输出 `stance_summary.v1`：每名 NPC 的统一立场变化，�
 [STANCE] mode=shadow; observations=...; alignment=...; unexplained_change=...
 ```
 
-M04-B 把普通非警长白天发言接入 `public_speech_continuity.v1`，计划升级为 `public_speech_plan.v3`；警长票和放逐票仍保留 stance 对照。V3.1-M 后当前模拟结果为 `agent_town_simulation.v10` / `agent_town_simulation_batch.v10`，并继续输出不含私有 belief 内容的 `speech_continuity_metrics.v1` 原因计数：
+M04-B 把普通非警长白天发言接入 `public_speech_continuity.v1`，计划升级为 `public_speech_plan.v3`；警长票和放逐票仍保留 stance 对照。V3.1-N 后当前模拟结果为 `agent_town_simulation.v11` / `agent_town_simulation_batch.v11`，并继续输出不含私有 belief 内容的 `speech_continuity_metrics.v1` 原因计数：
 
 ```text
 [CONTINUITY] controlled_speeches=...; reasons={'stance_aligned': ..., 'new_public_evidence': ..., 'deterministic_variance': ..., 'authorized_claim': ..., 'mandatory_rule_response': ..., 'unscored': ...}

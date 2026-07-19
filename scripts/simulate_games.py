@@ -111,6 +111,11 @@ def main() -> int:
         balance = metrics["balance_diagnostics"]
         witch = balance["witch"]
         seer_balance = metrics["seer_claim_balance"]
+        exile_chain = metrics["cross_day_exile_chain"]
+        npc_vote_transitions = exile_chain["good_npc_vote_transitions"]
+        first_wolf_transitions = exile_chain[
+            "after_first_wolf_exile_good_npc_vote_transitions"
+        ]
         print(
             f"[OK] simulated {report['games_completed']} game(s); "
             f"winner_counts={summary['winner_counts']}; output={args.output}"
@@ -142,6 +147,17 @@ def main() -> int:
             "fake_black_checked_true="
             f"{seer_balance['fake_black_checked_true_seer']}; "
             f"true_first_exiled={seer_balance['true_seer_first_exiled']}"
+        )
+        print(
+            "[EXILE-CHAIN] "
+            "first_wolf_exile="
+            f"{exile_chain['first_exile_wolf_game_count']}; "
+            "next_exile_wolf="
+            f"{_format_rate(exile_chain['next_exile_wolf_rate'])}; "
+            "npc_correct_retention="
+            f"{_format_rate(npc_vote_transitions['correct_retention_rate'])}; "
+            "after_first_wolf_retention="
+            f"{_format_rate(first_wolf_transitions['correct_retention_rate'])}"
         )
         if belief_summary is None:
             print("[BELIEF] detailed trace disabled")

@@ -111,8 +111,8 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
 
-    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-M" not in root_readme:
-        raise SmokeCheckError("root README must identify the active V3.1-M iteration")
+    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-N" not in root_readme:
+        raise SmokeCheckError("root README must identify the active V3.1-N iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
@@ -124,11 +124,11 @@ def check_release_docs() -> None:
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
 
-    if "V3.1-M" not in backend_readme or "V3.1-M" not in roadmap:
-        raise SmokeCheckError("V3.1-M status must stay synchronized across development docs")
+    if "V3.1-N" not in backend_readme or "V3.1-N" not in roadmap:
+        raise SmokeCheckError("V3.1-N status must stay synchronized across development docs")
     if "scripts/simulate_games.py" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
-    if "agent_town_metrics.v3" not in commands:
+    if "agent_town_metrics.v4" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the M02 metrics schema")
     if (
         "belief_state.v2" not in commands
@@ -187,11 +187,16 @@ def check_release_docs() -> None:
         "fake_seer_campaign.v1" not in commands
         or "fake_seer_check_mix.v1" not in commands
         or "[SEER]" not in commands
-        or "agent_town_simulation.v10" not in commands
     ):
         raise SmokeCheckError("COMMANDS.md must document V3.1-M seer diagnostics")
+    if (
+        "cross_day_exile_chain.v1" not in commands
+        or "[EXILE-CHAIN]" not in commands
+        or "agent_town_simulation.v11" not in commands
+    ):
+        raise SmokeCheckError("COMMANDS.md must document V3.1-N exile-chain diagnostics")
 
-    print("[OK] V3.1-M README, commands, and roadmap status are synchronized.")
+    print("[OK] V3.1-N README, commands, and roadmap status are synchronized.")
 
 
 def check_json_files() -> None:
@@ -1581,6 +1586,8 @@ from app.stance import (
     build_stance_snapshot,
 )
 from app.simulation_metrics import (
+    CROSS_DAY_EXILE_CHAIN_SCHEMA_VERSION,
+    _summarize_vote_transition_pairs,
     build_game_metrics,
     summarize_ballot_distribution,
 )
@@ -1628,6 +1635,55 @@ if (
 fully_split_distribution = summarize_ballot_distribution([2, 3, 4])
 if fully_split_distribution["normalized_entropy"] != 1.0:
     raise SystemExit("all-distinct ballots must have normalized entropy one")
+
+def assert_vote_transition_conservation(transitions):
+    transition_keys = {
+        "correct_to_correct_count",
+        "correct_to_misvote_count",
+        "misvote_to_correct_count",
+        "misvote_to_misvote_count",
+    }
+    if (
+        sum(transitions[key] for key in transition_keys)
+        != transitions["transition_count"]
+    ):
+        raise SystemExit("cross-day vote transitions must conserve observations")
+    if transitions["previous_correct_count"] != (
+        transitions["correct_to_correct_count"]
+        + transitions["correct_to_misvote_count"]
+    ):
+        raise SystemExit("cross-day previous-correct transitions must conserve")
+    if transitions["previous_misvote_count"] != (
+        transitions["misvote_to_correct_count"]
+        + transitions["misvote_to_misvote_count"]
+    ):
+        raise SystemExit("cross-day previous-misvote transitions must conserve")
+    for rate_name in ("correct_retention_rate", "misvote_correction_rate"):
+        rate = transitions[rate_name]
+        if rate is not None and not 0.0 <= rate <= 1.0:
+            raise SystemExit("cross-day vote transition rates must stay bounded")
+
+synthetic_transitions = _summarize_vote_transition_pairs(
+    {
+        1: {2: True, 3: True, 4: False, 5: False},
+        2: {2: True, 3: False, 4: True, 5: False},
+    },
+    [(1, 2)],
+)
+if (
+    any(
+        synthetic_transitions[key] != 1
+        for key in {
+            "correct_to_correct_count",
+            "correct_to_misvote_count",
+            "misvote_to_correct_count",
+            "misvote_to_misvote_count",
+        }
+    )
+    or synthetic_transitions["correct_retention_rate"] != 0.5
+    or synthetic_transitions["misvote_correction_rate"] != 0.5
+):
+    raise SystemExit("cross-day transition labels must preserve all four cases")
 
 witch_policy_state = rules.create_wolf_game_state(
     rules.GameStartRequest(
@@ -1941,11 +1997,11 @@ if (
 ):
     raise SystemExit("a simulated game must expose versioned post-game metrics")
 if (
-    SIMULATION_SCHEMA_VERSION != "agent_town_simulation.v10"
-    or BATCH_SCHEMA_VERSION != "agent_town_simulation_batch.v10"
-    or METRICS_SCHEMA_VERSION != "agent_town_metrics.v3"
+    SIMULATION_SCHEMA_VERSION != "agent_town_simulation.v11"
+    or BATCH_SCHEMA_VERSION != "agent_town_simulation_batch.v11"
+    or METRICS_SCHEMA_VERSION != "agent_town_metrics.v4"
 ):
-    raise SystemExit("V3.1-M simulation and metrics schemas must stay explicit")
+    raise SystemExit("V3.1-N simulation and metrics schemas must stay explicit")
 balance_diagnostics = first["metrics"]["balance_diagnostics"]
 if (
     balance_diagnostics["winner_reason"] != first["winner_reason"]
@@ -1980,6 +2036,25 @@ if (
     )
 ):
     raise SystemExit("V3.1-M per-game seer diagnostics must conserve decisions")
+exile_chain = first["metrics"]["cross_day_exile_chain"]
+if (
+    exile_chain["schema_version"] != CROSS_DAY_EXILE_CHAIN_SCHEMA_VERSION
+    or CROSS_DAY_EXILE_CHAIN_SCHEMA_VERSION != "cross_day_exile_chain.v1"
+    or any(
+        camp not in {"good", "werewolf"}
+        for camp in exile_chain["exile_camp_sequence"]
+    )
+    or exile_chain["first_exile_wolf"]
+    != bool(
+        exile_chain["exile_camp_sequence"]
+        and exile_chain["exile_camp_sequence"][0] == "werewolf"
+    )
+):
+    raise SystemExit("V3.1-N per-game exile-chain diagnostics must stay legal")
+assert_vote_transition_conservation(exile_chain["good_npc_vote_transitions"])
+assert_vote_transition_conservation(
+    exile_chain["after_first_wolf_exile_good_npc_vote_transitions"]
+)
 continuity_metrics = first["speech_continuity"]
 continuity_reasons = {
     "stance_aligned",
@@ -2291,6 +2366,30 @@ for rate_name in (
     rate = batch_seer[rate_name]
     if rate is not None and not 0.0 <= rate <= 1.0:
         raise SystemExit("V3.1-M seer diagnostic rates must stay bounded")
+batch_exile_chain = batch["metrics"]["cross_day_exile_chain"]
+if (
+    batch_exile_chain["schema_version"]
+    != CROSS_DAY_EXILE_CHAIN_SCHEMA_VERSION
+    or batch_exile_chain["game_count"] != 6
+    or sum(batch_exile_chain["first_exile_wolf_winner_counts"].values())
+    != batch_exile_chain["first_exile_wolf_game_count"]
+    or (
+        batch_exile_chain["next_exile_after_first_wolf_count"]
+        + batch_exile_chain["no_next_exile_after_first_wolf_count"]
+    )
+    != batch_exile_chain["first_exile_wolf_game_count"]
+    or sum(
+        batch_exile_chain["next_exile_after_first_wolf_camp_counts"].values()
+    )
+    != batch_exile_chain["next_exile_after_first_wolf_count"]
+):
+    raise SystemExit("batch V3.1-N exile-chain diagnostics must conserve games")
+assert_vote_transition_conservation(
+    batch_exile_chain["good_npc_vote_transitions"]
+)
+assert_vote_transition_conservation(
+    batch_exile_chain["after_first_wolf_exile_good_npc_vote_transitions"]
+)
 if (
     batch["belief_schema_version"] != BELIEF_SCHEMA_VERSION
     or batch["belief_summary"]["schema_version"] != BELIEF_SCHEMA_VERSION
@@ -3798,7 +3897,7 @@ print("headless simulation smoke test passed")
         cwd=BACKEND_DIR,
         fail_message="headless deterministic simulation smoke test failed",
     )
-    print("[OK] Simulations, M06-A/B matrices, V3.1-L witch, and V3.1-M seer strategies are deterministic.")
+    print("[OK] Simulations, hidden-information matrices, and V3.1-N cross-day exile diagnostics are deterministic.")
 
 
 def check_backend_search() -> None:
