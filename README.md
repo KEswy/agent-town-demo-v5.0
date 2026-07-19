@@ -37,7 +37,7 @@ V3.1-A 的 100 局规则基线全部合法结束，但只得到好人 6 胜、�
 M02-A 已在可复现模拟上增加独立的赛后指标层：
 
 - `backend/app/simulation_metrics.py` 只接受已经进入 `GAME_OVER` 的状态；真实身份只用于评价已经发生的选择，不会进入实时 API、NPC 上下文或玩家决策。
-- 每局和批量报告使用 `agent_town_metrics.v1`；M02-A 当时升级到 simulation v2，M03-A/B 升级为 v3/v4，M04-A 为 v5，当前 M04-B 为 v6，并完整保留这些指标。
+- 每局和批量报告使用 `agent_town_metrics.v1`；M02-A 当时升级到 simulation v2，M03-A/B 为 v3/v4，M04-A/B 为 v5/v6，当前 M15-A 为 v7，并完整保留这些指标。
 - 指标覆盖阵营胜率、平均局长、警长票熵、逐日放逐票熵、好人正确投狼率/误投好人率、假预言家好人警长票支持率与公开查杀跟票率。
 - 报告按模拟玩家身份、投票者角色和游戏天数聚合；所有比率保留原始分子/分母，无适用样本使用 `null`，不伪装成 0%。
 - 票熵按每张未加权选票计算，归一化口径为 `H / log2(选票数)`；它衡量选择是否集中，不把警长的 1.5 票重复视作多个玩家。
@@ -69,7 +69,7 @@ M03-A 新增 `belief_state.v1`，但暂不让它驱动发言、行动或投票�
 - 好人信念不读取角色表、`PublicClaimState.source`、悍跳内部指定、未公布夜间结算或旧的可变 `suspicion/relationship`；狼人和预言家仍能依法消费自己的队友/查验知识。
 - 模拟结果升级为 `agent_town_simulation.v3`，保存去重证据台账、每次变化引用的证据 ID/权重和 NPC 出局前最后一份信念状态；批量报告提供证据与变化规模摘要。
 - `gameplay_digest` 在采集 shadow 信念前生成。相同 seed 开启/关闭信念轨迹时该摘要完全一致，用于证明影子层没有改变规则结果。
-- 完整轨迹约占 `46MB / 100局`。高容量平衡任务可加 `--no-belief-trace`，只保留规则结果和 M02 指标。
+- 完整 belief 轨迹约占 `46MB / 100局`。高容量平衡任务可加 `--no-belief-trace`，保留规则结果、M02 指标和独立的 M15-A vote shadow；再加 `--no-vote-calibration-trace` 才只保留规则/M02 小报告。
 
 100 局影子基线共记录 11,650 条去重证据和 32,343 次有依据的席位变化，平均每局 116.5 条证据、323.43 次变化，终局平均置信度为 33.26%。其中公开证据 10,209 条、行动者私有证据 358 条、狼队证据 1,083 条。开启影子层后，100 局胜负、身份、阶段、票型、出局和全部 M02 指标与 V3.1-B 逐项一致。
 
@@ -107,7 +107,7 @@ M04-B 让普通非警长 `DAY_MEETING` 成为第一个读取 `stance_summary.v1`
 - 当前发言计划升级为 `public_speech_plan.v3`。除了 v2 的目标、立场、证据、问题、验证和暂定票外，必须给出 `continuity_reason`：`stance_aligned / new_public_evidence / deterministic_variance / authorized_claim / mandatory_rule_response / unscored`。
 - 偏离主导 stance 只能引用本次已选中的新增公开 signal，或命中由内部 seed、`decision_variance` 和 `plan_consistency` 共同决定的可复现个体扰动。合法声明单列为 `authorized_claim`；收到必须回应的公开验人或既有狼队故事线单列为 `mandatory_rule_response`。
 - 规则兜底会主动对齐 stance；LLM 仍可在合法目标、公开证据、声明包和战术白名单内选择策略。私有 belief evidence ID 只进入策略上下文，不会写入公开计划、台词或进行中 API。
-- 模拟升级为 `agent_town_simulation.v6` / `agent_town_simulation_batch.v6`，用 `speech_continuity_metrics.v1` 统计每类原因。该统计不包含私有 belief 内容；M04-A 的警长票和放逐票 shadow 对照继续保留。
+- M04-B 当时把模拟升级为 v6；当前 M15-A 已升级到 `agent_town_simulation.v7` / `agent_town_simulation_batch.v7`，并继续保留 `speech_continuity_metrics.v1`。该统计不包含私有 belief 内容；M04-A 的警长票和放逐票 stance 对照继续保留。
 
 同一组 `20260719–20260818` 共 100 个 seed 产生 2,163 次受控普通发言：1,831 次 `stance_aligned`、141 次 `authorized_claim`、139 次 `mandatory_rule_response`、52 次 `unscored`。规则模拟关闭 LLM，所以 `new_public_evidence / deterministic_variance` 均为 0；这两个分支由合成正反样本覆盖。公开发言未解释变化由 M04-A 基线的 112 次降为 3 次，全部决策的未解释率由 4.78% 降为 1.68%。但好人胜率同时由 6% 降至 2%，好人误投率由 60.95% 升至 64.46%；连续性改善不等于判断质量改善，M15 仍需独立做投票概率校准。
 
@@ -146,6 +146,20 @@ M09-A 为真实 LLM 请求和既有语义校验增加本地、只追加、可离
 - provider 没有返回 `usage` 时 token 样本保持为空，不进行猜测。M09-A 也不写死云端价格；版本化价格与估算成本留给 M09-B。
 
 已有 `llm_validation_failures.jsonl` 继续承担受限的原始语义审计，两份日志用途和敏感等级不同。日常指标只能读取新的脱敏文件；观测写入失败时直接跳过，绝不能影响 Python 规则结果或既有确定性回退。
+
+## V3.1-J 投票概率 shadow M15-A
+
+M15-A 没有替换当前警长票或放逐票，只在离线模拟中于 NPC 投票前构造另一份可解释分布，并在规则完成投票后附上实际目标用于比较：
+
+- `backend/app/vote_calibration.py` 定义 `vote_probability_shadow.v1`，把每个合法候选人的 utility 分成 `belief / public_influence / social / coordination / variance` 五项。belief 只来自该 NPC 的 `belief_state.v2`；普通好人的 coordination 永远为 0，狼人只消费依法知道的队友和狼队策略。
+- 每份观察保存温度、候选概率、熵、top 目标、实际目标的 shadow 概率/排名，以及警长公开归票造成的硬约束。候选概率严格守恒为 1，各分量严格守恒为 total utility。
+- `vote_probability_summary.v1` 按 `sheriff_vote / exile_vote`、投票者阵营及两者交叉汇总个体分布熵、top 概率、实际票命中 shadow top 的比率、实际目标概率/排名和各分量平均绝对值。
+- 逐局轨迹只进入离线 simulation v7 报告，不进入实时 API、LLM、Godot 或规则状态。`gameplay_digest` 在加入 shadow 结果前生成；开启/关闭轨迹必须完全相同。
+- 普通好人对 M06-A 的声明来源、悍跳标记、隐藏身份、未公布夜间结果和组合变体保持逐字段相同；狼人面对队友身份变化则依法改变自己的分布。
+
+seed `20260719–20260818` 的 100 局首份 shadow 基线包含 3,264 次 NPC 观察和 23,209 个候选评估。好人警长票平均归一化个体熵为 87.45%、top 概率为 55.76%；好人放逐票个体熵只有 8.56%、top 概率达到 93.95%，且实际票与 shadow top 一致率为 94.03%。好人放逐概率质量平均只有 34.76% 落在狼人目标、65.24% 落在好人目标，与实际 35.54% 正确投狼率接近。
+
+这些数值说明当前主要问题集中在普通好人放逐分布，而不是好人警长票；它们仍是诊断基线，不是自动平衡阈值。M15-B 应只选择普通好人放逐票作为首个受控消费者，先校准 belief 强度与温度，保留警长票、狼人协同、强私有证据和规则硬约束。
 
 ## 当前版本
 
@@ -497,6 +511,7 @@ agent-town-demo/
       simulation.py
       simulation_metrics.py
       stance.py
+      vote_calibration.py
     config/
       npc_profiles.json
       knowledge_base.json
@@ -728,11 +743,18 @@ backend/.venv/bin/python scripts/check_llm_connection.py
 
 ## V3 进度与下一阶段
 
-V3.1-A 已建立可复现模拟，V3.1-B/M02-A 已建立第一版核心指标，V3.1-C/M03-A 锁住合法证据和变化链，V3.1-D/M03-B 补齐衰减与私聊边界，V3.1-E/M04-A 已完成 shadow 连续性对照，V3.1-F/M04-B 已让普通非警长白天发言受控读取统一 stance，V3.1-G/M06-A 已锁住无权村民投影，V3.1-H/M06-B 已补齐角色授权私有变化，V3.1-I/M09-A 已建立脱敏 LLM 调用与校验汇总。下一步补 M09-B 的版本指纹/成本口径，或进入 M15 多种子投票校准；警长票和放逐票暂不直接消费 stance。
+V3.1-A 至 V3.1-I 已建立可复现模拟、核心指标、合法 belief/stance、受控发言、隐藏信息矩阵和脱敏 LLM 汇总；V3.1-J/M15-A 又完成了警长票/放逐票的五分量 shadow 概率诊断。下一步推荐 M15-B 只让普通好人放逐票受控消费该模型，警长票、狼人票和规则硬约束继续保持原路径；M09-B 的版本指纹/成本口径可在积累真实 LLM 数据后补充。
 
 完整任务、优先级、依赖、工作量和验收口径见独立的 [`V3 改进与开发路线表`](docs/V3_ROADMAP.md)。V2.0 的规则边界在 V3 继续保持：身份、合法行动、投票、出局、警徽与胜负仍由 Python 决定，LLM 只能在合法上下文和结构化契约内进行策略选择与表达。
 
 ## 开发记录
+
+### 2026-07-19 V3.1-J 投票概率 shadow M15-A
+
+- 新增 `vote_probability_shadow.v1`，在每次 NPC 警长票/放逐票前按合法 belief、公开影响、社交、授权狼队协同和确定性个体噪声生成候选分布；规则仍使用原投票函数。
+- 新增 `vote_probability_summary.v1`，按投票类型、投票者阵营和交叉维度汇总熵、top 概率、实际票对照及分量强度；simulation 升级至 v7。
+- 自动化覆盖 schema 严格性、概率/分量守恒、候选顺序、同 seed、shadow on/off gameplay digest、M06-A 全隐藏变体不变，以及狼人授权队友变化。
+- 100 局记录 3,264 次观察：好人警长票/放逐票个体熵分别为 87.45%/8.56%，好人放逐质量仅 34.76% 落在狼人目标，因此 M15-B 应限定为普通好人放逐票。
 
 ### 2026-07-19 V3.1-I 脱敏 LLM 可观测性 M09-A
 

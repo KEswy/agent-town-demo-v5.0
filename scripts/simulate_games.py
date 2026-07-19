@@ -62,6 +62,11 @@ def parse_args() -> argparse.Namespace:
         help="keep beliefs but omit detailed shadow stance continuity traces",
     )
     parser.add_argument(
+        "--no-vote-calibration-trace",
+        action="store_true",
+        help="omit M15-A shadow vote probability traces and batch summary",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         help="optional JSON file; stdout is used when omitted",
@@ -82,6 +87,7 @@ def main() -> int:
             not args.no_belief_trace
             and not args.no_stance_trace
         ),
+        capture_vote_calibration=not args.no_vote_calibration_trace,
     )
     rendered = json.dumps(
         report,
@@ -99,6 +105,7 @@ def main() -> int:
         belief_summary = report["belief_summary"]
         stance_summary = report["stance_summary"]
         continuity_summary = report["speech_continuity_summary"]
+        vote_calibration_summary = report["vote_calibration_summary"]
         good_vote = metrics["good_exile_vote"]
         fake_seer = metrics["fake_seer_acceptance"]
         print(
@@ -139,6 +146,23 @@ def main() -> int:
             f"controlled_speeches={continuity_summary['controlled_speech_count']}; "
             f"reasons={continuity_summary['reason_counts']}"
         )
+        if vote_calibration_summary is None:
+            print("[VOTE-SHADOW] trace disabled")
+        else:
+            exile_shadow = vote_calibration_summary["by_kind"]["exile_vote"]
+            good_alignment = vote_calibration_summary[
+                "good_exile_probability_alignment"
+            ]
+            print(
+                "[VOTE-SHADOW] "
+                f"observations={vote_calibration_summary['observation_count']}; "
+                "exile_entropy="
+                f"{_format_rate(exile_shadow['mean_normalized_entropy'])}; "
+                "actual_top_match="
+                f"{_format_rate(exile_shadow['actual_top_match_rate'])}; "
+                "good_mass_on_wolves="
+                f"{_format_rate(good_alignment['mean_probability_mass_on_wolves'])}"
+            )
     return 0
 
 

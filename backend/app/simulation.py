@@ -34,10 +34,16 @@ from .stance import (
     StanceTraceRecorder,
     aggregate_stance_traces,
 )
+from .vote_calibration import (
+    VOTE_CALIBRATION_SCHEMA_VERSION,
+    VOTE_CALIBRATION_SUMMARY_VERSION,
+    VoteCalibrationTraceRecorder,
+    aggregate_vote_calibration_traces,
+)
 
 
-SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v6"
-BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v6"
+SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v7"
+BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v7"
 PLAYER_POLICY_VERSION = "legal_public_baseline.v1"
 SPEECH_CONTINUITY_METRICS_VERSION = "speech_continuity_metrics.v1"
 DEFAULT_MAX_DAYS = 20
@@ -56,6 +62,7 @@ def run_rule_simulation(
     max_steps: int = DEFAULT_MAX_STEPS,
     capture_beliefs: bool = True,
     capture_stances: bool = True,
+    capture_vote_calibration: bool = True,
 ) -> dict[str, object]:
     """Run one complete rule-only game and return a normalized result."""
 
@@ -91,6 +98,11 @@ def run_rule_simulation(
         if capture_beliefs and capture_stances
         else None
     )
+    vote_calibration_recorder = (
+        VoteCalibrationTraceRecorder()
+        if capture_vote_calibration
+        else None
+    )
     if belief_recorder is not None:
         belief_snapshot = belief_recorder.capture(game_state)
         if stance_recorder is not None and belief_snapshot is not None:
@@ -104,7 +116,17 @@ def run_rule_simulation(
                 )
             if game_state.phase == "GAME_OVER":
                 break
+            pending_vote_capture = (
+                vote_calibration_recorder.capture_before_vote(game_state)
+                if vote_calibration_recorder is not None
+                else None
+            )
             _advance_one_phase(game_state)
+            if vote_calibration_recorder is not None:
+                vote_calibration_recorder.capture_after_vote(
+                    game_state,
+                    pending_vote_capture,
+                )
             if belief_recorder is not None:
                 belief_snapshot = belief_recorder.capture(game_state)
                 if stance_recorder is not None and belief_snapshot is not None:
@@ -128,6 +150,11 @@ def run_rule_simulation(
                 if stance_recorder is not None
                 else None
             ),
+            vote_calibration_trace=(
+                vote_calibration_recorder.build_result()
+                if vote_calibration_recorder is not None
+                else None
+            ),
         )
     finally:
         with rules.GAME_LOCK:
@@ -143,6 +170,7 @@ def run_rule_simulation_batch(
     max_steps: int = DEFAULT_MAX_STEPS,
     capture_beliefs: bool = True,
     capture_stances: bool = True,
+    capture_vote_calibration: bool = True,
 ) -> dict[str, object]:
     """Run sequential seeds and return deterministic per-game and aggregate data."""
 
@@ -162,6 +190,7 @@ def run_rule_simulation_batch(
             max_steps=max_steps,
             capture_beliefs=capture_beliefs,
             capture_stances=capture_stances,
+            capture_vote_calibration=capture_vote_calibration,
         )
         for offset in range(games)
     ]
@@ -188,6 +217,8 @@ def run_rule_simulation_batch(
         "belief_schema_version": BELIEF_SCHEMA_VERSION,
         "stance_schema_version": STANCE_SCHEMA_VERSION,
         "speech_continuity_schema_version": SPEECH_CONTINUITY_METRICS_VERSION,
+        "vote_calibration_schema_version": VOTE_CALIBRATION_SCHEMA_VERSION,
+        "vote_calibration_summary_version": VOTE_CALIBRATION_SUMMARY_VERSION,
         "player_policy_version": PLAYER_POLICY_VERSION,
         "start_seed": start_seed,
         "games_requested": games,
@@ -221,6 +252,11 @@ def run_rule_simulation_batch(
                 for reason in SpeechContinuityReason
             },
         },
+        "vote_calibration_summary": (
+            aggregate_vote_calibration_traces(results)
+            if capture_vote_calibration
+            else None
+        ),
         "games": results,
     }
 
@@ -647,6 +683,7 @@ def build_simulation_result(
     *,
     belief_trace: Optional[dict[str, object]] = None,
     stance_trace: Optional[dict[str, object]] = None,
+    vote_calibration_trace: Optional[dict[str, object]] = None,
 ) -> dict[str, object]:
     """Build a timestamp- and game-id-free result suitable for exact replay."""
 
@@ -728,6 +765,8 @@ def build_simulation_result(
     result["belief_trace"] = belief_trace
     result["stance_schema_version"] = STANCE_SCHEMA_VERSION
     result["stance_trace"] = stance_trace
+    result["vote_calibration_schema_version"] = VOTE_CALIBRATION_SCHEMA_VERSION
+    result["vote_calibration_trace"] = vote_calibration_trace
     result["result_digest"] = _payload_digest(result)
     return result
 
@@ -760,6 +799,8 @@ __all__ = [
     "PLAYER_POLICY_VERSION",
     "SIMULATION_SCHEMA_VERSION",
     "STANCE_SCHEMA_VERSION",
+    "VOTE_CALIBRATION_SCHEMA_VERSION",
+    "VOTE_CALIBRATION_SUMMARY_VERSION",
     "SimulationError",
     "build_simulation_result",
     "run_rule_simulation",

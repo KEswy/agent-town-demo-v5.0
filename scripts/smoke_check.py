@@ -62,6 +62,7 @@ BACKEND_STANCE_FILE = BACKEND_DIR / "app" / "stance.py"
 BACKEND_INVARIANCE_FILE = BACKEND_DIR / "app" / "invariance.py"
 BACKEND_SIMULATION_FILE = BACKEND_DIR / "app" / "simulation.py"
 BACKEND_SIMULATION_METRICS_FILE = BACKEND_DIR / "app" / "simulation_metrics.py"
+BACKEND_VOTE_CALIBRATION_FILE = BACKEND_DIR / "app" / "vote_calibration.py"
 SIMULATION_SCRIPT_FILE = ROOT_DIR / "scripts" / "simulate_games.py"
 LLM_OBSERVABILITY_SCRIPT_FILE = ROOT_DIR / "scripts" / "summarize_llm_observability.py"
 BACKEND_VENV_PYTHON = BACKEND_DIR / ".venv" / "bin" / "python"
@@ -110,8 +111,8 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
 
-    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-I" not in root_readme:
-        raise SmokeCheckError("root README must identify the active V3.1-I iteration")
+    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-J" not in root_readme:
+        raise SmokeCheckError("root README must identify the active V3.1-J iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
@@ -123,8 +124,8 @@ def check_release_docs() -> None:
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
 
-    if "V3.1-I" not in backend_readme or "V3.1-I" not in roadmap:
-        raise SmokeCheckError("V3.1-I status must stay synchronized across development docs")
+    if "V3.1-J" not in backend_readme or "V3.1-J" not in roadmap:
+        raise SmokeCheckError("V3.1-J status must stay synchronized across development docs")
     if "scripts/simulate_games.py" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
     if "agent_town_metrics.v1" not in commands:
@@ -166,8 +167,16 @@ def check_release_docs() -> None:
         or "M09-A" not in commands
     ):
         raise SmokeCheckError("COMMANDS.md must document redacted M09-A observability")
+    if (
+        "vote_probability_shadow.v1" not in commands
+        or "vote_probability_summary.v1" not in commands
+        or "--no-vote-calibration-trace" not in commands
+        or "[VOTE-SHADOW]" not in commands
+        or "M15-A" not in commands
+    ):
+        raise SmokeCheckError("COMMANDS.md must document M15-A vote shadow diagnostics")
 
-    print("[OK] V3.1-I README, commands, and roadmap status are synchronized.")
+    print("[OK] V3.1-J README, commands, and roadmap status are synchronized.")
 
 
 def check_json_files() -> None:
@@ -293,6 +302,7 @@ def check_json_files() -> None:
         BACKEND_INVARIANCE_FILE,
         BACKEND_SIMULATION_FILE,
         BACKEND_SIMULATION_METRICS_FILE,
+        BACKEND_VOTE_CALIBRATION_FILE,
         SIMULATION_SCRIPT_FILE,
         LLM_OBSERVABILITY_SCRIPT_FILE,
     ]:
@@ -318,6 +328,7 @@ def check_backend_compiles() -> None:
             str(BACKEND_INVARIANCE_FILE),
             str(BACKEND_SIMULATION_FILE),
             str(BACKEND_SIMULATION_METRICS_FILE),
+            str(BACKEND_VOTE_CALIBRATION_FILE),
             str(SIMULATION_SCRIPT_FILE),
             str(LLM_OBSERVABILITY_SCRIPT_FILE),
         ],
@@ -1541,6 +1552,8 @@ from app.simulation import (
     SIMULATION_SCHEMA_VERSION,
     SPEECH_CONTINUITY_METRICS_VERSION,
     STANCE_SCHEMA_VERSION as SIMULATION_STANCE_SCHEMA_VERSION,
+    VOTE_CALIBRATION_SCHEMA_VERSION as SIMULATION_VOTE_CALIBRATION_SCHEMA_VERSION,
+    VOTE_CALIBRATION_SUMMARY_VERSION as SIMULATION_VOTE_CALIBRATION_SUMMARY_VERSION,
     _choose_public_player_target,
     run_rule_simulation,
     run_rule_simulation_batch,
@@ -1554,6 +1567,14 @@ from app.stance import (
 from app.simulation_metrics import (
     build_game_metrics,
     summarize_ballot_distribution,
+)
+from app.vote_calibration import (
+    COMPONENT_NAMES as VOTE_CALIBRATION_COMPONENT_NAMES,
+    VOTE_CALIBRATION_MODE,
+    VOTE_CALIBRATION_SCHEMA_VERSION,
+    VOTE_CALIBRATION_SUMMARY_VERSION,
+    VoteProbabilityObservationV1,
+    build_vote_probability_observation,
 )
 
 for public_model in (
@@ -1570,6 +1591,8 @@ for public_model in (
         raise SystemExit("shadow belief traces must not enter live API schemas")
     if "stance_trace" in public_model.model_fields:
         raise SystemExit("shadow stance traces must not enter live API schemas")
+    if "vote_calibration_trace" in public_model.model_fields:
+        raise SystemExit("shadow vote probabilities must not enter live API schemas")
 
 empty_distribution = summarize_ballot_distribution([])
 if empty_distribution["entropy_bits"] is not None:
@@ -1742,6 +1765,66 @@ for change in stance_trace["changes"]:
     ):
         if evidence_id not in evidence_by_id:
             raise SystemExit("stance changes must cite existing belief evidence")
+vote_calibration_trace = first["vote_calibration_trace"]
+if (
+    first["vote_calibration_schema_version"]
+    != VOTE_CALIBRATION_SCHEMA_VERSION
+    or SIMULATION_VOTE_CALIBRATION_SCHEMA_VERSION
+    != VOTE_CALIBRATION_SCHEMA_VERSION
+    or vote_calibration_trace["schema_version"]
+    != VOTE_CALIBRATION_SCHEMA_VERSION
+    or vote_calibration_trace["belief_schema_version"]
+    != BELIEF_SCHEMA_VERSION
+    or vote_calibration_trace["mode"] != VOTE_CALIBRATION_MODE
+    or vote_calibration_trace["observation_count"] <= 0
+):
+    raise SystemExit("a simulation must expose a versioned M15-A vote shadow trace")
+if vote_calibration_trace["candidate_evaluation_count"] != sum(
+    len(observation["candidates"])
+    for observation in vote_calibration_trace["observations"]
+):
+    raise SystemExit("vote shadow candidate evaluations must conserve observations")
+vote_shadow_ids = []
+vote_shadow_kinds = set()
+for observation in vote_calibration_trace["observations"]:
+    VoteProbabilityObservationV1.model_validate(observation)
+    vote_shadow_ids.append(observation["observation_id"])
+    vote_shadow_kinds.add(observation["vote_kind"])
+    if observation["voter_id"] in {
+        candidate["target_id"] for candidate in observation["candidates"]
+    }:
+        raise SystemExit("vote shadow distributions must exclude self votes")
+    if not math.isclose(
+        sum(
+            candidate["probability"]
+            for candidate in observation["candidates"]
+        ),
+        1.0,
+        abs_tol=0.000002,
+    ):
+        raise SystemExit("every vote shadow distribution must conserve probability")
+    for candidate in observation["candidates"]:
+        if not math.isclose(
+            sum(candidate[name] for name in VOTE_CALIBRATION_COMPONENT_NAMES),
+            candidate["total_utility"],
+            abs_tol=0.002,
+        ):
+            raise SystemExit("vote shadow component utilities must conserve totals")
+if len(vote_shadow_ids) != len(set(vote_shadow_ids)):
+    raise SystemExit("vote shadow observation ids must be unique")
+if vote_shadow_kinds != {"sheriff_vote", "exile_vote"}:
+    raise SystemExit("M15-A must observe both sheriff and exile NPC ballots")
+try:
+    VoteProbabilityObservationV1.model_validate(
+        {
+            **vote_calibration_trace["observations"][0],
+            "hidden_role": "werewolf",
+        }
+    )
+except ValueError:
+    pass
+else:
+    raise SystemExit("vote shadow schemas must reject undeclared hidden fields")
 if first["llm_validation_failure_count"] != 0:
     raise SystemExit("rule simulation must not call the LLM")
 good_vote = first["metrics"]["good_exile_vote"]
@@ -1790,6 +1873,74 @@ if (
     or batch["stance_summary"]["game_count"] != 6
 ):
     raise SystemExit("batch simulation must aggregate compatible shadow stances")
+vote_calibration_summary = batch["vote_calibration_summary"]
+if (
+    batch["vote_calibration_schema_version"]
+    != VOTE_CALIBRATION_SCHEMA_VERSION
+    or batch["vote_calibration_summary_version"]
+    != VOTE_CALIBRATION_SUMMARY_VERSION
+    or SIMULATION_VOTE_CALIBRATION_SUMMARY_VERSION
+    != VOTE_CALIBRATION_SUMMARY_VERSION
+    or vote_calibration_summary["schema_version"]
+    != VOTE_CALIBRATION_SUMMARY_VERSION
+    or vote_calibration_summary["trace_schema_version"]
+    != VOTE_CALIBRATION_SCHEMA_VERSION
+    or vote_calibration_summary["mode"] != VOTE_CALIBRATION_MODE
+    or vote_calibration_summary["game_count"] != 6
+    or vote_calibration_summary["observation_count"]
+    != sum(
+        game["vote_calibration_trace"]["observation_count"]
+        for game in batch["games"]
+    )
+):
+    raise SystemExit("batch simulation must aggregate M15-A vote probabilities")
+if set(vote_calibration_summary["by_kind"]) != {
+    "sheriff_vote",
+    "exile_vote",
+} or sum(
+    group["observation_count"]
+    for group in vote_calibration_summary["by_kind"].values()
+) != vote_calibration_summary["observation_count"]:
+    raise SystemExit("vote shadow kind groups must conserve observations")
+if sum(
+    group["observation_count"]
+    for group in vote_calibration_summary["by_voter_camp"].values()
+) != vote_calibration_summary["observation_count"]:
+    raise SystemExit("vote shadow camp groups must conserve observations")
+for vote_kind, camp_groups in vote_calibration_summary[
+    "by_kind_and_voter_camp"
+].items():
+    if sum(
+        group["observation_count"] for group in camp_groups.values()
+    ) != vote_calibration_summary["by_kind"][vote_kind]["observation_count"]:
+        raise SystemExit("nested vote shadow kind/camp groups must conserve observations")
+for group in [
+    *vote_calibration_summary["by_kind"].values(),
+    *vote_calibration_summary["by_voter_camp"].values(),
+]:
+    for rate_name in (
+        "mean_normalized_entropy",
+        "mean_top_probability",
+        "actual_top_match_rate",
+        "mean_actual_target_probability",
+    ):
+        rate = group[rate_name]
+        if rate is not None and not 0.0 <= rate <= 1.0:
+            raise SystemExit("vote shadow probability metrics must stay in range")
+    if set(group["mean_absolute_component_utility"]) != set(
+        VOTE_CALIBRATION_COMPONENT_NAMES
+    ):
+        raise SystemExit("vote shadow summaries must retain every utility component")
+good_shadow_alignment = vote_calibration_summary[
+    "good_exile_probability_alignment"
+]
+if not math.isclose(
+    good_shadow_alignment["probability_mass_on_wolves"]
+    + good_shadow_alignment["probability_mass_on_good"],
+    good_shadow_alignment["observation_count"],
+    abs_tol=0.00002,
+):
+    raise SystemExit("good vote shadow probability mass must conserve observations")
 continuity_summary = batch["speech_continuity_summary"]
 if (
     batch["speech_continuity_schema_version"]
@@ -1891,6 +2042,7 @@ def assert_finite_metrics(value):
         raise SystemExit("metric payload must not contain NaN or infinity")
 
 assert_finite_metrics(batch["metrics"])
+assert_finite_metrics(batch["vote_calibration_summary"])
 if any(game_id.startswith("simulation_") for game_id in rules.GAME_STORE):
     raise SystemExit("completed simulations must be removed from the live game store")
 if rules.HYBRID_INDEX.status()["initialized"]:
@@ -1904,17 +2056,37 @@ compact_batch = run_rule_simulation_batch(
 if (
     compact_batch["belief_summary"] is not None
     or compact_batch["stance_summary"] is not None
+    or compact_batch["vote_calibration_summary"] is None
     or any(
         game["belief_trace"] is not None
         or game["stance_trace"] is not None
+        or game["vote_calibration_trace"] is None
         for game in compact_batch["games"]
     )
 ):
-    raise SystemExit("compact batch mode must omit belief and stance traces")
+    raise SystemExit("belief-off mode must retain the independent M15-A vote shadow")
 if [game["gameplay_digest"] for game in compact_batch["games"]] != [
     game["gameplay_digest"] for game in batch["games"][:2]
 ]:
     raise SystemExit("compact shadow mode must preserve gameplay digests")
+
+without_vote_calibration = run_rule_simulation_batch(
+    20260719,
+    2,
+    capture_vote_calibration=False,
+)
+if (
+    without_vote_calibration["vote_calibration_summary"] is not None
+    or any(
+        game["vote_calibration_trace"] is not None
+        for game in without_vote_calibration["games"]
+    )
+):
+    raise SystemExit("vote-shadow-off mode must omit M15-A trace details")
+if [game["gameplay_digest"] for game in without_vote_calibration["games"]] != [
+    game["gameplay_digest"] for game in batch["games"][:2]
+]:
+    raise SystemExit("M15-A vote shadow capture must not change gameplay digests")
 
 belief_only_batch = run_rule_simulation_batch(
     20260719,
@@ -1990,6 +2162,48 @@ if villager_snapshot != build_belief_snapshot(
     observer_ids=[villager_observer.id],
 ):
     raise SystemExit("villager beliefs must be invariant to unseen role and fake-seer swaps")
+
+left_vote_shadow_state = left.model_copy(deep=True)
+left_vote_shadow_state.phase = "VOTE"
+hidden_vote_shadow_state = hidden_role_swap.model_copy(deep=True)
+hidden_vote_shadow_state.phase = "VOTE"
+vote_shadow_candidate_ids = [
+    character.id
+    for character in left_vote_shadow_state.characters
+    if character.alive
+]
+villager_vote_shadow = build_vote_probability_observation(
+    left_vote_shadow_state,
+    rules.get_character(left_vote_shadow_state, villager_observer.id),
+    vote_kind="exile_vote",
+    candidate_ids=vote_shadow_candidate_ids,
+)
+reordered_villager_vote_shadow = build_vote_probability_observation(
+    left_vote_shadow_state,
+    rules.get_character(left_vote_shadow_state, villager_observer.id),
+    vote_kind="exile_vote",
+    candidate_ids=list(reversed(vote_shadow_candidate_ids)),
+)
+hidden_role_vote_shadow = build_vote_probability_observation(
+    hidden_vote_shadow_state,
+    rules.get_character(hidden_vote_shadow_state, villager_observer.id),
+    vote_kind="exile_vote",
+    candidate_ids=vote_shadow_candidate_ids,
+)
+if villager_vote_shadow != reordered_villager_vote_shadow:
+    raise SystemExit("vote shadow distributions must ignore candidate input order")
+if villager_vote_shadow != hidden_role_vote_shadow:
+    raise SystemExit("good vote shadows must ignore unseen role and fake-seer swaps")
+if any(
+    key in villager_vote_shadow
+    for key in ["role", "camp", "evidence_ledger", "random_seed"]
+):
+    raise SystemExit("vote shadow observations must not serialize hidden truth or evidence")
+if any(
+    candidate["coordination_utility"] != 0.0
+    for candidate in villager_vote_shadow["candidates"]
+):
+    raise SystemExit("good vote shadows must not receive wolf-team coordination")
 
 unpublished_night_swap = left.model_copy(deep=True)
 unpublished_night_swap.night_resolutions = [
@@ -2146,6 +2360,34 @@ m06a_reordered_report = build_hidden_info_invariance_report(
 if m06a_report != m06a_reordered_report:
     raise SystemExit("M06-A reports must be independent of input ordering")
 
+m15a_observer_id = m06a_observer_ids[0]
+m15a_baseline_state = m06a_state.model_copy(deep=True)
+m15a_baseline_state.phase = "VOTE"
+m15a_candidate_ids = [
+    character.id
+    for character in m15a_baseline_state.characters
+    if character.alive
+]
+m15a_baseline_projection = build_vote_probability_observation(
+    m15a_baseline_state,
+    rules.get_character(m15a_baseline_state, m15a_observer_id),
+    vote_kind="exile_vote",
+    candidate_ids=m15a_candidate_ids,
+)
+for variant_id, variant in m06a_variants.items():
+    vote_variant = variant.model_copy(deep=True)
+    vote_variant.phase = "VOTE"
+    vote_projection = build_vote_probability_observation(
+        vote_variant,
+        rules.get_character(vote_variant, m15a_observer_id),
+        vote_kind="exile_vote",
+        candidate_ids=m15a_candidate_ids,
+    )
+    if vote_projection != m15a_baseline_projection:
+        raise SystemExit(
+            f"M15-A good vote shadow leaked hidden M06-A variant: {variant_id}"
+        )
+
 def iter_report_strings(value):
     if isinstance(value, dict):
         for nested in value.values():
@@ -2164,6 +2406,15 @@ if any(
 
 m06a_public_change = m06a_state.model_copy(deep=True)
 m06a_public_change.public_claims[-1].result = "good"
+m15a_public_change_state = m06a_public_change.model_copy(deep=True)
+m15a_public_change_state.phase = "VOTE"
+if build_vote_probability_observation(
+    m15a_public_change_state,
+    rules.get_character(m15a_public_change_state, m15a_observer_id),
+    vote_kind="exile_vote",
+    candidate_ids=m15a_candidate_ids,
+) == m15a_baseline_projection:
+    raise SystemExit("M15-A vote shadow must react to a changed public check result")
 m06a_negative_report = build_hidden_info_invariance_report(
     m06a_state,
     {"public_claim_result_changed": m06a_public_change},
@@ -2898,6 +3149,20 @@ if build_belief_snapshot(
     observer_ids=[wolf_observer.id],
 ):
     raise SystemExit("a wolf observer must retain its authorized teammate knowledge")
+wolf_vote_shadow = build_vote_probability_observation(
+    left_vote_shadow_state,
+    rules.get_character(left_vote_shadow_state, wolf_observer.id),
+    vote_kind="exile_vote",
+    candidate_ids=vote_shadow_candidate_ids,
+)
+changed_wolf_vote_shadow = build_vote_probability_observation(
+    hidden_vote_shadow_state,
+    rules.get_character(hidden_vote_shadow_state, wolf_observer.id),
+    vote_kind="exile_vote",
+    candidate_ids=vote_shadow_candidate_ids,
+)
+if wolf_vote_shadow == changed_wolf_vote_shadow:
+    raise SystemExit("a wolf vote shadow must retain authorized team knowledge")
 
 without_beliefs = run_rule_simulation(20260719, capture_beliefs=False)
 if (
@@ -2945,7 +3210,7 @@ print("headless simulation smoke test passed")
         cwd=BACKEND_DIR,
         fail_message="headless deterministic simulation smoke test failed",
     )
-    print("[OK] Simulations and the M06-A/B hidden-information matrices are deterministic.")
+    print("[OK] Simulations, M06-A/B matrices, and M15-A vote shadows are deterministic.")
 
 
 def check_backend_search() -> None:
