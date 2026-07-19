@@ -51,6 +51,45 @@ backend/.venv/bin/python scripts/check_llm_connection.py
 [OK] deepseek returned: ...
 ```
 
+## 运行 V3 无 HTTP 批量对局
+
+下面的命令直接调用 Python 规则引擎，固定关闭 LLM 和向量 RAG，不启动 FastAPI 或 Godot：
+
+```bash
+backend/.venv/bin/python scripts/simulate_games.py \
+  --seed 20260719 \
+  --games 100 \
+  --output /tmp/agent-town-simulation.json
+```
+
+同一代码、配置、策略版本和 seed 会生成完全相同的逐局结果。可用 `--player-role seer` 等方式固定测试身份；完整选项使用：
+
+```bash
+backend/.venv/bin/python scripts/simulate_games.py --help
+```
+
+写入文件时，终端会同时显示核心 M02 指标，例如：
+
+```text
+[METRICS] good_win_rate=6.0%; exile_entropy=22.6%; good_misvote_rate=61.0%; fake_seer_sheriff_support=48.3%; fake_black_check_follow=41.6%
+```
+
+完整 JSON 的根级 `metrics` 使用 `agent_town_metrics.v1`，包含阵营胜率、平均局长、警长/放逐票熵、好人正确票与误票、假预言家采信代理，以及按玩家身份、投票者角色和天数的聚合。无适用样本的比率是 `null`，不是 0。
+
+默认报告还包含 `belief_state.v1` 影子信念轨迹：证据台账、每次分数变化和 11 名 NPC 的最后信念。100 局文件约 46MB，其中包含所有 NPC 依法拥有的赛后私有视角，不要把它直接返回给进行中的游戏客户端。
+
+只需要胜负和 M02 指标、或者准备运行 1000 局时，可关闭详细信念轨迹：
+
+```bash
+backend/.venv/bin/python scripts/simulate_games.py \
+  --seed 20260719 \
+  --games 1000 \
+  --no-belief-trace \
+  --output /tmp/agent-town-simulation-1000.json
+```
+
+关闭轨迹不会改变 `gameplay_digest`、胜负或指标，只会把每局 `belief_trace` 和批量 `belief_summary` 设为 `null`。
+
 ## 启动后端和 LLM
 
 LLM 会随 FastAPI 后端一起工作：
@@ -94,6 +133,8 @@ godot --editor --path game
 
 ## 运行完整自检
 
+完整 smoke 会短暂运行 Godot headless 资源加载检查，但不会启动编辑器、FastAPI 或常驻进程：
+
 ```bash
 backend/.venv/bin/python scripts/smoke_check.py
 ```
@@ -106,7 +147,7 @@ backend/.venv/bin/python scripts/smoke_check.py
 tail -n 5 backend/data/llm_validation_failures.jsonl
 ```
 
-日志和游戏内“LLM校验失败查看”都会显示 DeepSeek 原始返回，可能带有对局隐藏信息；这是当前调试阶段的预期行为。
+JSONL 日志和游戏结束后的复盘摘要会保留 DeepSeek 原始返回，可能带有对局隐藏信息；进行中的 Godot 对局只显示失败原因与脱敏占位，不展示原始返回。
 
 当前校验按“声明者 → 目标 → 结果”记录验人；例如“5号给8号金水”只会把8号识别为5号的查验目标。旧日志保留修复前的失败原因，新规则只作用于重启后生成的新回答。
 

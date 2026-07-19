@@ -56,6 +56,10 @@ BACKEND_MAIN_FILE = BACKEND_DIR / "app" / "main.py"
 BACKEND_LLM_FILE = BACKEND_DIR / "app" / "llm.py"
 BACKEND_NPC_DECISION_FILE = BACKEND_DIR / "app" / "npc_decision.py"
 BACKEND_NPC_TUNING_FILE = BACKEND_DIR / "app" / "npc_tuning.py"
+BACKEND_BELIEF_FILE = BACKEND_DIR / "app" / "belief.py"
+BACKEND_SIMULATION_FILE = BACKEND_DIR / "app" / "simulation.py"
+BACKEND_SIMULATION_METRICS_FILE = BACKEND_DIR / "app" / "simulation_metrics.py"
+SIMULATION_SCRIPT_FILE = ROOT_DIR / "scripts" / "simulate_games.py"
 BACKEND_VENV_PYTHON = BACKEND_DIR / ".venv" / "bin" / "python"
 MIN_KNOWLEDGE_COUNT = 100
 
@@ -68,6 +72,7 @@ def main() -> int:
         check_llm_adapter,
         check_npc_decision_contracts,
         check_npc_tuning,
+        check_headless_simulation,
         check_backend_search,
         check_resident_chat,
         check_wolf_game_start,
@@ -101,8 +106,8 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
 
-    if not root_readme.startswith("# Agent Town Demo V2.0"):
-        raise SmokeCheckError("root README must identify the V2.0 release")
+    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-C" not in root_readme:
+        raise SmokeCheckError("root README must identify the active V3.1-C iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
@@ -114,7 +119,16 @@ def check_release_docs() -> None:
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
 
-    print("[OK] V2.0 release README and standalone V3 roadmap are synchronized.")
+    if "V3.1-C" not in backend_readme or "V3.1-C" not in roadmap:
+        raise SmokeCheckError("V3.1-C status must stay synchronized across development docs")
+    if "scripts/simulate_games.py" not in commands:
+        raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
+    if "agent_town_metrics.v1" not in commands:
+        raise SmokeCheckError("COMMANDS.md must document the M02 metrics schema")
+    if "belief_state.v1" not in commands or "--no-belief-trace" not in commands:
+        raise SmokeCheckError("COMMANDS.md must document M03 shadow belief handling")
+
+    print("[OK] V3.1-C README, commands, and roadmap status are synchronized.")
 
 
 def check_json_files() -> None:
@@ -234,6 +248,10 @@ def check_json_files() -> None:
         BACKEND_LLM_FILE,
         BACKEND_NPC_DECISION_FILE,
         BACKEND_NPC_TUNING_FILE,
+        BACKEND_BELIEF_FILE,
+        BACKEND_SIMULATION_FILE,
+        BACKEND_SIMULATION_METRICS_FILE,
+        SIMULATION_SCRIPT_FILE,
     ]:
         if "\ufffd" in path.read_text(encoding="utf-8"):
             raise SmokeCheckError(f"Unicode replacement character found in {path.relative_to(ROOT_DIR)}")
@@ -251,6 +269,10 @@ def check_backend_compiles() -> None:
             str(BACKEND_LLM_FILE),
             str(BACKEND_NPC_DECISION_FILE),
             str(BACKEND_NPC_TUNING_FILE),
+            str(BACKEND_BELIEF_FILE),
+            str(BACKEND_SIMULATION_FILE),
+            str(BACKEND_SIMULATION_METRICS_FILE),
+            str(SIMULATION_SCRIPT_FILE),
         ],
         cwd=ROOT_DIR,
         fail_message="backend Python files failed to compile",
@@ -1054,6 +1076,429 @@ print("NPC tuning smoke test passed")
     print("[OK] NPC tuning is strict, layered, and snapshotted per game.")
 
 
+def check_headless_simulation() -> None:
+    python_bin = BACKEND_VENV_PYTHON if BACKEND_VENV_PYTHON.exists() else Path(sys.executable)
+    smoke_code = r'''
+import os
+import math
+import random
+
+os.environ["AGENT_TOWN_DISABLE_VECTOR_RAG"] = "1"
+
+from app import main as rules
+from app.belief import (
+    BELIEF_MODE,
+    BELIEF_SCHEMA_VERSION,
+    build_belief_snapshot,
+)
+from app.simulation import (
+    BATCH_SCHEMA_VERSION,
+    BELIEF_SCHEMA_VERSION as SIMULATION_BELIEF_SCHEMA_VERSION,
+    METRICS_SCHEMA_VERSION,
+    SIMULATION_SCHEMA_VERSION,
+    _choose_public_player_target,
+    run_rule_simulation,
+    run_rule_simulation_batch,
+)
+from app.simulation_metrics import (
+    build_game_metrics,
+    summarize_ballot_distribution,
+)
+
+for public_model in (
+    rules.GameStartRequest,
+    rules.GameStartResponse,
+    rules.GameStateResponse,
+    rules.GameSummaryResponse,
+):
+    if "random_seed" in public_model.model_fields:
+        raise SystemExit("the private game seed must not enter a public API schema")
+    if "metrics" in public_model.model_fields:
+        raise SystemExit("post-game simulation metrics must not enter live API schemas")
+    if "belief_trace" in public_model.model_fields:
+        raise SystemExit("shadow belief traces must not enter live API schemas")
+
+empty_distribution = summarize_ballot_distribution([])
+if empty_distribution["entropy_bits"] is not None:
+    raise SystemExit("an empty ballot sample must use null rather than zero entropy")
+unanimous_distribution = summarize_ballot_distribution([2, 2, 2])
+if (
+    unanimous_distribution["entropy_bits"] != 0.0
+    or unanimous_distribution["normalized_entropy"] != 0.0
+    or unanimous_distribution["effective_target_count"] != 1.0
+):
+    raise SystemExit("a unanimous ballot sample must have zero entropy")
+fully_split_distribution = summarize_ballot_distribution([2, 3, 4])
+if fully_split_distribution["normalized_entropy"] != 1.0:
+    raise SystemExit("all-distinct ballots must have normalized entropy one")
+
+first = run_rule_simulation(20260719)
+random.seed(11)
+replayed = run_rule_simulation(20260719)
+random.seed(999999)
+replayed_again = run_rule_simulation(20260719)
+if first != replayed or first != replayed_again:
+    raise SystemExit("the same explicit seed must replay the exact normalized result")
+if first["winner"] not in {"good", "werewolf"}:
+    raise SystemExit("a simulated game must reach a legal terminal winner")
+if (
+    first["schema_version"] != SIMULATION_SCHEMA_VERSION
+    or first["metrics_schema_version"] != METRICS_SCHEMA_VERSION
+    or first["metrics"]["schema_version"] != METRICS_SCHEMA_VERSION
+    or not first["metrics"]["post_game_only"]
+):
+    raise SystemExit("a simulated game must expose versioned post-game metrics")
+belief_trace = first["belief_trace"]
+if (
+    first["belief_schema_version"] != BELIEF_SCHEMA_VERSION
+    or SIMULATION_BELIEF_SCHEMA_VERSION != BELIEF_SCHEMA_VERSION
+    or belief_trace["schema_version"] != BELIEF_SCHEMA_VERSION
+    or belief_trace["mode"] != BELIEF_MODE
+):
+    raise SystemExit("a simulated game must expose a versioned shadow belief trace")
+if belief_trace["capture_count"] != len(first["phase_trace"]):
+    raise SystemExit("belief snapshots must cover every simulated transition")
+if len(belief_trace["final_states"]) != 11:
+    raise SystemExit("belief trace must retain one final state for every NPC")
+evidence_by_id = {
+    evidence["evidence_id"]: evidence
+    for evidence in belief_trace["evidence_ledger"]
+}
+if len(evidence_by_id) != len(belief_trace["evidence_ledger"]):
+    raise SystemExit("belief evidence ids must be unique")
+for evidence in evidence_by_id.values():
+    if evidence["visibility"] == "public" and evidence["observer_ids"]:
+        raise SystemExit("public belief evidence must not carry private observers")
+    if evidence["visibility"] != "public" and len(evidence["observer_ids"]) != 1:
+        raise SystemExit("private belief evidence must identify exactly one legal observer")
+for change in belief_trace["changes"]:
+    for contribution in change["added_contributions"]:
+        if contribution["evidence_id"] not in evidence_by_id:
+            raise SystemExit("every belief change must cite an existing evidence id")
+    if change["removed_evidence_ids"]:
+        raise SystemExit("the first belief ledger must be append-only")
+for actor_state in belief_trace["final_states"]:
+    if len(actor_state["seats"]) != 11:
+        raise SystemExit("each NPC belief state must cover the other eleven seats")
+    for seat in actor_state["seats"]:
+        if not -100 <= seat["suspicion_score"] <= 100:
+            raise SystemExit("belief suspicion scores must stay in range")
+        if not 0.0 <= seat["confidence"] <= 1.0:
+            raise SystemExit("belief confidence must stay in range")
+        for contribution in seat["contributions"]:
+            evidence = evidence_by_id[contribution["evidence_id"]]
+            if (
+                evidence["visibility"] != "public"
+                and actor_state["actor_id"] not in evidence["observer_ids"]
+            ):
+                raise SystemExit("an NPC belief consumed another actor's private evidence")
+if first["llm_validation_failure_count"] != 0:
+    raise SystemExit("rule simulation must not call the LLM")
+good_vote = first["metrics"]["good_exile_vote"]
+if good_vote["ballot_count"] != (
+    good_vote["correct_wolf_target_count"]
+    + good_vote["misvote_good_target_count"]
+):
+    raise SystemExit("good-vote correctness counts must conserve ballots")
+for rate_name in (
+    "correct_wolf_target_rate",
+    "misvote_good_target_rate",
+):
+    rate = good_vote[rate_name]
+    if rate is not None and not 0.0 <= rate <= 1.0:
+        raise SystemExit("good-vote rates must stay between zero and one")
+for vote_kind in ("sheriff_vote", "exile_vote"):
+    entropy = first["metrics"][vote_kind]["mean_normalized_entropy"]
+    if entropy is not None and not 0.0 <= entropy <= 1.0:
+        raise SystemExit("normalized vote entropy must stay between zero and one")
+if any(
+    not isinstance(ballot["round"], int)
+    for ballot in first["sheriff_ballots"]
+):
+    raise SystemExit("sheriff ballots must retain their election round")
+
+batch = run_rule_simulation_batch(20260719, 6)
+if batch["games_completed"] != 6:
+    raise SystemExit("batch simulation did not complete every requested game")
+if (
+    batch["schema_version"] != BATCH_SCHEMA_VERSION
+    or batch["metrics_schema_version"] != METRICS_SCHEMA_VERSION
+    or batch["metrics"]["schema_version"] != METRICS_SCHEMA_VERSION
+):
+    raise SystemExit("batch simulation must expose compatible metric versions")
+if (
+    batch["belief_schema_version"] != BELIEF_SCHEMA_VERSION
+    or batch["belief_summary"]["schema_version"] != BELIEF_SCHEMA_VERSION
+    or batch["belief_summary"]["mode"] != BELIEF_MODE
+    or batch["belief_summary"]["game_count"] != 6
+):
+    raise SystemExit("batch simulation must aggregate compatible shadow beliefs")
+if [game["seed"] for game in batch["games"]] != list(range(20260719, 20260725)):
+    raise SystemExit("batch simulation must preserve its sequential seed range")
+if sum(batch["summary"]["winner_counts"].values()) != 6:
+    raise SystemExit("batch winner counts must add up to the completed game count")
+if sum(
+    group["game_count"]
+    for group in batch["metrics"]["by_player_role"].values()
+) != 6:
+    raise SystemExit("player-role metric groups must cover every simulated game")
+if sum(
+    group["ballot_count"]
+    for group in batch["metrics"]["by_voter_role"].values()
+) != batch["metrics"]["exile_vote"]["ballot_count"]:
+    raise SystemExit("voter-role metric groups must cover every exile ballot")
+if sum(
+    day["ballot_count"]
+    for day in batch["metrics"]["by_day"].values()
+) != batch["metrics"]["exile_vote"]["ballot_count"]:
+    raise SystemExit("day metric groups must cover every exile ballot")
+batch_good_vote = batch["metrics"]["good_exile_vote"]
+if batch_good_vote["ballot_count"] != (
+    batch_good_vote["correct_wolf_target_count"]
+    + batch_good_vote["misvote_good_target_count"]
+):
+    raise SystemExit("batch good-vote metric counts must conserve ballots")
+fake_metrics = batch["metrics"]["fake_seer_acceptance"]
+for rate_name in (
+    "public_claim_rate",
+    "election_rate",
+    "good_sheriff_support_rate",
+    "good_black_check_follow_rate",
+):
+    rate = fake_metrics[rate_name]
+    if rate is not None and not 0.0 <= rate <= 1.0:
+        raise SystemExit("fake-seer acceptance rates must stay between zero and one")
+for game in batch["games"]:
+    fake = game["metrics"]["fake_seer_acceptance"]
+    for denominator_name, rate_name in (
+        ("eligible_good_sheriff_ballots", "good_sheriff_support_rate"),
+        ("eligible_good_exile_ballots", "good_black_check_follow_rate"),
+    ):
+        if (fake[denominator_name] == 0) != (fake[rate_name] is None):
+            raise SystemExit("empty metric samples must map to null rates exactly")
+
+def assert_finite_metrics(value):
+    if isinstance(value, dict):
+        for nested in value.values():
+            assert_finite_metrics(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            assert_finite_metrics(nested)
+    elif isinstance(value, float) and not math.isfinite(value):
+        raise SystemExit("metric payload must not contain NaN or infinity")
+
+assert_finite_metrics(batch["metrics"])
+if any(game_id.startswith("simulation_") for game_id in rules.GAME_STORE):
+    raise SystemExit("completed simulations must be removed from the live game store")
+if rules.HYBRID_INDEX.status()["initialized"]:
+    raise SystemExit("rule simulation must not initialize vector RAG")
+
+compact_batch = run_rule_simulation_batch(
+    20260719,
+    2,
+    capture_beliefs=False,
+)
+if compact_batch["belief_summary"] is not None or any(
+    game["belief_trace"] is not None
+    for game in compact_batch["games"]
+):
+    raise SystemExit("compact batch mode must omit detailed belief traces")
+if [game["gameplay_digest"] for game in compact_batch["games"]] != [
+    game["gameplay_digest"] for game in batch["games"][:2]
+]:
+    raise SystemExit("compact belief mode must preserve gameplay digests")
+
+request = rules.GameStartRequest(
+    player_name="确定性测试玩家",
+    player_role="villager",
+    enable_llm=False,
+    enable_rag=False,
+)
+left = rules.create_wolf_game_state(
+    request,
+    game_id="seed_replay_left",
+    random_seed=314159,
+)
+right = rules.create_wolf_game_state(
+    request,
+    game_id="seed_replay_right",
+    random_seed=314159,
+)
+try:
+    build_game_metrics(left)
+except ValueError:
+    pass
+else:
+    raise SystemExit("true-role metrics must reject an in-progress game state")
+if [character.role for character in left.characters] != [
+    character.role for character in right.characters
+]:
+    raise SystemExit("role assignment must depend on the explicit seed, not game id")
+
+villager_observer = next(
+    character
+    for character in left.characters
+    if not character.is_player and character.role == "villager"
+)
+villager_snapshot = build_belief_snapshot(
+    left,
+    observer_ids=[villager_observer.id],
+)
+hidden_role_swap = left.model_copy(deep=True)
+hidden_wolf = next(
+    character
+    for character in hidden_role_swap.characters
+    if not character.is_player and character.role == "werewolf"
+)
+hidden_good = next(
+    character
+    for character in hidden_role_swap.characters
+    if (
+        not character.is_player
+        and character.camp == "good"
+        and character.id != villager_observer.id
+    )
+)
+hidden_wolf.role, hidden_good.role = hidden_good.role, hidden_wolf.role
+hidden_wolf.camp, hidden_good.camp = hidden_good.camp, hidden_wolf.camp
+hidden_role_swap.wolf_fake_seer_id = hidden_good.id
+if villager_snapshot != build_belief_snapshot(
+    hidden_role_swap,
+    observer_ids=[villager_observer.id],
+):
+    raise SystemExit("villager beliefs must be invariant to unseen role and fake-seer swaps")
+
+unpublished_night_swap = left.model_copy(deep=True)
+unpublished_night_swap.night_resolutions = [
+    rules.NightResolutionState(
+        day=1,
+        attacked_target_id=hidden_wolf.id,
+        protected_ids=[hidden_good.id],
+        saved_target_id=hidden_wolf.id,
+        poisoned_target_id=hidden_good.id,
+        dead_character_ids=[hidden_good.id],
+    )
+]
+unpublished_night_swap.pending_first_night_eliminations = [hidden_good.id]
+if villager_snapshot != build_belief_snapshot(
+    unpublished_night_swap,
+    observer_ids=[villager_observer.id],
+):
+    raise SystemExit("villager beliefs must ignore unpublished night outcomes")
+
+public_claim_left = left.model_copy(deep=True)
+public_claim_left.public_claims = [
+    rules.PublicClaimState(
+        day=1,
+        character_id=hidden_wolf.id,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=hidden_good.id,
+        result="werewolf",
+        source="internal_true_source",
+    )
+]
+public_claim_right = public_claim_left.model_copy(deep=True)
+public_claim_right.public_claims[0].source = "internal_fake_source"
+claim_snapshot = build_belief_snapshot(
+    public_claim_left,
+    observer_ids=[villager_observer.id],
+)
+if claim_snapshot != build_belief_snapshot(
+    public_claim_right,
+    observer_ids=[villager_observer.id],
+):
+    raise SystemExit("beliefs must ignore the hidden source label of a public claim")
+if claim_snapshot == villager_snapshot:
+    raise SystemExit("a new public claim must produce a traceable belief change")
+public_claim_hidden_swap = public_claim_left.model_copy(deep=True)
+claim_hidden_wolf = rules.get_character(public_claim_hidden_swap, hidden_wolf.id)
+claim_hidden_good = rules.get_character(public_claim_hidden_swap, hidden_good.id)
+claim_hidden_wolf.role, claim_hidden_good.role = (
+    claim_hidden_good.role,
+    claim_hidden_wolf.role,
+)
+claim_hidden_wolf.camp, claim_hidden_good.camp = (
+    claim_hidden_good.camp,
+    claim_hidden_wolf.camp,
+)
+if claim_snapshot != build_belief_snapshot(
+    public_claim_hidden_swap,
+    observer_ids=[villager_observer.id],
+):
+    raise SystemExit("public-claim beliefs must not inspect claimant or target truth")
+
+legacy_state_noise = left.model_copy(deep=True)
+legacy_observer = rules.get_character(legacy_state_noise, villager_observer.id)
+legacy_observer.suspicion = {
+    str(character.id): 99
+    for character in legacy_state_noise.characters
+    if character.id != legacy_observer.id
+}
+for relationship in legacy_observer.relationships.values():
+    relationship["trust"] = 0.01
+if villager_snapshot != build_belief_snapshot(
+    legacy_state_noise,
+    observer_ids=[villager_observer.id],
+):
+    raise SystemExit("shadow beliefs must be derived from evidence, not legacy mutable scores")
+
+wolf_observer = next(
+    character
+    for character in left.characters
+    if (
+        not character.is_player
+        and character.role == "werewolf"
+        and character.id not in {hidden_wolf.id, hidden_good.id}
+    )
+)
+if build_belief_snapshot(
+    left,
+    observer_ids=[wolf_observer.id],
+) == build_belief_snapshot(
+    hidden_role_swap,
+    observer_ids=[wolf_observer.id],
+):
+    raise SystemExit("a wolf observer must retain its authorized teammate knowledge")
+
+without_beliefs = run_rule_simulation(20260719, capture_beliefs=False)
+if without_beliefs["belief_trace"] is not None:
+    raise SystemExit("the shadow-off regression run must omit its belief trace")
+if first["gameplay_digest"] != without_beliefs["gameplay_digest"]:
+    raise SystemExit("shadow belief capture must not change any gameplay outcome")
+
+left.phase = "VOTE"
+choice_before_hidden_swap = _choose_public_player_target(left, "hidden_swap_check")
+hidden_swap = left.model_copy(deep=True)
+wolf = next(
+    character
+    for character in hidden_swap.characters
+    if not character.is_player and character.role == "werewolf"
+)
+good = next(
+    character
+    for character in hidden_swap.characters
+    if not character.is_player and character.camp == "good"
+)
+wolf.role, good.role = good.role, wolf.role
+wolf.camp, good.camp = good.camp, wolf.camp
+choice_after_hidden_swap = _choose_public_player_target(
+    hidden_swap,
+    "hidden_swap_check",
+)
+if choice_before_hidden_swap != choice_after_hidden_swap:
+    raise SystemExit("good-player policy must be invariant to unseen NPC role swaps")
+
+print("headless simulation smoke test passed")
+'''
+    run_command(
+        [str(python_bin), "-c", smoke_code],
+        cwd=BACKEND_DIR,
+        fail_message="headless deterministic simulation smoke test failed",
+    )
+    print("[OK] Simulations, metrics, and legal-perspective shadow beliefs are deterministic.")
+
+
 def check_backend_search() -> None:
     python_bin = BACKEND_VENV_PYTHON if BACKEND_VENV_PYTHON.exists() else Path(sys.executable)
     smoke_code = """
@@ -1316,7 +1761,9 @@ witch_private = get_wolf_game_state(forced_witch_response.game_id).player_privat
 if not witch_private.witch_antidote_available or not witch_private.witch_poison_available:
     raise SystemExit("player witch should receive both potion resources")
 
-response = start_wolf_game(GameStartRequest(player_name="测试玩家"))
+response = start_wolf_game(
+    GameStartRequest(player_name="测试玩家", enable_rag=True)
+)
 if response.day != 1 or response.phase != "NIGHT":
     raise SystemExit("new game should start at day 1 NIGHT")
 if len(response.characters) != 12:
@@ -2546,6 +2993,7 @@ if len(position_signals) != 1 or position_summary not in position_signals[0].sum
 rag_position_state = make_rule_test_game(
     ["villager", "villager", "villager", "villager"]
 )
+rag_position_state.rag_enabled = True
 rag_position = PublicPositionV1(
     speaker_id=2,
     day=1,
@@ -4917,17 +5365,17 @@ wolf_strategy_baseline_state = make_rule_test_game(
         "seer", "witch", "hunter", "guard", "villager", "villager", "villager",
     ]
 )
-original_wolf_strategy_game_id = wolf_strategy_baseline_state.game_id
+original_wolf_strategy_seed = wolf_strategy_baseline_state.random_seed
 observed_low_pressure_strategies = set()
 for seed_index in range(1, 121):
-    wolf_strategy_baseline_state.game_id = "wolf_strategy_" + ("x" * seed_index)
+    wolf_strategy_baseline_state.random_seed = seed_index
     observed_low_pressure_strategies.add(
         main_module.choose_wolf_team_vote_strategy(
             wolf_strategy_baseline_state,
             "exile",
         )
     )
-wolf_strategy_baseline_state.game_id = original_wolf_strategy_game_id
+wolf_strategy_baseline_state.random_seed = original_wolf_strategy_seed
 if not {"consolidate", "split_cover"}.issubset(observed_low_pressure_strategies):
     raise SystemExit("low-pressure wolf teams must reach both consolidation and split-cover branches")
 
@@ -5306,17 +5754,17 @@ if (
     <= deception_probabilities_before_claim.get(framed_good.id, 0.0)
 ):
     raise SystemExit("a persuasive public black check should raise a good listener's wrong-vote probability")
-original_deception_game_id = deception_vote_state.game_id
+original_deception_seed = deception_vote_state.random_seed
 deception_seed_choices = set()
 for seed_index in range(1, 161):
-    deception_vote_state.game_id = "deception_vote_seed_" + ("x" * seed_index)
+    deception_vote_state.random_seed = seed_index
     deception_seed_choices.add(
         main_module.choose_npc_vote_target(
             deception_vote_state,
             susceptible_good,
         )
     )
-deception_vote_state.game_id = original_deception_game_id
+deception_vote_state.random_seed = original_deception_seed
 if framed_good.id not in deception_seed_choices:
     raise SystemExit("a good NPC must sometimes believe a wolf lie and cast a wrong vote")
 deceived_reason = main_module.build_npc_vote_reason(
@@ -5563,10 +6011,10 @@ natural_good_voters = [
     for character in natural_sheriff_state.characters
     if character.camp == "good" and character.id not in natural_candidate_ids
 ]
-original_natural_game_id = natural_sheriff_state.game_id
+original_natural_seed = natural_sheriff_state.random_seed
 natural_good_choices = set()
 for seed_index in range(1, 121):
-    natural_sheriff_state.game_id = "natural_sheriff_seed_" + ("x" * seed_index)
+    natural_sheriff_state.random_seed = seed_index
     for voter in natural_good_voters:
         probabilities = main_module.build_npc_sheriff_vote_probabilities(
             natural_sheriff_state,
@@ -5582,7 +6030,7 @@ for seed_index in range(1, 121):
                 natural_candidate_ids,
             )
         )
-natural_sheriff_state.game_id = original_natural_game_id
+natural_sheriff_state.random_seed = original_natural_seed
 if not set(natural_candidate_ids).issubset(natural_good_choices):
     raise SystemExit("across reproducible game ids, both fake and true seers must receive good votes")
 received_gold_adjustment = main_module.get_received_seer_check_sheriff_adjustment(
@@ -5972,17 +6420,17 @@ if (
     raise SystemExit("a trusted fake seer's public black check should raise pressure on the true seer")
 if deceived_meeting_probabilities[meeting_fake_seer.id] <= 0.0:
     raise SystemExit("competing public seers must remain probabilistic rather than hidden-role locked")
-original_fake_checks_game_id = fake_checks_true_state.game_id
+original_fake_checks_seed = fake_checks_true_state.random_seed
 deceived_seed_choices = set()
 for seed_index in range(1, 161):
-    fake_checks_true_state.game_id = "fake_checks_true_seed_" + ("x" * seed_index)
+    fake_checks_true_state.random_seed = seed_index
     deceived_seed_choices.add(
         main_module.choose_npc_vote_target(
             fake_checks_true_state,
             deceived_meeting_voter,
         )
     )
-fake_checks_true_state.game_id = original_fake_checks_game_id
+fake_checks_true_state.random_seed = original_fake_checks_seed
 if meeting_true_seer.id not in deceived_seed_choices:
     raise SystemExit("a good NPC must sometimes believe a fake seer and vote out the true seer")
 deceived_true_seer_reason = main_module.build_npc_vote_reason(

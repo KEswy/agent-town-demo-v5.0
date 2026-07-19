@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 import random
@@ -120,6 +121,7 @@ NPC_NAMES = [
     "奇异博士",
 ]
 FIXED_NPC_COUNT = 11
+MAX_GAME_RANDOM_SEED = (1 << 63) - 1
 
 NPC_PERSONALITIES = {
     "梅西": {
@@ -631,6 +633,7 @@ class SheriffView(BaseModel):
 
 class WolfGameState(BaseModel):
     game_id: str
+    random_seed: int = Field(default=0, ge=0, le=MAX_GAME_RANDOM_SEED)
     day: int
     phase: str
     player_character_id: int
@@ -1066,57 +1069,9 @@ def get_rag_status() -> RagStatusResponse:
 
 @app.post("/api/game/start", response_model=GameStartResponse)
 def start_wolf_game(request: GameStartRequest) -> GameStartResponse:
-    if request.npc_count != FIXED_NPC_COUNT:
-        raise HTTPException(
-            status_code=400,
-            detail="当前版本固定为 1 名玩家 + 11 名 NPC。",
-        )
-
-    role_pool = build_role_pool(request.roles)
-    total_character_count = request.npc_count + 1
-    if len(role_pool) != total_character_count:
-        raise HTTPException(
-            status_code=400,
-            detail=f"身份数量必须等于角色总数 {total_character_count}。",
-        )
-
-    requested_player_role = request.player_role.strip().lower()
-    if requested_player_role in {"", "random"}:
-        random.shuffle(role_pool)
-    else:
-        if requested_player_role not in CAMP_BY_ROLE:
-            raise HTTPException(status_code=400, detail=f"未知玩家身份：{request.player_role}")
-        if requested_player_role not in role_pool:
-            raise HTTPException(status_code=400, detail="指定的玩家身份不在本局身份池中。")
-        role_pool.remove(requested_player_role)
-        random.shuffle(role_pool)
-        role_pool.insert(0, requested_player_role)
-    now = datetime.now(timezone.utc).isoformat()
-
     with GAME_LOCK:
         game_id = build_game_id()
-        characters = build_characters(request.player_name, role_pool)
-        game_state = WolfGameState(
-            game_id=game_id,
-            day=1,
-            phase="NIGHT",
-            player_character_id=1,
-            characters=characters,
-            public_logs=["游戏开始，12 名角色已入场。", "第 1 夜开始。"],
-            player_private_info={},
-            llm_enabled=(
-                request.enable_llm
-                and bool(LLM_CLIENT.status()["enabled"])
-                and bool(LLM_CLIENT.status()["configured"])
-            ),
-            rag_enabled=request.enable_rag,
-            created_at=now,
-            updated_at=now,
-        )
-        game_state.wolf_fake_seer_id = choose_designated_fake_seer(game_state.characters)
-        initialize_role_resources(game_state)
-        ensure_npc_night_actions(game_state)
-        game_state.player_private_info = build_player_private_info_dict(game_state)
+        game_state = create_wolf_game_state(request, game_id=game_id)
         GAME_STORE[game_id] = game_state
 
     player = get_character(game_state, game_state.player_character_id)
@@ -1132,6 +1087,84 @@ def start_wolf_game(request: GameStartRequest) -> GameStartResponse:
         ),
         llm_enabled=game_state.llm_enabled,
     )
+
+
+def create_wolf_game_state(
+    request: GameStartRequest,
+    *,
+    game_id: str,
+    random_seed: Optional[int] = None,
+) -> WolfGameState:
+    """Create one rule state without starting HTTP or mutating ``GAME_STORE``.
+
+    The public start API intentionally does not accept or reveal the seed: a
+    player who knew it could reconstruct the hidden role shuffle. Headless
+    development tools may inject a seed through this internal function.
+    """
+    if request.npc_count != FIXED_NPC_COUNT:
+        raise HTTPException(
+            status_code=400,
+            detail="当前版本固定为 1 名玩家 + 11 名 NPC。",
+        )
+
+    role_pool = build_role_pool(request.roles)
+    total_character_count = request.npc_count + 1
+    if len(role_pool) != total_character_count:
+        raise HTTPException(
+            status_code=400,
+            detail=f"身份数量必须等于角色总数 {total_character_count}。",
+        )
+
+    selected_seed = (
+        random.SystemRandom().randrange(MAX_GAME_RANDOM_SEED + 1)
+        if random_seed is None
+        else int(random_seed)
+    )
+    if selected_seed < 0 or selected_seed > MAX_GAME_RANDOM_SEED:
+        raise ValueError(
+            f"random_seed must be between 0 and {MAX_GAME_RANDOM_SEED}"
+        )
+
+    requested_player_role = request.player_role.strip().lower()
+    if requested_player_role in {"", "random"}:
+        deterministic_seed_shuffle(role_pool, selected_seed, "role_pool:random")
+    else:
+        if requested_player_role not in CAMP_BY_ROLE:
+            raise HTTPException(status_code=400, detail=f"未知玩家身份：{request.player_role}")
+        if requested_player_role not in role_pool:
+            raise HTTPException(status_code=400, detail="指定的玩家身份不在本局身份池中。")
+        role_pool.remove(requested_player_role)
+        deterministic_seed_shuffle(
+            role_pool,
+            selected_seed,
+            f"role_pool:player_role:{requested_player_role}",
+        )
+        role_pool.insert(0, requested_player_role)
+    now = datetime.now(timezone.utc).isoformat()
+    characters = build_characters(request.player_name, role_pool)
+    game_state = WolfGameState(
+        game_id=game_id,
+        random_seed=selected_seed,
+        day=1,
+        phase="NIGHT",
+        player_character_id=1,
+        characters=characters,
+        public_logs=["游戏开始，12 名角色已入场。", "第 1 夜开始。"],
+        player_private_info={},
+        llm_enabled=(
+            request.enable_llm
+            and bool(LLM_CLIENT.status()["enabled"])
+            and bool(LLM_CLIENT.status()["configured"])
+        ),
+        rag_enabled=request.enable_rag,
+        created_at=now,
+        updated_at=now,
+    )
+    game_state.wolf_fake_seer_id = choose_designated_fake_seer(game_state.characters)
+    initialize_role_resources(game_state)
+    ensure_npc_night_actions(game_state)
+    game_state.player_private_info = build_player_private_info_dict(game_state)
+    return game_state
 
 
 @app.get("/api/game/{game_id}/state", response_model=GameStateResponse)
@@ -1628,7 +1661,11 @@ def choose_npc_hunter_target(
         for character in candidates
         if hunter.suspicion.get(str(character.id), 0) == highest_suspicion
     ]
-    return random.choice(likely_targets).id
+    return deterministic_game_choice(
+        game_state,
+        sorted(likely_targets, key=lambda character: character.id),
+        f"npc_hunter_target:{hunter.id}:{game_state.pending_hunter_trigger}",
+    ).id
 
 
 def clear_pending_hunter(game_state: WolfGameState) -> None:
@@ -2071,8 +2108,21 @@ def build_circular_subset_order(
         return []
     seat_ids = [character.id for character in game_state.characters]
     selected = set(character_ids)
-    first_id = random.choice(character_ids)
-    direction = random.choice([1, -1])
+    canonical_ids = sorted(selected)
+    order_salt = (
+        f"circular_subset:{game_state.phase}:"
+        + ":".join(str(character_id) for character_id in canonical_ids)
+    )
+    first_id = deterministic_game_choice(
+        game_state,
+        canonical_ids,
+        order_salt + ":first",
+    )
+    direction = deterministic_game_choice(
+        game_state,
+        [1, -1],
+        order_salt + ":direction",
+    )
     first_index = seat_ids.index(first_id)
     order = []
     for offset in range(len(seat_ids)):
@@ -3374,7 +3424,11 @@ def prepare_sheriff_meeting_order(game_state: WolfGameState) -> None:
         return
     night_out_ids = get_current_night_eliminated_ids(game_state)
     if night_out_ids:
-        game_state.meeting_order_anchor_id = random.choice(night_out_ids)
+        game_state.meeting_order_anchor_id = deterministic_game_choice(
+            game_state,
+            sorted(night_out_ids),
+            "sheriff_meeting_order_anchor",
+        )
         game_state.meeting_order_anchor_type = "out"
         anchor = get_character(game_state, game_state.meeting_order_anchor_id)
         game_state.public_logs.append(f"本轮以昨夜出局的{anchor.id}号{anchor.name}为发言锚点。")
@@ -3967,6 +4021,7 @@ def submit_and_resolve_sheriff_vote(request: SheriffVoteRequest) -> SheriffVoteR
         election = game_state.sheriff_election
         if election is None:
             raise HTTPException(status_code=400, detail="当前没有警上竞选。")
+        vote_round = election.runoff_round
         active_candidates = get_active_sheriff_candidates(game_state)
         player = get_character(game_state, request.character_id)
         if not player.is_player:
@@ -4005,7 +4060,14 @@ def submit_and_resolve_sheriff_vote(request: SheriffVoteRequest) -> SheriffVoteR
             finish_sheriff_election(game_state, None, message)
         for ballot in ballots:
             game_state.sheriff_events.append(
-                SheriffEventState(day=game_state.day, event_type="sheriff_vote", actor_id=ballot.voter_id, target_id=ballot.target_id, detail=f"{ballot.voter_id}号投给{ballot.target_id}号。")
+                SheriffEventState(
+                    day=game_state.day,
+                    event_type="sheriff_vote",
+                    actor_id=ballot.voter_id,
+                    target_id=ballot.target_id,
+                    context=f"round:{vote_round}",
+                    detail=f"{ballot.voter_id}号投给{ballot.target_id}号。",
+                )
             )
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
         phase = game_state.phase
@@ -5454,7 +5516,11 @@ def choose_npc_night_target(
 
     if not candidates:
         return None
-    return random.choice(candidates).id
+    return deterministic_game_choice(
+        game_state,
+        sorted(candidates, key=lambda character: character.id),
+        f"npc_night_target:{actor.id}:{action_type}",
+    ).id
 
 
 def choose_npc_witch_action(
@@ -5530,7 +5596,11 @@ def choose_wolf_kill_target(
         for target_id, count in target_counts.items()
         if count == highest_count
     ]
-    return random.choice(tied_targets)
+    return deterministic_game_choice(
+        game_state,
+        sorted(tied_targets),
+        "wolf_kill_tie:" + ":".join(str(target_id) for target_id in sorted(tied_targets)),
+    )
 
 
 def get_current_wolf_target(game_state: WolfGameState) -> Optional[int]:
@@ -5639,8 +5709,17 @@ def ensure_day_speech_phase(game_state: WolfGameState) -> None:
 def start_day_meeting(game_state: WolfGameState) -> None:
     seat_ids = [character.id for character in game_state.characters]
     alive_ids = [character.id for character in game_state.characters if character.alive]
-    first_speaker_id = random.choice(alive_ids)
-    direction = random.choice(["clockwise", "counterclockwise"])
+    meeting_salt = "day_meeting:" + ":".join(str(character_id) for character_id in alive_ids)
+    first_speaker_id = deterministic_game_choice(
+        game_state,
+        alive_ids,
+        meeting_salt + ":first",
+    )
+    direction = deterministic_game_choice(
+        game_state,
+        ["clockwise", "counterclockwise"],
+        meeting_salt + ":direction",
+    )
     step = 1 if direction == "clockwise" else -1
     first_index = seat_ids.index(first_speaker_id)
     order = []
@@ -7741,6 +7820,8 @@ def build_public_decision_rag_context(
     target: Optional[CharacterState],
     decision_kind: str,
 ) -> list[dict[str, object]]:
+    if not game_state.rag_enabled:
+        return []
     target_text = "暂未确定目标"
     if target is not None:
         target_text = format_full_character_name(target)
@@ -12482,7 +12563,11 @@ def choose_speech_focus_target(
             if focus_score(character) == highest_suspicion
         ]
 
-    return random.choice(candidates)
+    return deterministic_game_choice(
+        game_state,
+        sorted(candidates, key=lambda character: character.id),
+        f"speech_focus:{speaker.id}:{len(game_state.speeches)}",
+    )
 
 
 def should_wolf_sell_teammate(
@@ -12632,25 +12717,52 @@ def get_latest_public_speech_plan(
     return None
 
 
+def deterministic_seed_value(random_seed: int, salt: str) -> int:
+    """Derive a process-independent integer from one private game seed."""
+
+    payload = f"agent-town-v3|{int(random_seed)}|{salt}".encode("utf-8")
+    digest = hashlib.blake2b(payload, digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False)
+
+
+def deterministic_seed_shuffle(
+    values: list[object],
+    random_seed: int,
+    salt: str,
+) -> None:
+    """Shuffle in place without consuming Python's process-global RNG."""
+
+    random.Random(deterministic_seed_value(random_seed, salt)).shuffle(values)
+
+
+def deterministic_game_choice(
+    game_state: WolfGameState,
+    values: list,
+    salt: str,
+):
+    """Choose from a caller-canonicalized list using only game-owned state."""
+
+    if not values:
+        raise ValueError("deterministic game choice requires at least one value")
+    derived_salt = f"day:{game_state.day}|phase:{game_state.phase}|{salt}"
+    index = deterministic_seed_value(game_state.random_seed, derived_salt) % len(values)
+    return values[index]
+
+
 def deterministic_strategy_roll(
     game_state: WolfGameState,
     actor: CharacterState,
     salt: str,
 ) -> float:
     """Stable pseudo-randomness keeps varied choices reproducible in tests."""
-    salt_score = sum((index + 1) * ord(char) for index, char in enumerate(salt))
-    game_score = sum(
-        (index + 1) * ord(char)
-        for index, char in enumerate(game_state.game_id)
+    seed = deterministic_seed_value(
+        game_state.random_seed,
+        (
+            f"strategy|day:{game_state.day}|actor:{actor.id}|"
+            f"speeches:{len(game_state.speeches)}|{salt}"
+        ),
     )
-    seed = (
-        game_state.day * 104_729
-        + actor.id * 10_009
-        + len(game_state.speeches) * 503
-        + game_score
-        + salt_score
-    )
-    return (seed % 10_000) / 9_999
+    return (seed % 1_000_000) / 999_999
 
 
 def build_softmax_vote_probabilities(
@@ -13467,7 +13579,10 @@ def get_current_valid_votes(game_state: WolfGameState) -> list[VoteState]:
     return valid_votes
 
 
-def resolve_vote_target(votes: list[VoteState]) -> Optional[int]:
+def resolve_vote_target(
+    game_state: WolfGameState,
+    votes: list[VoteState],
+) -> Optional[int]:
     if not votes:
         return None
 
@@ -13484,7 +13599,11 @@ def resolve_vote_target(votes: list[VoteState]) -> Optional[int]:
         for target_id, count in vote_counts.items()
         if count == highest_count
     ]
-    return random.choice(tied_targets)
+    return deterministic_game_choice(
+        game_state,
+        sorted(tied_targets),
+        "exile_tie:" + ":".join(str(target_id) for target_id in sorted(tied_targets)),
+    )
 
 
 def build_vote_totals(votes: list[VoteState]) -> dict[str, float]:
@@ -13525,7 +13644,7 @@ def finalize_current_vote(
     current_votes = get_current_valid_votes(game_state)
     if not current_votes:
         raise HTTPException(status_code=400, detail="当前没有可结算的投票。")
-    exiled_character_id = resolve_vote_target(current_votes)
+    exiled_character_id = resolve_vote_target(game_state, current_votes)
     if exiled_character_id is not None:
         eliminate_character(
             game_state,

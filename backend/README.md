@@ -2,13 +2,86 @@
 
 Agent Town Demo 的 Python FastAPI 后端，负责小镇 NPC 对话、知识检索、长期记忆，以及狼人杀规则和对局内 NPC 状态。
 
+## V3.1-C 合法视角影子信念 M03-A
+
+`app/belief.py` 提供 `belief_state.v1`。它只被离线模拟导入，当前 `BELIEF_MODE="shadow"`：生成的分数、置信度和证据链不会被 `app/main.py` 的任何发言、技能或投票函数读取。
+
+证据权限：
+
+| visibility | 内容 | 可见者 |
+| --- | --- | --- |
+| `public` | 公开声明、结构化公开立场、警长事件、已经公布的放逐票 | 所有仍有决策权的 NPC |
+| `actor_private` | 本人预言家查验、本人女巫看到的刀口 | `observer_ids` 指定的唯一行动者 |
+| `wolf_team` | 狼人依法知道的队友 | `observer_ids` 指定的唯一狼人观察者 |
+
+每个 `SeatBeliefV1` 包含目标席位、`-100–100` 怀疑分、`0–1` 置信度、`trusted / uncertain / suspected` 立场和带权证据引用。`BeliefChangeV1` 记录捕获序号、阶段、前后分数、delta、新增证据及移除证据；M03-A 的台账应始终只追加。
+
+公开证据构造刻意忽略真实角色/阵营、`PublicClaimState.source`、`wolf_fake_seer_id`、未公布 `night_resolutions` 和旧 `CharacterState.suspicion/relationships`。私有真实信息只在对应角色依法拥有时转换成 actor-scoped 证据。NPC 出局后停止吸收新证据，结果保留其最后一份存活时信念并标记 `alive=false`。
+
+模拟 schema 升级为 `agent_town_simulation.v3` / `agent_town_simulation_batch.v3`：
+
+- `belief_trace.evidence_ledger`：去重事实台账，包含 visibility 与合法观察者。
+- `belief_trace.changes`：每次席位分数变化及其证据 ID/权重。
+- `belief_trace.final_states`：11 名 NPC 的最后信念状态。
+- `belief_summary`：批量证据数、变化数、visibility/kind 分布和平均终局置信度。
+- `gameplay_digest`：加入信念轨迹前的规则与指标摘要；shadow on/off 必须相同。
+
+100 局完整轨迹约 46MB，平均每局 116.5 条证据、323.43 次变化，终局平均置信度 33.26%。需要大量跑平衡而不分析信念时使用：
+
+```bash
+backend/.venv/bin/python scripts/simulate_games.py \
+  --seed 20260719 \
+  --games 1000 \
+  --no-belief-trace \
+  --output /tmp/agent-town-simulation-1000.json
+```
+
+完整轨迹包含全部 NPC 的合法私有视角，只能作为本地赛后审计文件，不能直接作为进行中对局 API 响应。
+
+## V3.1-B NPC 核心指标 M02-A
+
+`app/simulation_metrics.py` 为离线模拟提供 `agent_town_metrics.v1`。入口会拒绝任何非 `GAME_OVER` 状态；该模块不被实时决策链调用，允许在赛后使用真实身份评价已经发生的投票，但不会把答案倒灌给好人或公开 API。
+
+逐局 `metrics` 包含：
+
+- `sheriff_vote`：按初选/PK 轮次保存票数、目标数、Shannon 熵、归一化熵和有效目标数。
+- `exile_vote`：按天保存相同的分散度指标，批量均值以“投票轮次”为样本，不把不同天的候选池混成一轮。
+- `good_exile_vote`：好人选票总数、投狼数、投好人数、正确率和误投率；警长 1.5 权重不重复计为多个决策者。
+- `fake_seer_acceptance`：指定悍跳狼是否公开起跳/参选/当选、适用的好人警长票支持率，以及公开假查杀出现后好人放逐票的同目标率。后者是相关性代理，不是因果证明。
+- `by_voter_role` 和逐日明细，便于区分预言家合法私有查验与普通好人的公开判断表现。
+
+批量 `metrics` 额外提供阵营胜率、平均局长、`by_player_role`、`by_voter_role` 和 `by_day`。所有率都保留计数分子/分母；无样本率为 JSON `null`。归一化票熵定义为 `H / log2(ballot_count)`，范围 `0–1`：全员同投为 0，每票目标都不同时为 1。
+
+100 局基线（seed `20260719–20260818`）为：好人胜率 `6.00%`、平均 `3.42` 天、警长票归一化熵 `28.25%`、放逐票归一化熵 `22.62%`、好人误投率 `60.95%`、假预言家适用好人警长票支持率 `48.29%`、假预言家当选率 `72.00%`。这些是诊断数据，不是平衡目标。
+
+## V3.1-A 可复现模拟基础
+
+V3.1-A 在 V2.0 规则边界上增加了不启动 HTTP 的离线对局驱动：
+
+- `app/main.py` 的每局内部状态持有显式 `random_seed`，所有影响规则结果的随机选择都由该 seed 和阶段上下文稳定派生。
+- 正常 `POST /api/game/start` 仍由系统随机源生成 seed，且公开请求 schema 不提供可控 seed 字段、响应也不暴露 seed，防止从 seed 重建隐藏身份。
+- `app/simulation.py` 直接调用现有规则函数，以只读取玩家身份、合法私有知识和公开状态的基线玩家策略跑完整局。
+- 模拟固定 `enable_llm=false`、`enable_rag=false`，并由 CLI 强制设置 `AGENT_TOWN_DISABLE_VECTOR_RAG=1`；不会发网络请求、加载向量模型、写入居民聊天记忆或启动 FastAPI/Godot。
+- 结果使用 `agent_town_simulation.v1`，批量外层使用 `agent_town_simulation_batch.v1`，并记录 `legal_public_baseline.v1` 玩家策略版本。逐局结果移除时间戳和随机 game ID，包含稳定 SHA-256 摘要。
+
+从项目根目录运行 100 个连续 seed：
+
+```bash
+backend/.venv/bin/python scripts/simulate_games.py \
+  --seed 20260719 \
+  --games 100 \
+  --output /tmp/agent-town-simulation.json
+```
+
+可用 `--player-role` 固定模拟玩家身份，可选 `werewolf / seer / witch / hunter / guard / villager`；默认 `random`。相同代码、配置、策略版本和 seed 必须生成完全相同的逐局 JSON。V3.1-B 已在这份原始审计结果上增加版本化指标。
+
 ## V2.0 后端封版与 V3 交接
 
-本目录是 [`Agent Town Demo V2.0`](https://github.com/KEswy/agent-town-demo-v2.0) 的后端快照。V2.0 的稳定边界是：Python 规则引擎唯一决定身份、合法知识、技能、警徽、票型结算、出局与胜负；LLM 只能消费规则整理后的上下文，并在结构化白名单或安全表达契约内输出。
+V2.0 基线来自 [`Agent Town Demo V2.0`](https://github.com/KEswy/agent-town-demo-v2.0) 的提交 `6af73f54844b4e1471c6d9fb582431a7ee892592`。稳定边界继续保持：Python 规则引擎唯一决定身份、合法知识、技能、警徽、票型结算、出局与胜负；LLM 只能消费规则整理后的上下文，并在结构化白名单或安全表达契约内输出。
 
-进入 V3 前仍有四项明确限制：当前对局主要保存在进程内存中；严格结构化策略重点覆盖普通非警长白天发言，其他路径仍以规则决策加角色化改写为主；LLM 校验、回退、延迟和成本只有日志，没有统一指标面板；NPC 平衡依赖人工试玩，尚无批量种子模拟与自动回归阈值。
+进入 V3 后仍有四项明确限制：当前对局主要保存在进程内存中；严格结构化策略重点覆盖普通非警长白天发言，其他路径仍以规则决策加角色化改写为主；LLM 校验、回退、延迟和成本只有日志，没有统一指标面板；批量模拟已经可用，但 NPC 核心指标和自动平衡阈值尚未建立。
 
-V3 推荐先补齐可复现模拟、指标采集、合法视角信念状态和发言/投票一致性，再扩展全部阶段的结构化策略。完整拆分见 [`V3 改进与开发路线表`](../docs/V3_ROADMAP.md)。路线表是规划，不属于本封版已经实现的能力。
+V3 下一步推荐补齐信念衰减和结构化私聊证据，再实现发言/投票一致性。完整拆分和 V3.1-A/B/C 实施状态见 [`V3 改进与开发路线表`](../docs/V3_ROADMAP.md)。
 
 ## 运行
 
@@ -330,6 +403,6 @@ global_defaults < factions.good / factions.werewolf < roles.<role> < npcs.<name>
 backend/.venv/bin/python scripts/smoke_check.py
 ```
 
-本轮自动化已覆盖：`public_position.v1` 严格字段与摘要引用；警徽流版本/`effective_night_day`/换流/夜间软参考；明确分支下的移徽、撕徽声明与普通未接徽不推断；警长票和放逐票的多种子概率分布、候选顺序不变、可复现重放、隐藏身份互换不变与强证据共识；狼队软策略与狼查杀狼硬叙事；玩家同次起跳+警徽流的原子提交、后续调整 UI 和角色头顶警长标识。
+本轮自动化增加了 `belief_state.v1` 的 evidence ID、visibility、observer 权限、11×11 席位覆盖、分数/置信度范围和只追加变化链；差分覆盖隐藏身份、悍跳内部指定、未公布夜间结果、声明内部来源和旧 mutable 状态，同时验证狼人队友这一授权例外及 shadow on/off 玩法一致。`agent_town_metrics.v1`、离线完整局和既有规则/UI 回归继续保留。
 
-这些命令只运行连接检查或自检，不会自动启动 FastAPI/Godot；服务由开发者按“运行”一节手动启动。
+批量模拟不启动 FastAPI/Godot。完整 smoke 会短暂运行 Godot headless 资源检查，但不会启动编辑器或常驻服务；实际服务由开发者按“运行”一节手动启动。
