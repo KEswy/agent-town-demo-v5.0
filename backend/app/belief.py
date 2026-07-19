@@ -1,8 +1,8 @@
 """Legal-perspective shadow beliefs for Agent Town V3.
 
-The V3.1-C implementation is deliberately observational: it derives an
-auditable belief ledger from public facts and role-authorized private facts,
-but no live speech, action, or vote reads these scores yet.
+The V3.1-D implementation remains observational. It adds auditable public
+soft-evidence decay and structured actor-private chat evidence, but no live
+speech, action, or vote reads these scores yet.
 """
 
 from __future__ import annotations
@@ -15,9 +15,23 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import main as rules
 
 
-BELIEF_SCHEMA_VERSION = "belief_state.v1"
+BELIEF_SCHEMA_VERSION = "belief_state.v2"
 BELIEF_EVIDENCE_SCHEMA_VERSION = "belief_evidence.v1"
 BELIEF_MODE = "shadow"
+PUBLIC_SOFT_EVIDENCE_DAILY_DECAY = 0.75
+SOFT_PUBLIC_EVIDENCE_KINDS = frozenset(
+    {
+        "public_role_claim",
+        "public_seer_black_check",
+        "public_seer_good_check",
+        "public_position_suspect",
+        "public_position_trust",
+        "public_position_provisional_vote",
+        "public_position_seer_support",
+        "public_position_seer_oppose",
+        "public_low_information_speech",
+    }
+)
 
 
 class StrictBeliefModel(BaseModel):
@@ -71,6 +85,7 @@ class BeliefChangeV1(StrictBeliefModel):
     delta: int = Field(ge=-200, le=200)
     confidence: float = Field(ge=0.0, le=1.0)
     added_contributions: list[BeliefContributionV1] = Field(default_factory=list)
+    updated_contributions: list[BeliefContributionV1] = Field(default_factory=list)
     removed_evidence_ids: list[str] = Field(default_factory=list)
 
 
@@ -198,6 +213,14 @@ class BeliefTraceRecorder:
         removed = sorted(
             set(previous_contributions) - set(current_contributions)
         )
+        updated = [
+            current_contributions[evidence_id]
+            for evidence_id in sorted(
+                set(current_contributions) & set(previous_contributions)
+            )
+            if current_contributions[evidence_id]
+            != previous_contributions[evidence_id]
+        ]
         if (
             previous is None
             and not added
@@ -217,6 +240,10 @@ class BeliefTraceRecorder:
             added_contributions=[
                 BeliefContributionV1.model_validate(item)
                 for item in added
+            ],
+            updated_contributions=[
+                BeliefContributionV1.model_validate(item)
+                for item in updated
             ],
             removed_evidence_ids=removed,
         )
@@ -300,6 +327,7 @@ def _build_evidence_ledger(
     evidence.extend(_build_public_speech_evidence(game_state))
     evidence.extend(_build_sheriff_evidence(game_state))
     evidence.extend(_build_exile_vote_evidence(game_state))
+    evidence.extend(_build_private_chat_evidence(game_state, observer_ids))
     evidence.extend(_build_private_role_evidence(game_state, observer_ids))
     evidence_by_id: dict[str, BeliefEvidenceV1] = {}
     for item in evidence:
@@ -590,6 +618,47 @@ def _build_private_role_evidence(
     return evidence
 
 
+def _build_private_chat_evidence(
+    game_state: rules.WolfGameState,
+    observer_ids: set[int],
+) -> list[BeliefEvidenceV1]:
+    evidence = []
+    valid_character_ids = {
+        character.id
+        for character in game_state.characters
+    }
+    for conversation in game_state.private_conversations:
+        if (
+            not conversation.effective
+            or conversation.npc_character_id not in observer_ids
+        ):
+            continue
+        for influence in conversation.belief_influences:
+            if influence.target_id not in valid_character_ids:
+                raise ValueError(
+                    "private-chat belief target must be an existing character"
+                )
+            label = "怀疑" if influence.direction == "suspect" else "信任"
+            evidence.append(
+                _evidence(
+                    evidence_id=influence.evidence_id,
+                    kind=f"private_chat_{influence.direction}",
+                    visibility="actor_private",
+                    observer_ids=[conversation.npc_character_id],
+                    day=conversation.day,
+                    phase="FREE_ACTIVITY",
+                    source_actor_id=game_state.player_character_id,
+                    target_id=influence.target_id,
+                    result=influence.direction,
+                    summary=(
+                        f"玩家第{conversation.day}天私下向该 NPC 明确表达对"
+                        f"{influence.target_id}号的{label}；仅该 NPC 可见。"
+                    ),
+                )
+            )
+    return evidence
+
+
 def _build_actor_belief_state(
     game_state: rules.WolfGameState,
     observer: rules.CharacterState,
@@ -607,6 +676,12 @@ def _build_actor_belief_state(
         if contribution is None:
             continue
         target_id, weight = contribution
+        weight = _apply_public_soft_evidence_decay(
+            game_state,
+            observer,
+            item,
+            weight,
+        )
         if target_id == observer.id or target_id not in contributions_by_target:
             continue
         contributions_by_target[target_id].append(
@@ -663,6 +738,10 @@ def _interpret_evidence(
         return evidence.target_id, 100 if evidence.result == "werewolf" else -100
     if evidence.kind == "private_witch_attack_target":
         return evidence.target_id, -18
+    if evidence.kind == "private_chat_suspect":
+        return evidence.target_id, 12
+    if evidence.kind == "private_chat_trust":
+        return evidence.target_id, -8
 
     target_id = evidence.target_id
     if evidence.kind == "public_role_claim":
@@ -705,6 +784,28 @@ def _interpret_evidence(
     if base_weight is None:
         return None
     return target_id, _public_weight(observer, base_weight, "social")
+
+
+def _apply_public_soft_evidence_decay(
+    game_state: rules.WolfGameState,
+    observer: rules.CharacterState,
+    evidence: BeliefEvidenceV1,
+    weight: int,
+) -> int:
+    if (
+        evidence.visibility != "public"
+        or evidence.kind not in SOFT_PUBLIC_EVIDENCE_KINDS
+    ):
+        return weight
+    if evidence.kind == "public_role_claim" and observer.role == evidence.result:
+        return weight
+    age_days = max(0, game_state.day - evidence.day)
+    if age_days == 0:
+        return weight
+    decayed = int(
+        round(weight * (PUBLIC_SOFT_EVIDENCE_DAILY_DECAY ** age_days))
+    )
+    return max(-100, min(100, decayed))
 
 
 def _public_weight(
@@ -784,6 +885,8 @@ __all__ = [
     "BELIEF_EVIDENCE_SCHEMA_VERSION",
     "BELIEF_MODE",
     "BELIEF_SCHEMA_VERSION",
+    "PUBLIC_SOFT_EVIDENCE_DAILY_DECAY",
+    "SOFT_PUBLIC_EVIDENCE_KINDS",
     "ActorBeliefStateV1",
     "BeliefChangeV1",
     "BeliefContributionV1",

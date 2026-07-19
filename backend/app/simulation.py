@@ -26,8 +26,8 @@ from .simulation_metrics import (
 )
 
 
-SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v3"
-BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v3"
+SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v4"
+BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v4"
 PLAYER_POLICY_VERSION = "legal_public_baseline.v1"
 DEFAULT_MAX_DAYS = 20
 DEFAULT_MAX_STEPS = 5_000

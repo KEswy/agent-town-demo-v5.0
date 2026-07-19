@@ -106,8 +106,8 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
 
-    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-C" not in root_readme:
-        raise SmokeCheckError("root README must identify the active V3.1-C iteration")
+    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-D" not in root_readme:
+        raise SmokeCheckError("root README must identify the active V3.1-D iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
@@ -119,16 +119,20 @@ def check_release_docs() -> None:
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
 
-    if "V3.1-C" not in backend_readme or "V3.1-C" not in roadmap:
-        raise SmokeCheckError("V3.1-C status must stay synchronized across development docs")
+    if "V3.1-D" not in backend_readme or "V3.1-D" not in roadmap:
+        raise SmokeCheckError("V3.1-D status must stay synchronized across development docs")
     if "scripts/simulate_games.py" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
     if "agent_town_metrics.v1" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the M02 metrics schema")
-    if "belief_state.v1" not in commands or "--no-belief-trace" not in commands:
+    if (
+        "belief_state.v2" not in commands
+        or "0.75" not in commands
+        or "--no-belief-trace" not in commands
+    ):
         raise SmokeCheckError("COMMANDS.md must document M03 shadow belief handling")
 
-    print("[OK] V3.1-C README, commands, and roadmap status are synchronized.")
+    print("[OK] V3.1-D README, commands, and roadmap status are synchronized.")
 
 
 def check_json_files() -> None:
@@ -1089,6 +1093,8 @@ from app import main as rules
 from app.belief import (
     BELIEF_MODE,
     BELIEF_SCHEMA_VERSION,
+    PUBLIC_SOFT_EVIDENCE_DAILY_DECAY,
+    BeliefTraceRecorder,
     build_belief_snapshot,
 )
 from app.simulation import (
@@ -1172,11 +1178,19 @@ for evidence in evidence_by_id.values():
     if evidence["visibility"] != "public" and len(evidence["observer_ids"]) != 1:
         raise SystemExit("private belief evidence must identify exactly one legal observer")
 for change in belief_trace["changes"]:
-    for contribution in change["added_contributions"]:
+    for contribution in (
+        change["added_contributions"]
+        + change["updated_contributions"]
+    ):
         if contribution["evidence_id"] not in evidence_by_id:
             raise SystemExit("every belief change must cite an existing evidence id")
     if change["removed_evidence_ids"]:
         raise SystemExit("the first belief ledger must be append-only")
+if not any(
+    change["updated_contributions"]
+    for change in belief_trace["changes"]
+):
+    raise SystemExit("a multi-day belief trace must audit decayed contribution weights")
 for actor_state in belief_trace["final_states"]:
     if len(actor_state["seats"]) != 11:
         raise SystemExit("each NPC belief state must cover the other eleven seats")
@@ -1427,6 +1441,193 @@ if claim_snapshot != build_belief_snapshot(
     observer_ids=[villager_observer.id],
 ):
     raise SystemExit("public-claim beliefs must not inspect claimant or target truth")
+
+def get_belief_contribution(snapshot, actor_id, target_id, evidence_id):
+    actor = next(
+        item
+        for item in snapshot["actors"]
+        if item["actor_id"] == actor_id
+    )
+    seat = next(
+        item
+        for item in actor["seats"]
+        if item["target_id"] == target_id
+    )
+    return next(
+        item
+        for item in seat["contributions"]
+        if item["evidence_id"] == evidence_id
+    )
+
+if PUBLIC_SOFT_EVIDENCE_DAILY_DECAY != 0.75:
+    raise SystemExit("M03-B public soft-evidence decay must stay explicitly versioned")
+claim_evidence = next(
+    evidence
+    for evidence in claim_snapshot["evidence_ledger"]
+    if evidence["kind"] == "public_seer_black_check"
+)
+claim_contribution_day_one = get_belief_contribution(
+    claim_snapshot,
+    villager_observer.id,
+    hidden_good.id,
+    claim_evidence["evidence_id"],
+)
+public_claim_day_two = public_claim_left.model_copy(deep=True)
+public_claim_day_two.day = 2
+claim_snapshot_day_two = build_belief_snapshot(
+    public_claim_day_two,
+    observer_ids=[villager_observer.id],
+)
+claim_contribution_day_two = get_belief_contribution(
+    claim_snapshot_day_two,
+    villager_observer.id,
+    hidden_good.id,
+    claim_evidence["evidence_id"],
+)
+if not (
+    0 < abs(claim_contribution_day_two["weight"])
+    < abs(claim_contribution_day_one["weight"])
+):
+    raise SystemExit("an old public claim must lose soft belief weight across days")
+
+decay_recorder = BeliefTraceRecorder()
+decay_recorder.capture(public_claim_left)
+decay_recorder.capture(public_claim_day_two)
+decay_trace = decay_recorder.build_result()
+if not any(
+    contribution["evidence_id"] == claim_evidence["evidence_id"]
+    and contribution["weight"] == claim_contribution_day_two["weight"]
+    for change in decay_trace["changes"]
+    for contribution in change["updated_contributions"]
+):
+    raise SystemExit("soft-evidence decay must be traceable as an updated contribution")
+
+hard_vote_state = left.model_copy(deep=True)
+hard_vote_state.day = 1
+hard_vote_state.phase = "FREE_ACTIVITY"
+hard_vote_state.public_claims = []
+hard_vote_state.votes = [
+    rules.VoteState(
+        day=1,
+        voter_id=hard_vote_state.player_character_id,
+        target_id=hidden_good.id,
+        reason="公开票型测试",
+    )
+]
+hard_vote_day_one = build_belief_snapshot(
+    hard_vote_state,
+    observer_ids=[villager_observer.id],
+)
+hard_vote_evidence = next(
+    evidence
+    for evidence in hard_vote_day_one["evidence_ledger"]
+    if evidence["kind"] == "public_exile_vote"
+)
+hard_vote_contribution_day_one = get_belief_contribution(
+    hard_vote_day_one,
+    villager_observer.id,
+    hidden_good.id,
+    hard_vote_evidence["evidence_id"],
+)
+hard_vote_state.day = 2
+hard_vote_day_two = build_belief_snapshot(
+    hard_vote_state,
+    observer_ids=[villager_observer.id],
+)
+hard_vote_contribution_day_two = get_belief_contribution(
+    hard_vote_day_two,
+    villager_observer.id,
+    hidden_good.id,
+    hard_vote_evidence["evidence_id"],
+)
+if hard_vote_contribution_day_one != hard_vote_contribution_day_two:
+    raise SystemExit("observed public ballots must not decay as soft speech evidence")
+
+private_fact_state = rules.create_wolf_game_state(
+    rules.GameStartRequest(
+        player_name="私有事实衰减测试",
+        player_role="villager",
+        enable_llm=False,
+        enable_rag=False,
+    ),
+    game_id="private_fact_decay",
+    random_seed=271828,
+)
+private_seer = next(
+    character
+    for character in private_fact_state.characters
+    if not character.is_player and character.role == "seer"
+)
+private_check_target = next(
+    character
+    for character in private_fact_state.characters
+    if character.id != private_seer.id
+)
+private_fact_state.night_actions = [
+    rules.NightActionState(
+        day=1,
+        actor_id=private_seer.id,
+        action_type="seer_check",
+        target_id=private_check_target.id,
+    )
+]
+private_fact_day_one = build_belief_snapshot(
+    private_fact_state,
+    observer_ids=[private_seer.id],
+)
+private_seer_evidence = next(
+    evidence
+    for evidence in private_fact_day_one["evidence_ledger"]
+    if evidence["kind"] == "private_seer_check"
+)
+private_seer_contribution_day_one = get_belief_contribution(
+    private_fact_day_one,
+    private_seer.id,
+    private_check_target.id,
+    private_seer_evidence["evidence_id"],
+)
+private_fact_state.day = 3
+private_fact_day_three = build_belief_snapshot(
+    private_fact_state,
+    observer_ids=[private_seer.id],
+)
+private_seer_contribution_day_three = get_belief_contribution(
+    private_fact_day_three,
+    private_seer.id,
+    private_check_target.id,
+    private_seer_evidence["evidence_id"],
+)
+if private_seer_contribution_day_one != private_seer_contribution_day_three:
+    raise SystemExit("a seer's legal private result must not decay")
+
+private_wolf = next(
+    character
+    for character in private_fact_state.characters
+    if not character.is_player and character.role == "werewolf"
+)
+private_teammate = next(
+    character
+    for character in private_fact_state.characters
+    if character.id != private_wolf.id and character.role == "werewolf"
+)
+private_wolf_snapshot = build_belief_snapshot(
+    private_fact_state,
+    observer_ids=[private_wolf.id],
+)
+wolf_team_evidence = next(
+    evidence
+    for evidence in private_wolf_snapshot["evidence_ledger"]
+    if evidence["kind"] == "private_wolf_teammate"
+    and evidence["target_id"] == private_teammate.id
+)
+wolf_team_contribution = get_belief_contribution(
+    private_wolf_snapshot,
+    private_wolf.id,
+    private_teammate.id,
+    wolf_team_evidence["evidence_id"],
+)
+if wolf_team_contribution["weight"] != -100:
+    raise SystemExit("authorized wolf-team knowledge must remain certain")
 
 legacy_state_noise = left.model_copy(deep=True)
 legacy_observer = rules.get_character(legacy_state_noise, villager_observer.id)
@@ -1722,6 +1923,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 import app.main as main_module
+from app.belief import build_belief_snapshot
 from app.llm import LLMGeneration, LLMJsonGeneration
 from app.npc_decision import (
     PublicPositionV1,
@@ -4549,6 +4751,114 @@ if first_private_response.retrieval_mode not in {"hybrid", "keyword"}:
     raise SystemExit("private chat should expose the active retrieval mode")
 if any("私有记忆" in title for title in first_private_response.knowledge_titles):
     raise SystemExit("private RAG source titles must not leak private memory")
+first_private_conversation = meeting_influence_state.private_conversations[-1]
+first_private_influences = {
+    (influence.target_id, influence.direction)
+    for influence in first_private_conversation.belief_influences
+}
+if first_private_influences != {
+    (private_target.id, "suspect"),
+    (meeting_influence_state.player_character_id, "trust"),
+}:
+    raise SystemExit("an effective private chat must retain its applied target directions")
+private_evidence_ids = [
+    influence.evidence_id
+    for influence in first_private_conversation.belief_influences
+]
+if (
+    len(private_evidence_ids) != len(set(private_evidence_ids))
+    or not all(
+        evidence_id.startswith("belief:private_chat:")
+        for evidence_id in private_evidence_ids
+    )
+):
+    raise SystemExit("structured private-chat evidence ids must be stable and unique")
+owner_private_snapshot = build_belief_snapshot(
+    meeting_influence_state,
+    observer_ids=[private_npc.id],
+)
+owner_private_evidence = [
+    evidence
+    for evidence in owner_private_snapshot["evidence_ledger"]
+    if evidence["kind"].startswith("private_chat_")
+]
+if {
+    evidence["evidence_id"]
+    for evidence in owner_private_evidence
+} != set(private_evidence_ids) or any(
+    evidence["observer_ids"] != [private_npc.id]
+    for evidence in owner_private_evidence
+):
+    raise SystemExit("private-chat belief evidence must be scoped to its NPC listener")
+other_private_observer = next(
+    character
+    for character in meeting_influence_state.characters
+    if not character.is_player and character.id != private_npc.id
+)
+if any(
+    evidence["kind"].startswith("private_chat_")
+    for evidence in build_belief_snapshot(
+        meeting_influence_state,
+        observer_ids=[other_private_observer.id],
+    )["evidence_ledger"]
+):
+    raise SystemExit("one NPC must not receive another NPC's private-chat evidence")
+private_text_variant = meeting_influence_state.model_copy(deep=True)
+private_text_variant.private_conversations[-1].question = "完全不同的私聊自由文本"
+private_text_variant.private_conversations[-1].reply = "完全不同的 NPC 回复"
+if owner_private_snapshot != build_belief_snapshot(
+    private_text_variant,
+    observer_ids=[private_npc.id],
+):
+    raise SystemExit("belief projection must consume structured private chat, not free text")
+private_hidden_swap = meeting_influence_state.model_copy(deep=True)
+private_hidden_target = main_module.get_character(
+    private_hidden_swap,
+    private_target.id,
+)
+private_hidden_good = next(
+    character
+    for character in private_hidden_swap.characters
+    if (
+        not character.is_player
+        and character.id not in {private_npc.id, private_hidden_target.id}
+        and character.camp == "good"
+    )
+)
+private_hidden_target.role, private_hidden_good.role = (
+    private_hidden_good.role,
+    private_hidden_target.role,
+)
+private_hidden_target.camp, private_hidden_good.camp = (
+    private_hidden_good.camp,
+    private_hidden_target.camp,
+)
+if owner_private_snapshot != build_belief_snapshot(
+    private_hidden_swap,
+    observer_ids=[private_npc.id],
+):
+    raise SystemExit("private-chat beliefs must not inspect a target's hidden role")
+private_chat_day_two = meeting_influence_state.model_copy(deep=True)
+private_chat_day_two.day = 2
+private_weights_day_one = {
+    contribution["evidence_id"]: contribution["weight"]
+    for actor in owner_private_snapshot["actors"]
+    for seat in actor["seats"]
+    for contribution in seat["contributions"]
+    if contribution["evidence_id"] in private_evidence_ids
+}
+private_weights_day_two = {
+    contribution["evidence_id"]: contribution["weight"]
+    for actor in build_belief_snapshot(
+        private_chat_day_two,
+        observer_ids=[private_npc.id],
+    )["actors"]
+    for seat in actor["seats"]
+    for contribution in seat["contributions"]
+    if contribution["evidence_id"] in private_evidence_ids
+}
+if private_weights_day_one != private_weights_day_two:
+    raise SystemExit("structured private-chat evidence must not use public soft decay")
 private_view = next(
     character
     for character in get_wolf_game_state(meeting_influence_state.game_id).characters
@@ -4571,6 +4881,8 @@ second_private_response = private_chat(
 )
 if second_private_response.effective:
     raise SystemExit("a second private question to the same NPC should not affect decisions")
+if meeting_influence_state.private_conversations[-1].belief_influences:
+    raise SystemExit("an ineffective follow-up must not create private belief evidence")
 if decision_snapshot != (
     dict(private_npc.suspicion),
     dict(private_npc.relationships[str(meeting_influence_state.player_character_id)]),
@@ -4622,6 +4934,8 @@ ambiguous_response = private_chat(
 )
 if ambiguous_response.effective or not ambiguous_response.can_influence_again:
     raise SystemExit("an unresolved pronoun should not consume the effective private question")
+if reference_state.private_conversations[-1].belief_influences:
+    raise SystemExit("an unresolved private pronoun must not create belief evidence")
 if "哪位角色" not in ambiguous_response.reply:
     raise SystemExit("an unresolved pronoun should ask the player to name a character")
 private_chat(

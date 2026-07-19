@@ -2,23 +2,35 @@
 
 Agent Town Demo 的 Python FastAPI 后端，负责小镇 NPC 对话、知识检索、长期记忆，以及狼人杀规则和对局内 NPC 状态。
 
-## V3.1-C 合法视角影子信念 M03-A
+## V3.1-D 信念衰减与结构化私聊 M03-B
 
-`app/belief.py` 提供 `belief_state.v1`。它只被离线模拟导入，当前 `BELIEF_MODE="shadow"`：生成的分数、置信度和证据链不会被 `app/main.py` 的任何发言、技能或投票函数读取。
+`app/belief.py` 提供 `belief_state.v2`。它只被离线模拟导入，当前 `BELIEF_MODE="shadow"`：生成的分数、置信度和证据链不会被 `app/main.py` 的任何发言、技能或投票函数读取。
 
 证据权限：
 
 | visibility | 内容 | 可见者 |
 | --- | --- | --- |
 | `public` | 公开声明、结构化公开立场、警长事件、已经公布的放逐票 | 所有仍有决策权的 NPC |
-| `actor_private` | 本人预言家查验、本人女巫看到的刀口 | `observer_ids` 指定的唯一行动者 |
+| `actor_private` | 本人预言家查验、本人女巫看到的刀口、玩家对该 NPC 的结构化有效私聊影响 | `observer_ids` 指定的唯一行动者 |
 | `wolf_team` | 狼人依法知道的队友 | `observer_ids` 指定的唯一狼人观察者 |
 
-每个 `SeatBeliefV1` 包含目标席位、`-100–100` 怀疑分、`0–1` 置信度、`trusted / uncertain / suspected` 立场和带权证据引用。`BeliefChangeV1` 记录捕获序号、阶段、前后分数、delta、新增证据及移除证据；M03-A 的台账应始终只追加。
+每个 `SeatBeliefV1` 包含目标席位、`-100–100` 怀疑分、`0–1` 置信度、`trusted / uncertain / suspected` 立场和带权证据引用。`BeliefChangeV1` 记录捕获序号、阶段、前后分数、delta、新增证据、同 ID 权重更新及移除证据；台账始终只追加，跨日衰减写入 `updated_contributions`，不会修改证据含义。
+
+衰减边界：
+
+- `public_role_claim`、公开真假查验说法、`public_position.v1` 立场和低信息发言属于软证据，年龄每增加一天，权重乘以 `PUBLIC_SOFT_EVIDENCE_DAILY_DECAY=0.75`。
+- 已公布的警长/放逐票、退水、当选、归票和警徽移交是已观察到的公开动作，不按软发言衰减。
+- 预言家查验、女巫刀口、狼队友和结构化私聊是行动者依法持有的私有事实，不使用公开软证据衰减。角色本人面对他人冒认自己的唯一角色时，自知冲突同样不衰减。
+
+私聊边界：
+
+- `PrivateConversationState.belief_influences` 保存 Python 规则实际造成的 `target_id`、`suspect / trust` 与稳定 `evidence_id`，支持一次明确表达影响多个目标。
+- 只有 `effective=true` 且实际产生明确怀疑或明确信任的影响才进入台账；指代不明、无明确目标、彩蛋和当日重复追问均为空列表。
+- 信念构造不解析 `question` 或 `reply`；自由文本变化不改变证据。该证据仅授权给被私聊 NPC，其他 NPC 和公开视角不可见。
 
 公开证据构造刻意忽略真实角色/阵营、`PublicClaimState.source`、`wolf_fake_seer_id`、未公布 `night_resolutions` 和旧 `CharacterState.suspicion/relationships`。私有真实信息只在对应角色依法拥有时转换成 actor-scoped 证据。NPC 出局后停止吸收新证据，结果保留其最后一份存活时信念并标记 `alive=false`。
 
-模拟 schema 升级为 `agent_town_simulation.v3` / `agent_town_simulation_batch.v3`：
+模拟 schema 升级为 `agent_town_simulation.v4` / `agent_town_simulation_batch.v4`：
 
 - `belief_trace.evidence_ledger`：去重事实台账，包含 visibility 与合法观察者。
 - `belief_trace.changes`：每次席位分数变化及其证据 ID/权重。
@@ -26,7 +38,7 @@ Agent Town Demo 的 Python FastAPI 后端，负责小镇 NPC 对话、知识检�
 - `belief_summary`：批量证据数、变化数、visibility/kind 分布和平均终局置信度。
 - `gameplay_digest`：加入信念轨迹前的规则与指标摘要；shadow on/off 必须相同。
 
-100 局完整轨迹约 46MB，平均每局 116.5 条证据、323.43 次变化，终局平均置信度 33.26%。需要大量跑平衡而不分析信念时使用：
+M03-A 的 100 局完整轨迹约 46MB，平均每局 116.5 条证据、323.43 次变化，终局平均置信度 33.26%；M03-B 改变信念权重和变化记录格式后，不把这组旧轨迹数冒充新基线。需要大量跑平衡而不分析信念时使用：
 
 ```bash
 backend/.venv/bin/python scripts/simulate_games.py \
@@ -403,6 +415,6 @@ global_defaults < factions.good / factions.werewolf < roles.<role> < npcs.<name>
 backend/.venv/bin/python scripts/smoke_check.py
 ```
 
-本轮自动化增加了 `belief_state.v1` 的 evidence ID、visibility、observer 权限、11×11 席位覆盖、分数/置信度范围和只追加变化链；差分覆盖隐藏身份、悍跳内部指定、未公布夜间结果、声明内部来源和旧 mutable 状态，同时验证狼人队友这一授权例外及 shadow on/off 玩法一致。`agent_town_metrics.v1`、离线完整局和既有规则/UI 回归继续保留。
+本轮自动化覆盖 `belief_state.v2` 的 evidence ID、visibility、observer 权限、11×11 席位、分数/置信度、只追加台账和同 ID 权重更新；验证公开软证据跨日衰减、公开票型与预言家/狼队合法知识不衰减，以及有效私聊的目标/方向、单 NPC 隔离、自由文本不变、隐藏身份不变、歧义/重复无证据。原有隐藏身份、悍跳内部指定、未公布夜间结果、声明内部来源、旧 mutable 状态和 shadow on/off 玩法一致回归继续保留。
 
 批量模拟不启动 FastAPI/Godot。完整 smoke 会短暂运行 Godot headless 资源检查，但不会启动编辑器或常驻服务；实际服务由开发者按“运行”一节手动启动。

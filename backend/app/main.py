@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, ValidationError
@@ -418,6 +418,12 @@ class SpeechState(BaseModel):
     public_position: Optional[PublicPositionV1] = None
 
 
+class PrivateBeliefInfluenceState(BaseModel):
+    evidence_id: str = Field(min_length=1)
+    target_id: int = Field(gt=0)
+    direction: Literal["suspect", "trust"]
+
+
 class PrivateConversationState(BaseModel):
     day: int
     npc_character_id: int
@@ -428,6 +434,9 @@ class PrivateConversationState(BaseModel):
     easter_egg_id: str = ""
     easter_egg_first_time: bool = False
     revealed_role: Optional[str] = None
+    belief_influences: list[PrivateBeliefInfluenceState] = Field(
+        default_factory=list
+    )
 
 
 class EliminationState(BaseModel):
@@ -4322,6 +4331,7 @@ def private_chat(request: PrivateChatRequest) -> PrivateChatResponse:
         easter_egg_id = ""
         easter_egg_first_time = False
         revealed_role: Optional[str] = None
+        belief_influences: list[PrivateBeliefInfluenceState] = []
         if triggered_easter_egg is not None:
             easter_egg_id = triggered_easter_egg.egg_id
             easter_egg_first_time = not has_triggered_easter_egg(
@@ -4355,7 +4365,27 @@ def private_chat(request: PrivateChatRequest) -> PrivateChatResponse:
                 and not has_effective_private_question(game_state, npc.id)
             )
             if effective:
-                apply_private_question_effect(game_state, npc, question, parsed_question)
+                suspicion_before = dict(npc.suspicion)
+                player_trust_before = float(
+                    npc.relationships.get(
+                        str(game_state.player_character_id),
+                        {},
+                    ).get("trust", 0.5)
+                )
+                player_belief_direction = apply_private_question_effect(
+                    game_state,
+                    npc,
+                    question,
+                    parsed_question,
+                )
+                belief_influences = build_private_belief_influences(
+                    game_state,
+                    npc,
+                    suspicion_before=suspicion_before,
+                    player_trust_before=player_trust_before,
+                    player_belief_direction=player_belief_direction,
+                    conversation_index=len(game_state.private_conversations) + 1,
+                )
             rag_context = (
                 []
                 if unresolved_reference
@@ -4400,6 +4430,7 @@ def private_chat(request: PrivateChatRequest) -> PrivateChatResponse:
                 easter_egg_id=easter_egg_id,
                 easter_egg_first_time=easter_egg_first_time,
                 revealed_role=revealed_role,
+                belief_influences=belief_influences,
             )
         )
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
@@ -5963,7 +5994,7 @@ def apply_private_question_effect(
     npc: CharacterState,
     question: str,
     parsed: ParsedPlayerSpeech,
-) -> None:
+) -> Optional[Literal["suspect", "trust"]]:
     accused_ids = {
         int(accusation["target_id"])
         for accusation in parsed.accusations
@@ -5982,21 +6013,77 @@ def apply_private_question_effect(
         adjust_suspicion(npc, target_id, increment)
 
     directly_accused_npc = npc.id in accused_ids
+    player_belief_direction: Optional[Literal["suspect", "trust"]] = None
     if directly_accused_npc:
+        player_belief_direction = "suspect"
         adjust_suspicion(npc, game_state.player_character_id, 14)
         adjust_relationship_trust(npc, game_state.player_character_id, -0.1, "玩家私下直接怀疑我")
 
     hostile_keywords = ["你是狼", "你在骗", "你撒谎", "怀疑你", "你可疑", "不信你"]
     cooperative_keywords = ["相信你", "信任你", "合作", "一起"]
     if not directly_accused_npc and any(keyword in question for keyword in hostile_keywords):
+        player_belief_direction = "suspect"
         adjust_suspicion(npc, game_state.player_character_id, 10)
         adjust_relationship_trust(npc, game_state.player_character_id, -0.08, "玩家私下质疑我")
     elif any(keyword in question for keyword in cooperative_keywords):
+        if player_belief_direction is None:
+            player_belief_direction = "trust"
         adjust_relationship_trust(npc, game_state.player_character_id, 0.06, "玩家私下表达合作")
     else:
         adjust_relationship_trust(npc, game_state.player_character_id, 0.02, "玩家私下交换信息")
 
     append_character_memory(npc, f"第 {game_state.day} 天玩家私下问我：{question}")
+    return player_belief_direction
+
+
+def build_private_belief_influences(
+    game_state: WolfGameState,
+    npc: CharacterState,
+    *,
+    suspicion_before: dict[str, int],
+    player_trust_before: float,
+    player_belief_direction: Optional[Literal["suspect", "trust"]],
+    conversation_index: int,
+) -> list[PrivateBeliefInfluenceState]:
+    """Record only explicit, rule-applied private-chat belief changes."""
+
+    directions_by_target: dict[int, Literal["suspect", "trust"]] = {}
+    for target in game_state.characters:
+        if target.id == npc.id:
+            continue
+        before = int(suspicion_before.get(str(target.id), 0))
+        after = int(npc.suspicion.get(str(target.id), 0))
+        if after > before:
+            directions_by_target[target.id] = "suspect"
+        elif after < before:
+            directions_by_target[target.id] = "trust"
+
+    player_id = game_state.player_character_id
+    player_trust_after = float(
+        npc.relationships.get(str(player_id), {}).get("trust", 0.5)
+    )
+    if (
+        player_belief_direction == "suspect"
+        and player_trust_after < player_trust_before
+    ):
+        directions_by_target[player_id] = "suspect"
+    elif (
+        player_belief_direction == "trust"
+        and player_trust_after > player_trust_before
+    ):
+        directions_by_target.setdefault(player_id, "trust")
+
+    return [
+        PrivateBeliefInfluenceState(
+            evidence_id=(
+                f"belief:private_chat:{conversation_index}:{game_state.day}:"
+                f"{npc.id}:{target_id}:{direction}"
+            ),
+            target_id=target_id,
+            direction=direction,
+        )
+        for target_id, direction in sorted(directions_by_target.items())
+    ]
 
 
 def build_private_chat_reply(
