@@ -12,6 +12,10 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, ValidationError
 
 from .llm import LLM_CLIENT, LLMGeneration, LLMJsonGeneration
+from .llm_observability import (
+    LLM_OBSERVABILITY_RECORDER,
+    build_validation_observation,
+)
 from .npc_decision import (
     CONTEXT_SCHEMA_VERSION,
     LEGACY_PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
@@ -11249,6 +11253,11 @@ def record_llm_validation_failure(
             **failure.model_dump(),
         }
     )
+    record_llm_validation_observation(
+        context,
+        attempts,
+        outcome="fallback",
+    )
     return failure_id
 
 
@@ -11276,6 +11285,35 @@ def record_recovered_llm_validation_attempts(
             "attempts": attempts,
         }
     )
+    record_llm_validation_observation(
+        context,
+        attempts,
+        outcome="recovered",
+    )
+
+
+def record_llm_validation_observation(
+    context: dict[str, object],
+    attempts: list[dict[str, object]],
+    *,
+    outcome: str,
+) -> None:
+    try:
+        status_method = getattr(LLM_CLIENT, "status", None)
+        status = status_method() if callable(status_method) else {}
+        if not isinstance(status, dict):
+            status = {}
+        event = build_validation_observation(
+            task=context.get("task"),
+            provider=status.get("provider", "unknown"),
+            model=status.get("model", "unknown"),
+            outcome=outcome,
+            attempts=attempts,
+        )
+        LLM_OBSERVABILITY_RECORDER.record_event(event)
+    except Exception:
+        # Metrics are best-effort and must never change the rule fallback.
+        pass
 
 
 def write_llm_validation_log_record(record: dict[str, object]) -> None:

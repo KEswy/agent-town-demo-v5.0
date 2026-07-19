@@ -104,6 +104,26 @@ M06-B 同样并入 smoke。`hidden_info_authorization.v1` 使用 `role_scoped_pr
 
 三类授权案例合计执行 158 项检查，所有公开投影和未授权 NPC/layer 必须不变。测试还会故意把预言家授权错配给村民，确认矩阵同时检测缺失授权与越权传播。报告不保存变体状态或私有 evidence 正文。
 
+## 汇总 M09-A 脱敏 LLM 观测
+
+后端实际发生 LLM 调用或语义校验时，会把 `llm_observation.v1` 事件追加到 `backend/data/llm_observability.jsonl`。无需启动后端即可汇总已有文件：
+
+```bash
+backend/.venv/bin/python scripts/summarize_llm_observability.py
+```
+
+指定输入并同时保存 `llm_observability_summary.v1`：
+
+```bash
+backend/.venv/bin/python scripts/summarize_llm_observability.py \
+  --input backend/data/llm_observability.jsonl \
+  --output /tmp/agent-town-llm-summary.json
+```
+
+输出汇总请求成功率、语义校验恢复/回退、平均尝试、重试次数、平均/P95/最大延迟、provider 已返回的 token、主要 fallback/rejection 类别，并提供 `by_task` 和 `by_provider_model` 分组。日志不存在时会输出计数为 0 的合法空摘要；坏行被跳过并计入 `invalid_event_count`。
+
+该文件采用严格脱敏字段，不记录 API Key、prompt、上下文、回复、fallback 文本、game/character ID 或原始拒绝原因。`backend/data/llm_validation_failures.jsonl` 是另一份可能包含原始候选的敏感审计日志，不要把它当作 M09-A 指标源。provider 未返回 `usage` 时不猜 token；M09-A 也不估算费用，版本化价格口径留给 M09-B。
+
 无需启动后端即可执行，使用文末同一条完整自检命令：
 
 ```bash

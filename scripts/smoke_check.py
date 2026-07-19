@@ -54,6 +54,7 @@ NPC_PROFILES_FILE = BACKEND_DIR / "config" / "npc_profiles.json"
 NPC_TUNING_FILE = BACKEND_DIR / "config" / "npc_tuning.json"
 BACKEND_MAIN_FILE = BACKEND_DIR / "app" / "main.py"
 BACKEND_LLM_FILE = BACKEND_DIR / "app" / "llm.py"
+BACKEND_LLM_OBSERVABILITY_FILE = BACKEND_DIR / "app" / "llm_observability.py"
 BACKEND_NPC_DECISION_FILE = BACKEND_DIR / "app" / "npc_decision.py"
 BACKEND_NPC_TUNING_FILE = BACKEND_DIR / "app" / "npc_tuning.py"
 BACKEND_BELIEF_FILE = BACKEND_DIR / "app" / "belief.py"
@@ -62,6 +63,7 @@ BACKEND_INVARIANCE_FILE = BACKEND_DIR / "app" / "invariance.py"
 BACKEND_SIMULATION_FILE = BACKEND_DIR / "app" / "simulation.py"
 BACKEND_SIMULATION_METRICS_FILE = BACKEND_DIR / "app" / "simulation_metrics.py"
 SIMULATION_SCRIPT_FILE = ROOT_DIR / "scripts" / "simulate_games.py"
+LLM_OBSERVABILITY_SCRIPT_FILE = ROOT_DIR / "scripts" / "summarize_llm_observability.py"
 BACKEND_VENV_PYTHON = BACKEND_DIR / ".venv" / "bin" / "python"
 MIN_KNOWLEDGE_COUNT = 100
 
@@ -108,8 +110,8 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
 
-    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-H" not in root_readme:
-        raise SmokeCheckError("root README must identify the active V3.1-H iteration")
+    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-I" not in root_readme:
+        raise SmokeCheckError("root README must identify the active V3.1-I iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
@@ -121,8 +123,8 @@ def check_release_docs() -> None:
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
 
-    if "V3.1-H" not in backend_readme or "V3.1-H" not in roadmap:
-        raise SmokeCheckError("V3.1-H status must stay synchronized across development docs")
+    if "V3.1-I" not in backend_readme or "V3.1-I" not in roadmap:
+        raise SmokeCheckError("V3.1-I status must stay synchronized across development docs")
     if "scripts/simulate_games.py" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
     if "agent_town_metrics.v1" not in commands:
@@ -157,8 +159,15 @@ def check_release_docs() -> None:
         or "M06-B" not in commands
     ):
         raise SmokeCheckError("COMMANDS.md must document the M06-B authorization matrix")
+    if (
+        "llm_observation.v1" not in commands
+        or "llm_observability_summary.v1" not in commands
+        or "scripts/summarize_llm_observability.py" not in commands
+        or "M09-A" not in commands
+    ):
+        raise SmokeCheckError("COMMANDS.md must document redacted M09-A observability")
 
-    print("[OK] V3.1-H README, commands, and roadmap status are synchronized.")
+    print("[OK] V3.1-I README, commands, and roadmap status are synchronized.")
 
 
 def check_json_files() -> None:
@@ -276,6 +285,7 @@ def check_json_files() -> None:
         NPC_TUNING_FILE,
         BACKEND_MAIN_FILE,
         BACKEND_LLM_FILE,
+        BACKEND_LLM_OBSERVABILITY_FILE,
         BACKEND_NPC_DECISION_FILE,
         BACKEND_NPC_TUNING_FILE,
         BACKEND_BELIEF_FILE,
@@ -284,6 +294,7 @@ def check_json_files() -> None:
         BACKEND_SIMULATION_FILE,
         BACKEND_SIMULATION_METRICS_FILE,
         SIMULATION_SCRIPT_FILE,
+        LLM_OBSERVABILITY_SCRIPT_FILE,
     ]:
         if "\ufffd" in path.read_text(encoding="utf-8"):
             raise SmokeCheckError(f"Unicode replacement character found in {path.relative_to(ROOT_DIR)}")
@@ -299,6 +310,7 @@ def check_backend_compiles() -> None:
             "py_compile",
             str(BACKEND_MAIN_FILE),
             str(BACKEND_LLM_FILE),
+            str(BACKEND_LLM_OBSERVABILITY_FILE),
             str(BACKEND_NPC_DECISION_FILE),
             str(BACKEND_NPC_TUNING_FILE),
             str(BACKEND_BELIEF_FILE),
@@ -307,6 +319,7 @@ def check_backend_compiles() -> None:
             str(BACKEND_SIMULATION_FILE),
             str(BACKEND_SIMULATION_METRICS_FILE),
             str(SIMULATION_SCRIPT_FILE),
+            str(LLM_OBSERVABILITY_SCRIPT_FILE),
         ],
         cwd=ROOT_DIR,
         fail_message="backend Python files failed to compile",
@@ -318,25 +331,60 @@ def check_llm_adapter() -> None:
     python_bin = BACKEND_VENV_PYTHON if BACKEND_VENV_PYTHON.exists() else Path(sys.executable)
     smoke_code = r'''
 import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 
 import httpx
 
 from app.llm import LLMClient, LLMSettings
+from app.llm_observability import (
+    LLM_OBSERVABILITY_MODE,
+    LLM_OBSERVABILITY_SUMMARY_VERSION,
+    LLM_OBSERVATION_SCHEMA_VERSION,
+    LLMObservationError,
+    LLMObservationRecorder,
+    build_validation_observation,
+    normalize_observation_event,
+    summarize_observation_events,
+    summarize_observation_file,
+)
 
-fallback = "规则模板回答。"
+api_key_marker = "TEST_API_KEY_MARKER_7D2F"
+system_marker = "SECRET_SYSTEM_PROMPT_MARKER_8A31"
+context_marker = "SECRET_CONTEXT_MARKER_4C67"
+response_marker = "SECRET_RESPONSE_MARKER_9B20"
+fallback_marker = "SECRET_FALLBACK_MARKER_5E14"
+captured_events = []
+fallback = fallback_marker
 
-disabled_client = LLMClient(LLMSettings(enabled=False))
-disabled_result = disabled_client.generate_json_text("system", {"task": "test"}, fallback)
+disabled_client = LLMClient(
+    LLMSettings(enabled=False),
+    event_sink=captured_events.append,
+)
+disabled_result = disabled_client.generate_json_text(
+    system_marker,
+    {"task": "resident_chat", "query": context_marker},
+    fallback,
+)
 if disabled_result.used_llm or disabled_result.text != fallback:
     raise SystemExit("disabled LLM should use the rule fallback")
 
-mock_client = LLMClient(LLMSettings(enabled=True, provider="mock"))
-mock_result = mock_client.generate_json_text("system", {"task": "test"}, fallback)
+mock_client = LLMClient(
+    LLMSettings(enabled=True, provider="mock"),
+    event_sink=captured_events.append,
+)
+mock_result = mock_client.generate_json_text(
+    system_marker,
+    {"task": "resident_chat", "query": context_marker},
+    fallback,
+)
 if mock_result.used_llm or mock_result.text != fallback:
     raise SystemExit("mock provider should stay deterministic and key-free")
 
 def success_handler(request: httpx.Request) -> httpx.Response:
-    if request.headers.get("Authorization") != "Bearer test-key":
+    if request.headers.get("Authorization") != f"Bearer {api_key_marker}":
         raise AssertionError("LLM request should use bearer authentication")
     payload = json.loads(request.content.decode("utf-8"))
     if payload.get("model") != "cheap-model":
@@ -348,12 +396,17 @@ def success_handler(request: httpx.Request) -> httpx.Response:
                 {
                     "message": {
                         "content": (
-                            '{"text":"自然生成的回答。","intent":"observe",'
+                            f'{{"text":"{response_marker}","intent":"observe",'
                             '"evidence_ids":[]}'
                         )
                     }
                 }
-            ]
+            ],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 4,
+                "total_tokens": 15,
+            },
         },
     )
 
@@ -361,18 +414,23 @@ settings = LLMSettings(
     enabled=True,
     provider="openai_compatible",
     base_url="https://example.invalid/v1",
-    api_key="test-key",
+    api_key=api_key_marker,
     model="cheap-model",
     max_retries=0,
     retry_delay_seconds=0,
 )
-client = LLMClient(settings, transport=httpx.MockTransport(success_handler))
-result = client.generate_json_text("system", {"task": "test"}, fallback)
-if not result.used_llm or result.text != "自然生成的回答。":
+client = LLMClient(
+    settings,
+    transport=httpx.MockTransport(success_handler),
+    event_sink=captured_events.append,
+)
+legal_context = {"task": "resident_chat", "query": context_marker}
+result = client.generate_json_text(system_marker, legal_context, fallback)
+if not result.used_llm or result.text != response_marker:
     raise SystemExit("OpenAI-compatible adapter should parse JSON text")
 structured_result = client.generate_json_object(
-    "system",
-    {"task": "structured-test"},
+    system_marker,
+    legal_context,
     {"intent": "fallback"},
 )
 if (
@@ -382,7 +440,7 @@ if (
 ):
     raise SystemExit("LLM adapter should preserve a complete structured JSON object")
 status = client.status()
-if "api_key" in status or "test-key" in json.dumps(status):
+if "api_key" in status or api_key_marker in json.dumps(status):
     raise SystemExit("LLM status must never expose the API key")
 
 def deepseek_handler(request: httpx.Request) -> httpx.Response:
@@ -400,7 +458,7 @@ deepseek_settings = LLMSettings(
     enabled=True,
     provider="deepseek",
     base_url="https://api.deepseek.com",
-    api_key="test-key",
+    api_key=api_key_marker,
     model="deepseek-v4-flash",
     max_retries=0,
     retry_delay_seconds=0,
@@ -408,8 +466,13 @@ deepseek_settings = LLMSettings(
 deepseek_client = LLMClient(
     deepseek_settings,
     transport=httpx.MockTransport(deepseek_handler),
+    event_sink=captured_events.append,
 )
-deepseek_result = deepseek_client.generate_json_text("system JSON", {}, fallback)
+deepseek_result = deepseek_client.generate_json_text(
+    system_marker,
+    {"task": "resident_chat"},
+    fallback,
+)
 if not deepseek_result.used_llm or deepseek_result.text != "DeepSeek JSON 回答。":
     raise SystemExit("DeepSeek adapter should use non-thinking JSON mode")
 
@@ -418,31 +481,74 @@ flaky_attempts = {"count": 0}
 def flaky_handler(_request: httpx.Request) -> httpx.Response:
     flaky_attempts["count"] += 1
     if flaky_attempts["count"] == 1:
-        return httpx.Response(200, json={"choices": [{"message": {"content": "not-json"}}]})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "not-json"}}],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 1,
+                    "total_tokens": 4,
+                },
+            },
+        )
     return httpx.Response(
         200,
-        json={"choices": [{"message": {"content": '{"text":"重试成功。"}'}}]},
+        json={
+            "choices": [{"message": {"content": '{"text":"重试成功。"}'}}],
+            "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 2,
+                "total_tokens": 7,
+            },
+        },
     )
 
 retry_settings = LLMSettings(
     enabled=True,
     provider="deepseek",
     base_url="https://api.deepseek.com",
-    api_key="test-key",
+    api_key=api_key_marker,
     model="deepseek-v4-flash",
     max_retries=1,
     retry_delay_seconds=0,
 )
-retry_client = LLMClient(retry_settings, transport=httpx.MockTransport(flaky_handler))
-retry_result = retry_client.generate_json_text("system JSON", {}, fallback)
+retry_client = LLMClient(
+    retry_settings,
+    transport=httpx.MockTransport(flaky_handler),
+    event_sink=captured_events.append,
+)
+retry_result = retry_client.generate_json_text(
+    system_marker,
+    {"task": "rewrite_public_speech"},
+    fallback,
+)
 if not retry_result.used_llm or retry_result.text != "重试成功。" or flaky_attempts["count"] != 2:
     raise SystemExit("invalid JSON should retry once before using the rule fallback")
 
 def malformed_handler(_request: httpx.Request) -> httpx.Response:
-    return httpx.Response(200, json={"choices": [{"message": {"content": "not-json"}}]})
+    return httpx.Response(
+        200,
+        json={
+            "choices": [{"message": {"content": "not-json"}}],
+            "usage": {
+                "prompt_tokens": 6,
+                "completion_tokens": 1,
+                "total_tokens": 7,
+            },
+        },
+    )
 
-malformed_client = LLMClient(settings, transport=httpx.MockTransport(malformed_handler))
-malformed_result = malformed_client.generate_json_text("system", {}, fallback)
+malformed_client = LLMClient(
+    settings,
+    transport=httpx.MockTransport(malformed_handler),
+    event_sink=captured_events.append,
+)
+malformed_result = malformed_client.generate_json_text(
+    system_marker,
+    {"task": "public_speech"},
+    fallback,
+)
 if malformed_result.used_llm or malformed_result.text != fallback:
     raise SystemExit("invalid LLM JSON should use the rule fallback")
 
@@ -452,10 +558,14 @@ def replacement_handler(_request: httpx.Request) -> httpx.Response:
         json={"choices": [{"message": {"content": '{"text":"bad�text"}'}}]},
     )
 
-replacement_client = LLMClient(settings, transport=httpx.MockTransport(replacement_handler))
+replacement_client = LLMClient(
+    settings,
+    transport=httpx.MockTransport(replacement_handler),
+    event_sink=captured_events.append,
+)
 replacement_result = replacement_client.generate_json_object(
-    "system",
-    {},
+    system_marker,
+    {"task": "public_speech_voice_prefix"},
     {"text": fallback},
 )
 if replacement_result.used_llm or replacement_result.data != {"text": fallback}:
@@ -464,19 +574,161 @@ if replacement_result.used_llm or replacement_result.data != {"text": fallback}:
 def limited_handler(_request: httpx.Request) -> httpx.Response:
     return httpx.Response(429, json={"error": {"message": "rate limited"}})
 
-limited_client = LLMClient(settings, transport=httpx.MockTransport(limited_handler))
-limited_result = limited_client.generate_json_text("system", {}, fallback)
+limited_client = LLMClient(
+    settings,
+    transport=httpx.MockTransport(limited_handler),
+    event_sink=captured_events.append,
+)
+limited_result = limited_client.generate_json_text(
+    system_marker,
+    {"task": "rewrite_private_reply"},
+    fallback,
+)
 if limited_result.used_llm or limited_result.text != fallback:
     raise SystemExit("LLM rate limits should use the rule fallback")
 
-print("LLM adapter smoke test passed")
+expected_event_fields = {
+    "schema_version",
+    "recorded_at",
+    "event_type",
+    "task",
+    "operation",
+    "provider",
+    "model",
+    "outcome",
+    "attempt_count",
+    "retry_count",
+    "latency_ms",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "fallback_category",
+    "rejection_category_counts",
+}
+if len(captured_events) != 9:
+    raise SystemExit(f"each LLM adapter result should emit one event: {len(captured_events)}")
+if any(set(event) != expected_event_fields for event in captured_events):
+    raise SystemExit("request observations must use the exact redacted v1 fields")
+serialized_events = json.dumps(captured_events, ensure_ascii=False)
+for secret_marker in (
+    api_key_marker,
+    system_marker,
+    context_marker,
+    response_marker,
+    fallback_marker,
+):
+    if secret_marker in serialized_events:
+        raise SystemExit("redacted observations must not retain request or response content")
+
+event_by_key = {
+    (event["task"], event["outcome"], event["fallback_category"]): event
+    for event in captured_events
+}
+if event_by_key[("rewrite_public_speech", "success", "")]["attempt_count"] != 2:
+    raise SystemExit("retry success observations must preserve the attempt count")
+if event_by_key[("rewrite_public_speech", "success", "")]["retry_count"] != 1:
+    raise SystemExit("retry success observations must preserve the retry count")
+if event_by_key[("rewrite_public_speech", "success", "")]["total_tokens"] != 11:
+    raise SystemExit("retry observations should add provider token usage across attempts")
+for expected_key in (
+    ("resident_chat", "fallback", "disabled"),
+    ("resident_chat", "fallback", "mock"),
+    ("public_speech", "fallback", "invalid_json"),
+    ("public_speech_voice_prefix", "fallback", "invalid_payload"),
+    ("rewrite_private_reply", "fallback", "rate_limit"),
+):
+    if expected_key not in event_by_key:
+        raise SystemExit(f"missing classified request observation: {expected_key}")
+token_events = [event for event in captured_events if event["total_tokens"] is not None]
+if len(token_events) != 4 or sum(event["total_tokens"] for event in token_events) != 48:
+    raise SystemExit("provider token usage should be captured when available")
+
+validation_events = [
+    build_validation_observation(
+        task="public_speech",
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        outcome="recovered",
+        attempts=[
+            {"passed": False, "rejection_reason": "schema invalid: SECRET_RAW_ATTEMPT"},
+            {"passed": True, "rejection_reason": ""},
+        ],
+    ),
+    build_validation_observation(
+        task="rewrite_private_reply",
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        outcome="fallback",
+        attempts=[
+            {"passed": False, "rejection_reason": "hidden private role disclosure"},
+        ],
+    ),
+]
+if "SECRET_RAW_ATTEMPT" in json.dumps(validation_events, ensure_ascii=False):
+    raise SystemExit("validation observations must retain only rejection categories")
+summary = summarize_observation_events([*captured_events, *validation_events])
+if (
+    summary["schema_version"] != LLM_OBSERVABILITY_SUMMARY_VERSION
+    or summary["event_schema_version"] != LLM_OBSERVATION_SCHEMA_VERSION
+    or summary["mode"] != LLM_OBSERVABILITY_MODE
+    or summary["event_count"] != 11
+    or summary["request_count"] != 9
+    or summary["request_success_count"] != 4
+    or summary["request_fallback_count"] != 5
+    or summary["validation_recovered_count"] != 1
+    or summary["validation_fallback_count"] != 1
+    or summary["retry_count"] != 2
+    or summary["token_sample_count"] != 4
+    or summary["total_tokens"] != 48
+):
+    raise SystemExit(f"redacted observability summary is incomplete: {summary}")
+if summary["rejection_category_counts"] != {
+    "hidden_information": 1,
+    "schema_invalid": 1,
+}:
+    raise SystemExit("semantic rejection categories should aggregate without raw reasons")
+if "resident_chat" not in summary["by_task"]:
+    raise SystemExit("observability summary should group metrics by task")
+if "deepseek/deepseek-v4-flash" not in summary["by_provider_model"]:
+    raise SystemExit("observability summary should group metrics by provider and model")
+
+try:
+    normalize_observation_event({**captured_events[0], "secret": context_marker})
+except LLMObservationError:
+    pass
+else:
+    raise SystemExit("the observation schema must reject undeclared fields")
+
+with tempfile.TemporaryDirectory(prefix="agent-town-m09a-") as temp_dir:
+    observation_path = Path(temp_dir) / "observations.jsonl"
+    recorder = LLMObservationRecorder(observation_path)
+    for event in [*captured_events, *validation_events]:
+        recorder.record_event(event)
+    recorder.record_event({**captured_events[0], "secret": context_marker})
+    with observation_path.open("a", encoding="utf-8") as observation_file:
+        observation_file.write("not-json\n")
+    file_summary = summarize_observation_file(observation_path)
+    if file_summary["event_count"] != 11 or file_summary["invalid_event_count"] != 1:
+        raise SystemExit("file summary should skip and count malformed JSONL rows")
+    cli_script = Path.cwd().parent / "scripts" / "summarize_llm_observability.py"
+    cli_result = subprocess.run(
+        [sys.executable, str(cli_script), "--input", str(observation_path), "--compact"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    cli_summary = json.loads(cli_result.stdout)
+    if cli_summary["schema_version"] != LLM_OBSERVABILITY_SUMMARY_VERSION:
+        raise SystemExit("M09-A summary CLI should print the versioned summary")
+
+print("LLM adapter and redacted observability smoke test passed")
 '''
     run_command(
         [str(python_bin), "-c", smoke_code],
         cwd=BACKEND_DIR,
         fail_message="LLM adapter smoke test failed",
     )
-    print("[OK] LLM adapter success, mock, safety, and fallback paths work.")
+    print("[OK] LLM adapter and redacted request/validation observability work.")
 
 
 def check_npc_decision_contracts() -> None:
@@ -2921,6 +3173,7 @@ from fastapi import HTTPException
 import app.main as main_module
 from app.belief import build_belief_snapshot
 from app.llm import LLMGeneration, LLMJsonGeneration
+from app.llm_observability import summarize_observation_events
 from app.npc_decision import (
     PublicPositionV1,
     PublicSpeechIntent,
@@ -2945,6 +3198,14 @@ from app.main import submit_and_resolve_all_votes, submit_and_resolve_sheriff_vo
 from app.main import submit_player_sheriff_speech, submit_player_speech
 from app.main import submit_sheriff_meeting_order, submit_sheriff_nomination
 from app.main import submit_badge_transfer, submit_sheriff_signup, submit_sheriff_withdrawal
+
+captured_validation_observations = []
+
+class InMemoryObservationRecorder:
+    def record_event(self, event):
+        captured_validation_observations.append(event)
+
+main_module.LLM_OBSERVABILITY_RECORDER = InMemoryObservationRecorder()
 
 forced_witch_response = start_wolf_game(
     GameStartRequest(player_name="女巫测试玩家", player_role="witch")
@@ -9340,6 +9601,30 @@ for expected_text in ["查验", "成功挡下狼刀", "公开声明", "私下询
         raise SystemExit(f"game summary is missing action detail: {expected_text}")
 if not any(event.is_private for event in summary.timeline):
     raise SystemExit("game summary should mark hidden actions and private chats")
+
+validation_observability_summary = summarize_observation_events(
+    captured_validation_observations
+)
+if (
+    validation_observability_summary["validation_recovered_count"] < 1
+    or validation_observability_summary["validation_fallback_count"] < 1
+):
+    raise SystemExit(
+        "real semantic validation paths should emit recovered and fallback observations"
+    )
+serialized_validation_observations = json.dumps(
+    captured_validation_observations,
+    ensure_ascii=False,
+)
+for forbidden_observation_detail in [
+    "PRIVATE_STRATEGY_TOKEN",
+    "NIGHT_RAW_TOKEN",
+    "CHAT_RAW_TOKEN",
+    "claim:forged",
+    "target_not_allowed: 999",
+]:
+    if forbidden_observation_detail in serialized_validation_observations:
+        raise SystemExit("redacted semantic observations leaked raw validation data")
 
 print("wolf game start smoke test passed")
 """

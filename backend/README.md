@@ -2,6 +2,24 @@
 
 Agent Town Demo 的 Python FastAPI 后端，负责小镇 NPC 对话、知识检索、长期记忆，以及狼人杀规则和对局内 NPC 状态。
 
+## V3.1-I 脱敏 LLM 可观测性 M09-A
+
+`app/llm_observability.py` 提供不参与规则决策的 `llm_observation.v1` 事件与 `llm_observability_summary.v1` 汇总。全局 `LLMClient` 对每个结果最多写一条 request 事件：task、`json_text/json_object`、provider/model、`success/fallback`、attempt/retry、端到端延迟、可选 token 和稳定 fallback category。禁用、mock、未配置也会作为零次请求的规则回退被统计。
+
+`app/main.py` 的既有语义校验另写 validation 事件：多次候选最终通过为 `recovered`，耗尽后使用规则计划为 `fallback`。只保存 `schema_invalid`、`hidden_information`、`fact_mismatch`、`continuity` 等拒绝类别计数；原始候选和具体拒绝理由不会复制到观测日志。
+
+运行后默认追加到 `data/llm_observability.jsonl`。事件 schema 使用精确字段集合，安全标识符也受长度/字符限制，明确不接收 API Key、prompt、上下文、模型响应、fallback 文本、game/character ID 和原始验证内容。写文件或汇总失败不会抛回游戏链路，因此可观测性不能改变 Python 规则或 LLM 兜底结果。
+
+从项目根目录离线汇总：
+
+```bash
+backend/.venv/bin/python scripts/summarize_llm_observability.py
+```
+
+输出包含成功率、语义恢复/回退、平均尝试、重试、平均/P95/最大延迟、token 覆盖与总量、失败类别，以及 `by_task` 和 `by_provider_model`。provider 不提供 `usage` 时 token 为未知；M09-A 不猜 token，也不写死价格。价格版本、配置/契约指纹和估算成本留给 M09-B。
+
+旧 `data/llm_validation_failures.jsonl` 仍保留原始候选用于受限审计，敏感等级高于新的脱敏统计文件，不能作为日常指标输出或提供给进行中的客户端。
+
 ## V3.1-H 授权私有视角矩阵 M06-B
 
 `app/invariance.py` 现同时提供 `hidden_info_authorization.v1`，其模式为 `role_scoped_private_npc`。M06-A 要求无权普通村民的投影完全相同；M06-B 则声明每个私有事实的 required/allowed actor projection，要求合法观察者至少出现指定变化，同时禁止变化传播给公开视角或其他 NPC。
@@ -167,9 +185,9 @@ backend/.venv/bin/python scripts/simulate_games.py \
 
 V2.0 基线来自 [`Agent Town Demo V2.0`](https://github.com/KEswy/agent-town-demo-v2.0) 的提交 `6af73f54844b4e1471c6d9fb582431a7ee892592`。稳定边界继续保持：Python 规则引擎唯一决定身份、合法知识、技能、警徽、票型结算、出局与胜负；LLM 只能消费规则整理后的上下文，并在结构化白名单或安全表达契约内输出。
 
-进入 V3 后仍有四项明确限制：当前对局主要保存在进程内存中；严格结构化策略重点覆盖普通非警长白天发言，其他路径仍以规则决策加角色化改写为主；LLM 校验、回退、延迟和成本只有日志，没有统一指标面板；批量模拟与第一版 NPC 指标已经可用，但投票概率和自动平衡阈值尚未校准。
+进入 V3 后仍有四项明确限制：当前对局主要保存在进程内存中；严格结构化策略重点覆盖普通非警长白天发言，其他路径仍以规则决策加角色化改写为主；M09-A 已有脱敏本地汇总，但尚无价格版本、配置/契约指纹和成本口径；批量模拟与第一版 NPC 指标已经可用，但投票概率和自动平衡阈值尚未校准。
 
-V3 下一步推荐做 M09 LLM 可观测性，再用 M15 对投票概率做多种子校准。完整拆分和 V3.1-A 至 V3.1-H 实施状态见 [`V3 改进与开发路线表`](../docs/V3_ROADMAP.md)。
+V3 下一步可补 M09-B 版本/成本维度，再用 M15 对投票概率做多种子校准。完整拆分和 V3.1-A 至 V3.1-I 实施状态见 [`V3 改进与开发路线表`](../docs/V3_ROADMAP.md)。
 
 ## 运行
 

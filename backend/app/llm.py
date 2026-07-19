@@ -10,6 +10,13 @@ from typing import Callable, Optional
 import httpx
 from dotenv import load_dotenv
 
+from .llm_observability import (
+    LLM_OBSERVABILITY_RECORDER,
+    build_request_observation,
+    classify_request_fallback,
+    extract_token_usage,
+)
+
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(BACKEND_DIR / ".env")
@@ -80,9 +87,11 @@ class LLMClient:
         self,
         settings: Optional[LLMSettings] = None,
         transport: Optional[httpx.BaseTransport] = None,
+        event_sink: Optional[Callable[[dict[str, object]], None]] = None,
     ) -> None:
         self.settings = settings or LLMSettings.from_env()
         self._transport = transport
+        self._event_sink = event_sink
 
     def status(self) -> dict[str, object]:
         return {
@@ -139,17 +148,47 @@ class LLMClient:
         max_attempts: Optional[int],
         validator: Optional[Callable[[dict[str, object]], None]] = None,
     ) -> LLMJsonGeneration:
+        started_at = time.perf_counter()
+        task = context.get("task")
+        operation = "json_text" if validator is not None else "json_object"
         if not self.settings.enabled:
-            return self._json_fallback(fallback_object, "LLM is disabled")
+            reason = "LLM is disabled"
+            self._record_request_observation(
+                task=task,
+                operation=operation,
+                outcome="fallback",
+                attempt_count=0,
+                started_at=started_at,
+                fallback_reason=reason,
+            )
+            return self._json_fallback(fallback_object, reason)
         if self.settings.provider == "mock":
+            reason = "mock provider uses deterministic rule text"
+            self._record_request_observation(
+                task=task,
+                operation=operation,
+                outcome="fallback",
+                attempt_count=0,
+                started_at=started_at,
+                fallback_reason=reason,
+            )
             return self._json_fallback(
                 fallback_object,
-                "mock provider uses deterministic rule text",
+                reason,
             )
         if not self.settings.is_configured():
+            reason = "LLM provider is not fully configured"
+            self._record_request_observation(
+                task=task,
+                operation=operation,
+                outcome="fallback",
+                attempt_count=0,
+                started_at=started_at,
+                fallback_reason=reason,
+            )
             return self._json_fallback(
                 fallback_object,
-                "LLM provider is not fully configured",
+                reason,
             )
 
         attempts = (
@@ -160,10 +199,28 @@ class LLMClient:
         last_error = "unknown LLM error"
         attempts_made = 0
         raw_response_text = ""
+        observed_prompt_tokens: Optional[int] = None
+        observed_completion_tokens: Optional[int] = None
+        observed_total_tokens: Optional[int] = None
         for attempt in range(attempts):
             attempts_made = attempt + 1
             try:
                 response_data = self._request_chat_completion(system_prompt, context)
+                prompt_tokens, completion_tokens, total_tokens = (
+                    extract_token_usage(response_data)
+                )
+                if prompt_tokens is not None:
+                    observed_prompt_tokens = (
+                        (observed_prompt_tokens or 0) + prompt_tokens
+                    )
+                if completion_tokens is not None:
+                    observed_completion_tokens = (
+                        (observed_completion_tokens or 0) + completion_tokens
+                    )
+                if total_tokens is not None:
+                    observed_total_tokens = (
+                        (observed_total_tokens or 0) + total_tokens
+                    )
                 content = _extract_response_content(response_data)
                 raw_response_text = content
                 parsed = _parse_json_object(content)
@@ -171,6 +228,16 @@ class LLMClient:
                     raise ValueError("LLM JSON contained a replacement character")
                 if validator is not None:
                     validator(parsed)
+                self._record_request_observation(
+                    task=task,
+                    operation=operation,
+                    outcome="success",
+                    attempt_count=attempts_made,
+                    started_at=started_at,
+                    prompt_tokens=observed_prompt_tokens,
+                    completion_tokens=observed_completion_tokens,
+                    total_tokens=observed_total_tokens,
+                )
                 return LLMJsonGeneration(
                     data=parsed,
                     used_llm=True,
@@ -192,11 +259,62 @@ class LLMClient:
                 if delay > 0:
                     time.sleep(delay)
 
+        fallback_reason = f"{last_error} after {attempts_made} attempt(s)"
+        self._record_request_observation(
+            task=task,
+            operation=operation,
+            outcome="fallback",
+            attempt_count=attempts_made,
+            started_at=started_at,
+            fallback_reason=fallback_reason,
+            prompt_tokens=observed_prompt_tokens,
+            completion_tokens=observed_completion_tokens,
+            total_tokens=observed_total_tokens,
+        )
         return self._json_fallback(
             fallback_object,
-            f"{last_error} after {attempts_made} attempt(s)",
+            fallback_reason,
             raw_response_text,
         )
+
+    def _record_request_observation(
+        self,
+        *,
+        task: object,
+        operation: str,
+        outcome: str,
+        attempt_count: int,
+        started_at: float,
+        fallback_reason: str = "",
+        prompt_tokens: Optional[int] = None,
+        completion_tokens: Optional[int] = None,
+        total_tokens: Optional[int] = None,
+    ) -> None:
+        if self._event_sink is None:
+            return
+        try:
+            event = build_request_observation(
+                task=task,
+                operation=operation,
+                provider=self.settings.provider,
+                model=self.settings.model,
+                outcome=outcome,
+                attempt_count=attempt_count,
+                retry_count=max(0, attempt_count - 1),
+                latency_ms=(time.perf_counter() - started_at) * 1000,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                fallback_category=(
+                    classify_request_fallback(fallback_reason)
+                    if outcome == "fallback"
+                    else ""
+                ),
+            )
+            self._event_sink(event)
+        except Exception:
+            # Metrics are best-effort and must never change the LLM result.
+            return
 
     def _request_chat_completion(
         self,
@@ -335,4 +453,6 @@ def _env_float(name: str, default: float, minimum: float, maximum: float) -> flo
     return min(max(value, minimum), maximum)
 
 
-LLM_CLIENT = LLMClient()
+LLM_CLIENT = LLMClient(
+    event_sink=LLM_OBSERVABILITY_RECORDER.record_event,
+)

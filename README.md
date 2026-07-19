@@ -135,6 +135,18 @@ M06-B 在 M06-A 的“无权视角必须不变”之外，补上角色私有事�
 
 至此 M06-A/B 分别锁住不应变化和依法应变化的两侧边界。后续新增私有状态或策略入口时，必须先把对应 projection 和授权规则加入矩阵。
 
+## V3.1-I 脱敏 LLM 可观测性 M09-A
+
+M09-A 为真实 LLM 请求和既有语义校验增加本地、只追加、可离线汇总的诊断层，不改变 NPC 策略、规则回退或任何游戏状态：
+
+- `backend/app/llm_observability.py` 定义严格的 `llm_observation.v1`。每次适配器调用只记录 task、操作类型、provider/model、成功或回退、尝试/重试次数、总延迟、provider 可选 token 用量和分类后的回退原因。
+- 结构化策略经过拒绝后恢复或最终回退时，会另记一条 semantic-validation 事件；事件只保存 `schema_invalid / hidden_information / continuity` 等类别计数，不保存原始输出和具体拒绝文本。
+- 观测事件写入 `backend/data/llm_observability.jsonl`。其字段采用精确 allowlist，不包含 API Key、system prompt、上下文、玩家问题、模型回复、规则 fallback、game/character ID 或原始校验内容。
+- `scripts/summarize_llm_observability.py` 输出 `llm_observability_summary.v1`，汇总请求成功率、语义恢复/回退数、平均尝试、重试、平均/P95/最大延迟、token 总量、主要失败类别，并按 task 和 provider/model 分组。
+- provider 没有返回 `usage` 时 token 样本保持为空，不进行猜测。M09-A 也不写死云端价格；版本化价格与估算成本留给 M09-B。
+
+已有 `llm_validation_failures.jsonl` 继续承担受限的原始语义审计，两份日志用途和敏感等级不同。日常指标只能读取新的脱敏文件；观测写入失败时直接跳过，绝不能影响 Python 规则结果或既有确定性回退。
+
 ## 当前版本
 
 ### 小镇交互
@@ -477,6 +489,7 @@ agent-town-demo/
       belief.py
       invariance.py
       llm.py
+      llm_observability.py
       main.py
       npc_decision.py
       npc_tuning.py
@@ -494,6 +507,7 @@ agent-town-demo/
     README.md
   scripts/
     simulate_games.py
+    summarize_llm_observability.py
     smoke_check.py
   README.md
 ```
@@ -714,11 +728,18 @@ backend/.venv/bin/python scripts/check_llm_connection.py
 
 ## V3 进度与下一阶段
 
-V3.1-A 已建立可复现模拟，V3.1-B/M02-A 已建立第一版核心指标，V3.1-C/M03-A 锁住合法证据和变化链，V3.1-D/M03-B 补齐衰减与私聊边界，V3.1-E/M04-A 已完成 shadow 连续性对照，V3.1-F/M04-B 已让普通非警长白天发言受控读取统一 stance，V3.1-G/M06-A 已锁住无权村民投影，V3.1-H/M06-B 已补齐预言家、女巫和狼队合法私有变化与越权隔离。下一步优先做 M09 LLM 可观测性，再用 M15 做多种子投票校准；警长票和放逐票暂不直接消费 stance。
+V3.1-A 已建立可复现模拟，V3.1-B/M02-A 已建立第一版核心指标，V3.1-C/M03-A 锁住合法证据和变化链，V3.1-D/M03-B 补齐衰减与私聊边界，V3.1-E/M04-A 已完成 shadow 连续性对照，V3.1-F/M04-B 已让普通非警长白天发言受控读取统一 stance，V3.1-G/M06-A 已锁住无权村民投影，V3.1-H/M06-B 已补齐角色授权私有变化，V3.1-I/M09-A 已建立脱敏 LLM 调用与校验汇总。下一步补 M09-B 的版本指纹/成本口径，或进入 M15 多种子投票校准；警长票和放逐票暂不直接消费 stance。
 
 完整任务、优先级、依赖、工作量和验收口径见独立的 [`V3 改进与开发路线表`](docs/V3_ROADMAP.md)。V2.0 的规则边界在 V3 继续保持：身份、合法行动、投票、出局、警徽与胜负仍由 Python 决定，LLM 只能在合法上下文和结构化契约内进行策略选择与表达。
 
 ## 开发记录
+
+### 2026-07-19 V3.1-I 脱敏 LLM 可观测性 M09-A
+
+- 新增 `llm_observation.v1` 本地 JSONL，逐次记录请求成功/回退、尝试与重试、延迟、可选 token 和稳定失败类别；不改变 LLM 返回或规则 fallback。
+- 语义校验的恢复与最终回退只记录分类计数，不复制原始输出、拒绝原文、私有上下文或游戏标识；严格字段白名单拒绝额外内容。
+- 新增 `llm_observability_summary.v1` 离线命令，支持全局、按 task、按 provider/model 查看成功率、P95 延迟、平均尝试和主要失败原因。
+- 自动化用秘密标记验证 API Key、prompt、上下文、回复和 fallback 均不落入观测事件，并覆盖真实语义校验恢复/失败路径、坏行隔离和 CLI 输出。
 
 ### 2026-07-19 V3.1-H 授权私有视角矩阵 M06-B
 
