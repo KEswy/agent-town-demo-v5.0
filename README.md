@@ -37,7 +37,7 @@ V3.1-A 的 100 局规则基线全部合法结束，但只得到好人 6 胜、�
 M02-A 已在可复现模拟上增加独立的赛后指标层：
 
 - `backend/app/simulation_metrics.py` 只接受已经进入 `GAME_OVER` 的状态；真实身份只用于评价已经发生的选择，不会进入实时 API、NPC 上下文或玩家决策。
-- 每局和批量报告使用 `agent_town_metrics.v1`；M02-A 当时升级到 simulation v2，M03-A/B 为 v3/v4，M04-A/B 为 v5/v6，M15-A 为 v7，当前 M15-B 为 v8，并完整保留这些指标。
+- 每局和批量报告当前使用 `agent_town_metrics.v2`；M02-A 当时为 metrics v1 / simulation v2，M03-A/B 为 simulation v3/v4，M04-A/B 为 v5/v6，M15-A/B 为 v7/v8，当前 V3.1-L 为 v9，并完整保留旧指标。
 - 指标覆盖阵营胜率、平均局长、警长票熵、逐日放逐票熵、好人正确投狼率/误投好人率、假预言家好人警长票支持率与公开查杀跟票率。
 - 报告按模拟玩家身份、投票者角色和游戏天数聚合；所有比率保留原始分子/分母，无适用样本使用 `null`，不伪装成 0%。
 - 票熵按每张未加权选票计算，归一化口径为 `H / log2(选票数)`；它衡量选择是否集中，不把警长的 1.5 票重复视作多个玩家。
@@ -107,7 +107,7 @@ M04-B 让普通非警长 `DAY_MEETING` 成为第一个读取 `stance_summary.v1`
 - 当前发言计划升级为 `public_speech_plan.v3`。除了 v2 的目标、立场、证据、问题、验证和暂定票外，必须给出 `continuity_reason`：`stance_aligned / new_public_evidence / deterministic_variance / authorized_claim / mandatory_rule_response / unscored`。
 - 偏离主导 stance 只能引用本次已选中的新增公开 signal，或命中由内部 seed、`decision_variance` 和 `plan_consistency` 共同决定的可复现个体扰动。合法声明单列为 `authorized_claim`；收到必须回应的公开验人或既有狼队故事线单列为 `mandatory_rule_response`。
 - 规则兜底会主动对齐 stance；LLM 仍可在合法目标、公开证据、声明包和战术白名单内选择策略。私有 belief evidence ID 只进入策略上下文，不会写入公开计划、台词或进行中 API。
-- M04-B 当时把模拟升级为 v6；M15-A 为 v7，当前 M15-B 已升级到 `agent_town_simulation.v8` / `agent_town_simulation_batch.v8`，并继续保留 `speech_continuity_metrics.v1`。该统计不包含私有 belief 内容；M04-A 的警长票和放逐票 stance 对照继续保留。
+- M04-B 当时把模拟升级为 v6；M15-A/B 为 v7/v8，当前 V3.1-L 已升级到 `agent_town_simulation.v9` / `agent_town_simulation_batch.v9`，并继续保留 `speech_continuity_metrics.v1`。该统计不包含私有 belief 内容；M04-A 的警长票和放逐票 stance 对照继续保留。
 
 同一组 `20260719–20260818` 共 100 个 seed 产生 2,163 次受控普通发言：1,831 次 `stance_aligned`、141 次 `authorized_claim`、139 次 `mandatory_rule_response`、52 次 `unscored`。规则模拟关闭 LLM，所以 `new_public_evidence / deterministic_variance` 均为 0；这两个分支由合成正反样本覆盖。公开发言未解释变化由 M04-A 基线的 112 次降为 3 次，全部决策的未解释率由 4.78% 降为 1.68%。但好人胜率同时由 6% 降至 2%，好人误投率由 60.95% 升至 64.46%；连续性改善不等于判断质量改善，M15 仍需独立做投票概率校准。
 
@@ -129,7 +129,7 @@ M06-B 在 M06-A 的“无权视角必须不变”之外，补上角色私有事�
 
 - `hidden_info_authorization.v1` 使用 `role_scoped_private_npc` 模式，逐一改变 NPC 预言家的私有验人目标、NPC 女巫依法看到的未公开刀口，以及一名未参与对比的狼队成员身份。
 - 每个案例同时比较普通村民玩家公开投影和所有角色未变的存活、无警徽 NPC；只有声明过授权的 observer/layer 可以变化。狼队案例排除被直接交换真实身份的两名角色，防止把“本人身份已变”误当成私有知识传播。
-- 固定 seed 共执行 `158/158` 项检查：预言家变化贯穿 belief、stance、decision context、continuity 和 fallback；女巫刀口进入 belief、stance、continuity 和 fallback，但不直接写入 decision context；其余 3 名狼人对狼队成员变化更新 belief、stance、decision context 和 continuity。
+- 固定 seed 共执行 `158/158` 项检查：预言家变化贯穿 belief、stance、decision context、continuity 和 fallback；V3.1-L 后女巫刀口只进入 belief、stance 和 continuity，首夜 99% 救人不再由旧好感阈值改变 fallback；其余 3 名狼人对狼队成员变化更新 belief、stance、decision context 和 continuity。
 - 所有其他 NPC 的五层决策投影和三类案例的公开投影必须逐项不变。把预言家授权故意错配给村民的负对照，必须同时报告“真正预言家的变化未获授权”和“村民被要求变化却没有变化”。
 - 报告只保存授权类别、观察者/投影计数、摘要和首个差异路径，不保存变体对局状态或私有 evidence 正文；该报告仅供离线测试，不进入进行中 API、LLM 上下文或 Godot。
 
@@ -172,6 +172,21 @@ M15-B 把唯一实时改动限制在 `VOTE` 阶段的非玩家、非警长、好
 - simulation 升级为 v8；`vote_probability_summary.v2` 新增 controlled/shadow 数量及分组。关闭轨迹只移除离线诊断，不会关闭实时 M15-B 策略，也不会改变 gameplay digest。
 
 同一组 `20260719–20260818` 的 100 局验收中，受控普通好人放逐观察为 1,482 次，平均归一化个体熵为 `9.82%`，可比 M15-A 非警长基线为 `9.01%`；top 概率为 `93.45%`。总体好人误投率由 M15-A 基线 `64.46%` 降至 `63.69%`，好人胜场保持 `2/100`，好人放逐概率质量落在狼人目标的比例由 `34.76%` 升至 `36.14%`。这些仍是固定 seed 回归结果，不是目标胜率或自动调参阈值。
+
+## V3.1-L 女巫策略与失衡诊断 M02-B
+
+V3.1-L 没有继续盲调投票温度，而是先把女巫策略和终局根因变成可审计数据：
+
+- NPC 女巫第一夜被刀时必定自救；其他合法刀口以由 game seed 派生的确定性 `99%` 概率使用解药，第一夜不使用毒药。玩家女巫仍由玩家通过原夜间接口决定行动。
+- 从第二夜开始，只要 NPC 女巫存活且有毒，默认毒掉她自己合法视角中最怀疑的存活目标；目标排序不读取真实身份。
+- 玩家发言只在明确出现“女巫毒掉某一人”或“女巫压毒”时生成 `witch_directive.v1`。多目标、含糊说法和“我昨晚毒了谁”不会被猜成未来行动。
+- 普通 NPC 可根据自己的公开计划追加同一结构化建议。女巫用自己的怀疑、公开压力、对建议者的信任、公开说服力和 NPC tuning 独立评分；因此可以采信、拒绝，也可以被狼人或判断错误的好人骗到。
+- 只有理由属于“当前公开信息不足”的压毒建议可能被采信。`witch_strategy_decision.v1` 记录行动、采信来源和原因，但不进入进行中公开 API。
+- `agent_town_metrics.v2` 新增终局原因、首个放逐阵营/身份、按出局原因与阵营计数，以及女巫首夜救人、第二夜毒/压毒、建议采信和毒药命中指标；simulation 同步升级为 v9。
+
+同一组 100 seeds 中有 95 局为 NPC 女巫：首夜存在救人机会的 `95/95` 局均使用解药（策略配置仍是 99%，该固定样本恰好没有命中 1% 跳过）；9 次女巫本人被刀全部自救。第二夜有毒且存活的 90 局中，67 局用毒、23 局因合理建议压毒；整批共 72 次用毒，命中狼人 42 次、好人 30 次，狼人命中率 `58.33%`。
+
+平衡仍未修复：好人仅胜 `3/100`；首轮放逐好人仍为 `75/100`，其中首放预言家 `34` 局；终局原因为狼人控场 73、神职出尽 17、村民出尽 7、全狼出局 3。好人误投率为 `68.34%`。这些数据证明女巫策略已按合法视角工作，也进一步把主因指向白天 belief/假预言家可信度与放逐链，而不是继续依靠女巫单点补偿。
 
 ## 当前版本
 
@@ -443,7 +458,7 @@ backend/.venv/bin/python scripts/smoke_check.py
 自检内容包括：
 
 - 无 HTTP 批量模拟的同 seed 精确重放、合法终局、显式 seed 隔离、内存清理、LLM/RAG 禁用和隐藏身份互换不变性。
-- `agent_town_metrics.v1` 的赛后权限、schema 版本、空样本 `null`、票数守恒、数值范围、有限值、按玩家身份/投票角色/天数完整聚合及跨进程精确重放。
+- `agent_town_metrics.v2` 的赛后权限、schema 版本、空样本 `null`、票数/毒药/第二夜选择守恒、数值范围、按玩家身份/投票角色/天数完整聚合及跨进程精确重放。
 - `belief_state.v2` 的公开/行动者私有/狼队权限、证据 ID 引用、席位覆盖、分数范围、软证据跨日衰减、硬事实与合法私有知识不衰减、结构化私聊隔离、隐藏身份与未公布夜间结果差分，以及 shadow on/off 玩法摘要一致。
 - `stance_summary.v1` 的目标/证据权限、隐藏身份与自由文本不变性、阶段空转稳定性、同目标一致、无新证据变化、新证据后变化、分类计数守恒，以及 stance-on/off belief 与 gameplay 一致。
 - JSON 配置格式和知识条目数量。
@@ -755,11 +770,18 @@ backend/.venv/bin/python scripts/check_llm_connection.py
 
 ## V3 进度与下一阶段
 
-V3.1-A 至 V3.1-I 已建立可复现模拟、核心指标、合法 belief/stance、受控发言、隐藏信息矩阵和脱敏 LLM 汇总；V3.1-J/M15-A 完成五分量 shadow 诊断，V3.1-K/M15-B 已让普通好人放逐票受控消费校准分布。警长票、狼人票和规则硬约束继续保持原路径；下一步可按真实 LLM 样本推进 M09-B 的版本指纹/成本口径，或回到 M01/M02 扩展更大样本和配置对比。
+V3.1-A 至 V3.1-I 已建立可复现模拟、核心指标、合法 belief/stance、受控发言、隐藏信息矩阵和脱敏 LLM 汇总；V3.1-J/K 完成投票概率 shadow 与首个受控消费者；V3.1-L 已接入合法视角女巫策略和根因指标。当前 100-seed 好人胜率仍只有 3%，下一步应优先拆解并校准真假预言家的公开可信度和首轮放逐链，而不是继续靠夜间技能补偿。
 
 完整任务、优先级、依赖、工作量和验收口径见独立的 [`V3 改进与开发路线表`](docs/V3_ROADMAP.md)。V2.0 的规则边界在 V3 继续保持：身份、合法行动、投票、出局、警徽与胜负仍由 Python 决定，LLM 只能在合法上下文和结构化契约内进行策略选择与表达。
 
 ## 开发记录
+
+### 2026-07-19 V3.1-L 女巫策略与失衡诊断 M02-B
+
+- 新增严格 `witch_directive.v1` 与内部 `witch_strategy_decision.v1`；玩家/NPC 只能公开提出单目标毒人或有理由压毒，NPC 女巫按自己的合法视角独立采信。
+- NPC 女巫首夜本人被刀 100% 自救、其他刀口确定性 99% 救；第二夜默认毒自己最怀疑的人，只有采信合理压毒建议才保留毒药。
+- metrics 升级为 v2、simulation 升级为 v9，增加终局原因、首放、出局来源与女巫救/毒/压毒/命中汇总；命令行新增 `[BALANCE]`、`[WITCH]` 摘要。
+- 100 局毒药命中狼人 42/72，但好人仍仅 3 胜，首放好人 75 局且首放预言家 34 局；下一步继续治理白天真假预言家可信度和放逐链。
 
 ### 2026-07-19 V3.1-K 普通好人放逐概率校准 M15-B
 
@@ -785,7 +807,7 @@ V3.1-A 至 V3.1-I 已建立可复现模拟、核心指标、合法 belief/stance
 ### 2026-07-19 V3.1-H 授权私有视角矩阵 M06-B
 
 - 新增 `hidden_info_authorization.v1`，以声明式 required/allowed 规则比较预言家验人、女巫刀口和狼队成员变化；未授权 observer/layer 必须保持摘要相同。
-- 固定 seed 覆盖 11 名 NPC，三类案例共 158 项：预言家全部五层变化，女巫四层变化，三名未换身份的狼人各有四层变化，公开投影和其他 NPC 全部不变。
+- 固定 seed 覆盖 11 名 NPC，三类案例共 158 项；V3.1-L 后预言家全部五层变化，女巫三层变化，三名未换身份的狼人各有四层变化，公开投影和其他 NPC 全部不变。
 - 狼队案例排除两个直接换身份的 actor；错误地把预言家私有变化授权给村民时，矩阵能同时发现缺失授权和错误授权。
 - 报告不保存变体状态或私有 evidence 正文，输入顺序不影响结果；实时 API、LLM 与规则玩法保持不变。
 

@@ -108,6 +108,8 @@ def main() -> int:
         vote_calibration_summary = report["vote_calibration_summary"]
         good_vote = metrics["good_exile_vote"]
         fake_seer = metrics["fake_seer_acceptance"]
+        balance = metrics["balance_diagnostics"]
+        witch = balance["witch"]
         print(
             f"[OK] simulated {report['games_completed']} game(s); "
             f"winner_counts={summary['winner_counts']}; output={args.output}"
@@ -119,6 +121,18 @@ def main() -> int:
             f"good_misvote_rate={_format_rate(good_vote['misvote_good_target_rate'])}; "
             f"fake_seer_sheriff_support={_format_rate(fake_seer['good_sheriff_support_rate'])}; "
             f"fake_black_check_follow={_format_rate(fake_seer['good_black_check_follow_rate'])}"
+        )
+        print(
+            "[BALANCE] "
+            f"winner_reasons={balance['winner_reason_counts']}; "
+            f"first_exile_camps={balance['first_exile_camp_counts']}"
+        )
+        print(
+            "[WITCH] "
+            f"first_night_save={_format_rate(witch['first_night_save_rate'])}; "
+            f"second_night_poison={_format_rate(witch['second_night_poison_rate'])}; "
+            f"accepted_hold={witch['accepted_hold_count']}; "
+            f"poison_wolf_hit={_format_rate(witch['wolf_poison_rate'])}"
         )
         if belief_summary is None:
             print("[BELIEF] detailed trace disabled")

@@ -9,7 +9,7 @@ from threading import Lock
 from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .llm import LLM_CLIENT, LLMGeneration, LLMJsonGeneration
 from .llm_observability import (
@@ -134,6 +134,9 @@ NPC_NAMES = [
 ]
 FIXED_NPC_COUNT = 11
 MAX_GAME_RANDOM_SEED = (1 << 63) - 1
+WITCH_DIRECTIVE_SCHEMA_VERSION = "witch_directive.v1"
+WITCH_STRATEGY_SCHEMA_VERSION = "witch_strategy_decision.v1"
+NPC_WITCH_FIRST_NIGHT_SAVE_RATE = 0.99
 
 NPC_PERSONALITIES = {
     "梅西": {
@@ -408,6 +411,64 @@ class VoteState(BaseModel):
     weight: float = 1.0
 
 
+class WitchDirectiveState(BaseModel):
+    """A public, structured suggestion that contains no role truth."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["witch_directive.v1"] = WITCH_DIRECTIVE_SCHEMA_VERSION
+    action: Literal["poison", "hold"]
+    target_id: Optional[int] = Field(default=None, gt=0)
+    reason_kind: Literal["target_suspected", "public_uncertainty", "unspecified"]
+    confidence: int = Field(default=50, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_action_target(self) -> "WitchDirectiveState":
+        if self.action == "poison" and self.target_id is None:
+            raise ValueError("a poison directive requires one target")
+        if self.action == "hold" and self.target_id is not None:
+            raise ValueError("a hold directive must not name a poison target")
+        return self
+
+
+class WitchStrategyDecisionState(BaseModel):
+    """Internal audit record for one NPC-witch choice from its legal view."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["witch_strategy_decision.v1"] = (
+        WITCH_STRATEGY_SCHEMA_VERSION
+    )
+    day: int = Field(ge=1)
+    actor_id: int = Field(gt=0)
+    action_type: Literal["witch_save", "witch_poison", "none"]
+    target_id: Optional[int] = Field(default=None, gt=0)
+    reason: Literal[
+        "first_night_self_save",
+        "first_night_save_99",
+        "first_night_save_skip",
+        "accepted_hold",
+        "accepted_poison",
+        "own_suspicion",
+        "poison_unavailable",
+        "no_legal_target",
+    ]
+    directive_actor_id: Optional[int] = Field(default=None, gt=0)
+    directive_action: Optional[Literal["poison", "hold"]] = None
+    directive_target_id: Optional[int] = Field(default=None, gt=0)
+    directive_accepted: bool = False
+    acceptance_score: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+
+    @model_validator(mode="after")
+    def validate_action_target(self) -> "WitchStrategyDecisionState":
+        has_target = self.target_id is not None
+        if self.action_type == "none" and has_target:
+            raise ValueError("a no-action witch decision must not name a target")
+        if self.action_type != "none" and not has_target:
+            raise ValueError("a potion action requires one target")
+        return self
+
+
 class SpeechState(BaseModel):
     day: int
     character_id: int
@@ -428,6 +489,7 @@ class SpeechState(BaseModel):
     claim_count: int = 0
     decision_plan: dict[str, object] = Field(default_factory=dict)
     public_position: Optional[PublicPositionV1] = None
+    witch_directive: Optional[WitchDirectiveState] = None
 
 
 class PrivateBeliefInfluenceState(BaseModel):
@@ -687,6 +749,9 @@ class WolfGameState(BaseModel):
     pending_hunter_trigger: str = ""
     pending_hunter_continuation: str = ""
     wolf_fake_seer_id: Optional[int] = None
+    witch_strategy_decisions: list[WitchStrategyDecisionState] = Field(
+        default_factory=list
+    )
     llm_validation_failures: list[LLMValidationFailureState] = Field(default_factory=list)
     winner: Optional[str] = None
     winner_reason: str = ""
@@ -799,6 +864,7 @@ class ParsedPlayerSpeech(BaseModel):
     supported_ids: list[int] = Field(default_factory=list)
     opposed_ids: list[int] = Field(default_factory=list)
     vote_intent_target_id: Optional[int] = None
+    witch_directive: Optional[WitchDirectiveState] = None
     tone: str = "neutral"
 
 
@@ -2677,7 +2743,11 @@ def record_sheriff_speech(
 ) -> None:
     round_number = game_state.sheriff_election.runoff_round if game_state.sheriff_election else 0
     phase_name = "SHERIFF_RUNOFF_SPEECH" if round_number > 0 else "SHERIFF_SPEECH"
-    parsed = parse_player_speech(game_state, speech_item.speech)
+    parsed = parse_player_speech(
+        game_state,
+        speech_item.speech,
+        speaker_id=speaker.id,
+    )
     speech_state = SpeechState(
         day=game_state.day,
         character_id=speaker.id,
@@ -2702,6 +2772,7 @@ def record_sheriff_speech(
             phase_name,
             parsed=parsed,
         ),
+        witch_directive=parsed.witch_directive,
     )
     game_state.speeches.append(speech_state)
     stage_label = "警上 PK" if round_number > 0 else "警上"
@@ -2891,7 +2962,11 @@ def get_public_persuasion_strength(
         return round(clamp_float(persona_strength), 4)
 
     normalized = " ".join(latest_public_speech.speech.split()).strip()
-    parsed = parse_player_speech(game_state, normalized)
+    parsed = parse_player_speech(
+        game_state,
+        normalized,
+        speaker_id=speaker.id,
+    )
     direct_claims = [
         claim
         for claim in game_state.public_claims
@@ -4234,6 +4309,7 @@ def submit_player_speech(request: PlayerSpeechRequest) -> PlayerSpeechResponse:
                 parsed=parsed,
                 planned_claims=added_public_claims,
             ),
+            witch_directive=parsed.witch_directive,
         )
         game_state.speeches.append(speech_state)
         game_state.public_logs.append(public_log)
@@ -5425,18 +5501,19 @@ def ensure_npc_witch_actions(game_state: WolfGameState) -> None:
             or has_night_action(game_state, actor.id)
         ):
             continue
-        action_type, target_id = choose_npc_witch_action(
+        decision = choose_npc_witch_action_decision(
             game_state,
             actor,
             attacked_target_id,
         )
+        upsert_witch_strategy_decision(game_state, decision)
         upsert_night_action(
             game_state,
             NightActionState(
                 day=game_state.day,
                 actor_id=actor.id,
-                action_type=action_type,
-                target_id=target_id,
+                action_type=decision.action_type,
+                target_id=decision.target_id,
             ),
         )
 
@@ -5571,32 +5648,252 @@ def choose_npc_witch_action(
     witch: CharacterState,
     attacked_target_id: Optional[int],
 ) -> tuple[str, Optional[int]]:
+    decision = choose_npc_witch_action_decision(
+        game_state,
+        witch,
+        attacked_target_id,
+    )
+    return decision.action_type, decision.target_id
+
+
+def upsert_witch_strategy_decision(
+    game_state: WolfGameState,
+    decision: WitchStrategyDecisionState,
+) -> None:
+    game_state.witch_strategy_decisions = [
+        item
+        for item in game_state.witch_strategy_decisions
+        if not (item.day == decision.day and item.actor_id == decision.actor_id)
+    ]
+    game_state.witch_strategy_decisions.append(decision)
+
+
+def get_witch_directives_for_night(
+    game_state: WolfGameState,
+) -> list[tuple[SpeechState, WitchDirectiveState]]:
+    public_day = game_state.day - 1
+    if public_day < 1:
+        return []
+    return [
+        (speech, speech.witch_directive)
+        for speech in game_state.speeches
+        if speech.day == public_day
+        and speech.phase
+        in {"DAY_MEETING", "SHERIFF_SPEECH", "SHERIFF_RUNOFF_SPEECH"}
+        and speech.witch_directive is not None
+    ]
+
+
+def score_witch_directive(
+    game_state: WolfGameState,
+    witch: CharacterState,
+    speech: SpeechState,
+    directive: WitchDirectiveState,
+    *,
+    highest_suspicion: int,
+    suspicion_margin: int,
+) -> float:
+    """Score public advice using only the witch's legal subjective view."""
+
+    source = get_character(game_state, speech.character_id)
+    trust = float(
+        witch.relationships.get(str(source.id), {}).get("trust", 0.5)
+    )
+    persuasion = get_public_persuasion_strength(game_state, source)
+    tuning = get_character_strategy_tuning(witch)
+    if directive.action == "hold":
+        if directive.reason_kind != "public_uncertainty":
+            return 0.0
+        ambiguity = (
+            1.0
+            if highest_suspicion < 55 or suspicion_margin < 12
+            else 0.0
+        )
+        score = (
+            trust * 24.0
+            + persuasion * 18.0
+            + witch.personality.get("cautiousness", 0.5) * 20.0
+            + tuning.reasoning_skill * 14.0
+            + ambiguity * 18.0
+            + directive.confidence * 0.06
+        )
+        return round(max(0.0, min(100.0, score)), 4)
+
+    if directive.target_id is None:
+        return 0.0
+    personal_suspicion = max(
+        0,
+        min(100, int(witch.suspicion.get(str(directive.target_id), 0))),
+    )
+    public_pressure = max(
+        0,
+        min(100, get_public_suspicion_score(game_state, directive.target_id)),
+    )
+    reason_bonus = 10.0 if directive.reason_kind == "target_suspected" else 0.0
+    score = (
+        personal_suspicion * 0.42
+        + public_pressure * 0.18
+        + trust * 18.0
+        + persuasion * 12.0
+        + tuning.reasoning_skill * 8.0
+        + reason_bonus
+        + directive.confidence * 0.08
+    )
+    return round(max(0.0, min(100.0, score)), 4)
+
+
+def choose_npc_witch_action_decision(
+    game_state: WolfGameState,
+    witch: CharacterState,
+    attacked_target_id: Optional[int],
+) -> WitchStrategyDecisionState:
     resources = get_role_resources(game_state, witch.id)
-    if attacked_target_id is not None and bool(resources.get("antidote_available", False)):
-        attacked_target = get_character(game_state, attacked_target_id)
-        relationship = witch.relationships.get(str(attacked_target.id), {})
-        trust = float(relationship.get("trust", 0.5))
-        suspicion = witch.suspicion.get(str(attacked_target.id), 0)
-        can_self_save = attacked_target.id != witch.id or game_state.day == 1
-        save_threshold = 0.42 + witch.personality.get("empathy", 0.5) * 0.2
-        if can_self_save and (attacked_target.id == witch.id or (trust >= save_threshold and suspicion < 45)):
-            return "witch_save", attacked_target.id
-
-    if bool(resources.get("poison_available", False)):
-        candidates = [
-            character
-            for character in game_state.characters
-            if character.alive and character.id != witch.id
-        ]
-        if candidates:
-            target = max(
-                candidates,
-                key=lambda character: witch.suspicion.get(str(character.id), 0),
+    if game_state.day == 1:
+        if (
+            attacked_target_id is not None
+            and bool(resources.get("antidote_available", False))
+        ):
+            attacked_target = get_character(game_state, attacked_target_id)
+            if attacked_target.id == witch.id:
+                return WitchStrategyDecisionState(
+                    day=game_state.day,
+                    actor_id=witch.id,
+                    action_type="witch_save",
+                    target_id=attacked_target.id,
+                    reason="first_night_self_save",
+                )
+            if deterministic_strategy_roll(
+                game_state,
+                witch,
+                f"witch_first_night_save:{attacked_target.id}",
+            ) < NPC_WITCH_FIRST_NIGHT_SAVE_RATE:
+                return WitchStrategyDecisionState(
+                    day=game_state.day,
+                    actor_id=witch.id,
+                    action_type="witch_save",
+                    target_id=attacked_target.id,
+                    reason="first_night_save_99",
+                )
+            return WitchStrategyDecisionState(
+                day=game_state.day,
+                actor_id=witch.id,
+                action_type="none",
+                target_id=None,
+                reason="first_night_save_skip",
             )
-            if witch.suspicion.get(str(target.id), 0) >= 65:
-                return "witch_poison", target.id
+        return WitchStrategyDecisionState(
+            day=game_state.day,
+            actor_id=witch.id,
+            action_type="none",
+            target_id=None,
+            reason="no_legal_target",
+        )
 
-    return "none", None
+    if not bool(resources.get("poison_available", False)):
+        return WitchStrategyDecisionState(
+            day=game_state.day,
+            actor_id=witch.id,
+            action_type="none",
+            target_id=None,
+            reason="poison_unavailable",
+        )
+
+    candidates = [
+        character
+        for character in game_state.characters
+        if character.alive and character.id != witch.id
+    ]
+    if not candidates:
+        return WitchStrategyDecisionState(
+            day=game_state.day,
+            actor_id=witch.id,
+            action_type="none",
+            target_id=None,
+            reason="no_legal_target",
+        )
+    ranked_candidates = sorted(
+        candidates,
+        key=lambda character: (
+            -int(witch.suspicion.get(str(character.id), 0)),
+            -get_public_suspicion_score(game_state, character.id),
+            character.id,
+        ),
+    )
+    own_target = ranked_candidates[0]
+    highest_suspicion = int(witch.suspicion.get(str(own_target.id), 0))
+    second_suspicion = (
+        int(witch.suspicion.get(str(ranked_candidates[1].id), 0))
+        if len(ranked_candidates) > 1
+        else highest_suspicion
+    )
+    suspicion_margin = highest_suspicion - second_suspicion
+
+    accepted_hold: Optional[tuple[SpeechState, WitchDirectiveState, float]] = None
+    accepted_poison: Optional[tuple[SpeechState, WitchDirectiveState, float]] = None
+    living_ids = {character.id for character in candidates}
+    for speech, directive in get_witch_directives_for_night(game_state):
+        if (
+            directive.action == "poison"
+            and directive.target_id not in living_ids
+        ):
+            continue
+        score = score_witch_directive(
+            game_state,
+            witch,
+            speech,
+            directive,
+            highest_suspicion=highest_suspicion,
+            suspicion_margin=suspicion_margin,
+        )
+        threshold = 58.0 if directive.action == "hold" else 55.0
+        if score < threshold:
+            continue
+        candidate_item = (speech, directive, score)
+        if directive.action == "hold":
+            if accepted_hold is None or score >= accepted_hold[2]:
+                accepted_hold = candidate_item
+        elif accepted_poison is None or score >= accepted_poison[2]:
+            accepted_poison = candidate_item
+
+    if accepted_hold is not None and (
+        accepted_poison is None or accepted_hold[2] > accepted_poison[2] + 5.0
+    ):
+        speech, directive, score = accepted_hold
+        return WitchStrategyDecisionState(
+            day=game_state.day,
+            actor_id=witch.id,
+            action_type="none",
+            target_id=None,
+            reason="accepted_hold",
+            directive_actor_id=speech.character_id,
+            directive_action=directive.action,
+            directive_target_id=directive.target_id,
+            directive_accepted=True,
+            acceptance_score=score,
+        )
+
+    if accepted_poison is not None:
+        speech, directive, score = accepted_poison
+        return WitchStrategyDecisionState(
+            day=game_state.day,
+            actor_id=witch.id,
+            action_type="witch_poison",
+            target_id=directive.target_id,
+            reason="accepted_poison",
+            directive_actor_id=speech.character_id,
+            directive_action=directive.action,
+            directive_target_id=directive.target_id,
+            directive_accepted=True,
+            acceptance_score=score,
+        )
+
+    return WitchStrategyDecisionState(
+        day=game_state.day,
+        actor_id=witch.id,
+        action_type="witch_poison",
+        target_id=own_target.id,
+        reason="own_suspicion",
+    )
 
 
 def choose_wolf_kill_target(
@@ -6975,7 +7272,103 @@ def sentence_negates_character_accusation(
     return any(re.search(pattern, compact) for pattern in patterns)
 
 
-def parse_player_speech(game_state: WolfGameState, speech: str) -> ParsedPlayerSpeech:
+def parse_witch_directive(
+    game_state: WolfGameState,
+    speech: str,
+    *,
+    speaker_id: int,
+) -> Optional[WitchDirectiveState]:
+    """Parse only explicit public witch instructions, never general prose.
+
+    If a speech contains multiple explicit instructions, the last complete
+    sentence wins. A poison instruction must name exactly one living target;
+    this avoids silently guessing which name the speaker intended.
+    """
+
+    latest: Optional[WitchDirectiveState] = None
+    hold_markers = (
+        "压毒",
+        "留毒",
+        "别用毒",
+        "不要用毒",
+        "先别毒",
+        "暂时别毒",
+        "今晚别毒",
+        "晚上别毒",
+    )
+    uncertainty_markers = (
+        "信息不足",
+        "信息不够",
+        "局势不清",
+        "局面不清",
+        "没有把握",
+        "没把握",
+        "分不清",
+        "怕毒错",
+        "等验人",
+        "等明天",
+        "再观察",
+    )
+    poison_markers = ("毒掉", "毒死", "用毒", "撒毒", "去毒", "毒了")
+    for sentence in re.split(r"[。！？!?；;\n]", speech):
+        compact = re.sub(r"[\s\u3000]+", "", sentence)
+        if not compact or "女巫" not in compact:
+            continue
+        if any(marker in compact for marker in hold_markers):
+            latest = WitchDirectiveState(
+                action="hold",
+                target_id=None,
+                reason_kind=(
+                    "public_uncertainty"
+                    if any(marker in compact for marker in uncertainty_markers)
+                    else "unspecified"
+                ),
+                confidence=65 if "建议" in compact or "应该" in compact else 55,
+            )
+            continue
+        if not any(marker in compact for marker in poison_markers):
+            continue
+        # A self-claim about a past potion is not an instruction to the witch.
+        if re.search(r"(?:我是|我跳)女巫", compact) and not any(
+            marker in compact for marker in ("建议女巫", "让女巫", "女巫应该")
+        ):
+            continue
+        targets = [
+            character
+            for character in game_state.characters
+            if character.alive
+            and character.id != speaker_id
+            and (
+                re.search(rf"(?<!\d){character.id}号(?!\d)", compact)
+                or character.name in compact
+            )
+        ]
+        if len(targets) != 1:
+            continue
+        target = targets[0]
+        reason_kind = (
+            "target_suspected"
+            if any(
+                marker in compact
+                for marker in ("怀疑", "可疑", "像狼", "是狼", "查杀", "狼人")
+            )
+            else "unspecified"
+        )
+        latest = WitchDirectiveState(
+            action="poison",
+            target_id=target.id,
+            reason_kind=reason_kind,
+            confidence=70 if reason_kind == "target_suspected" else 55,
+        )
+    return latest
+
+
+def parse_player_speech(
+    game_state: WolfGameState,
+    speech: str,
+    *,
+    speaker_id: Optional[int] = None,
+) -> ParsedPlayerSpeech:
     mentioned_ids = []
     for character in game_state.characters:
         id_pattern = rf"(?<!\d){character.id}\s*号(?!\d)"
@@ -7141,6 +7534,15 @@ def parse_player_speech(game_state: WolfGameState, speech: str) -> ParsedPlayerS
         supported_ids=supported_ids,
         opposed_ids=opposed_ids,
         vote_intent_target_id=vote_intent_target_id,
+        witch_directive=parse_witch_directive(
+            game_state,
+            speech,
+            speaker_id=(
+                game_state.player_character_id
+                if speaker_id is None
+                else speaker_id
+            ),
+        ),
         tone=tone,
     )
 
@@ -7681,6 +8083,108 @@ def build_public_claim_speech(
     return "".join(parts)
 
 
+def plan_npc_witch_directive(
+    game_state: WolfGameState,
+    speaker: CharacterState,
+    target: Optional[CharacterState],
+    plan: Optional[PublicSpeechPlanV2],
+) -> Optional[WitchDirectiveState]:
+    """Let an NPC make a public suggestion from public and actor-local reads.
+
+    The planner never checks the target's true role. The receiving witch later
+    evaluates this suggestion independently, so wolves and mistaken good NPCs
+    can both make persuasive but wrong recommendations.
+    """
+
+    if (
+        plan is None
+        or target is None
+        or not target.alive
+        or target.id == speaker.id
+    ):
+        return None
+    tuning = get_character_strategy_tuning(speaker)
+    personal_suspicion = int(speaker.suspicion.get(str(target.id), 0))
+    public_pressure = get_public_suspicion_score(game_state, target.id)
+    poison_strength = max(personal_suspicion, public_pressure)
+    poison_chance = min(
+        0.72,
+        0.22
+        + speaker.personality.get("aggressiveness", 0.5) * 0.28
+        + tuning.plan_consistency * 0.16,
+    )
+    if (
+        plan.confidence >= 55
+        and poison_strength >= 45
+        and deterministic_strategy_roll(
+            game_state,
+            speaker,
+            f"witch_directive:poison:{target.id}",
+        )
+        < poison_chance
+    ):
+        return WitchDirectiveState(
+            action="poison",
+            target_id=target.id,
+            reason_kind="target_suspected",
+            confidence=min(90, max(55, int(plan.confidence))),
+        )
+
+    living_others = [
+        character
+        for character in game_state.characters
+        if character.alive and character.id != speaker.id
+    ]
+    highest_personal_suspicion = max(
+        (
+            int(speaker.suspicion.get(str(character.id), 0))
+            for character in living_others
+        ),
+        default=0,
+    )
+    hold_chance = min(
+        0.55,
+        0.12
+        + speaker.personality.get("cautiousness", 0.5) * 0.24
+        + tuning.reasoning_skill * 0.12,
+    )
+    if (
+        plan.confidence <= 70
+        and highest_personal_suspicion < 60
+        and deterministic_strategy_roll(
+            game_state,
+            speaker,
+            "witch_directive:hold",
+        )
+        < hold_chance
+    ):
+        return WitchDirectiveState(
+            action="hold",
+            target_id=None,
+            reason_kind="public_uncertainty",
+            confidence=max(50, int(100 - plan.confidence)),
+        )
+    return None
+
+
+def attach_canonical_witch_directive_text(
+    game_state: WolfGameState,
+    speech: str,
+    directive: Optional[WitchDirectiveState],
+) -> str:
+    if directive is None:
+        return speech
+    if directive.action == "poison" and directive.target_id is not None:
+        target = get_character(game_state, directive.target_id)
+        sentence = (
+            f"如果女巫在场，我建议今晚毒掉{format_full_character_name(target)}，"
+            "这是我当前最怀疑的位置。"
+        )
+    else:
+        sentence = "如果女巫在场，我建议今晚先压毒，当前公开信息还不足。"
+    return speech.rstrip("。") + "。" + sentence
+
+
 def generate_current_npc_meeting_speech(
     game_state: WolfGameState,
     speaker: CharacterState,
@@ -7783,8 +8287,19 @@ def generate_current_npc_meeting_speech(
             game_state,
             planned_badge_flow,
         )
+    witch_directive = plan_npc_witch_directive(
+        game_state,
+        speaker,
+        target,
+        decision_plan,
+    )
+    speech = attach_canonical_witch_directive_text(
+        game_state,
+        speech,
+        witch_directive,
+    )
     parsed_rule_speech = (
-        parse_player_speech(game_state, speech)
+        parse_player_speech(game_state, speech, speaker_id=speaker.id)
         if not structured_speech
         else None
     )
@@ -7833,6 +8348,7 @@ def generate_current_npc_meeting_speech(
             parsed=parsed_rule_speech,
             planned_claims=planned_claims,
         ),
+        witch_directive=witch_directive,
     )
     game_state.speeches.append(speech_state)
     game_state.public_logs.append(f"{speaker.id}号{speaker.name}：{speech}")
@@ -8024,7 +8540,11 @@ def is_low_information_public_speech(
         or speech.claim_count > 0
     ):
         return False
-    parsed = parse_player_speech(game_state, normalized)
+    parsed = parse_player_speech(
+        game_state,
+        normalized,
+        speaker_id=speech.character_id,
+    )
     if parsed.claims or parsed.accusations or any(
         character_id != speech.character_id
         for character_id in parsed.mentioned_characters
@@ -14863,7 +15383,11 @@ def get_public_suspicion_score(game_state: WolfGameState, character_id: int) -> 
             if speech.decision_intent:
                 score += intent_pressure.get(speech.decision_intent, 2)
             elif speech.is_player:
-                parsed = parse_player_speech(game_state, speech.speech)
+                parsed = parse_player_speech(
+                    game_state,
+                    speech.speech,
+                    speaker_id=speech.character_id,
+                )
                 accused_ids = {
                     int(item["target_id"])
                     for item in parsed.accusations

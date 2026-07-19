@@ -2,6 +2,23 @@
 
 Agent Town Demo 的 Python FastAPI 后端，负责小镇 NPC 对话、知识检索、长期记忆，以及狼人杀规则和对局内 NPC 状态。
 
+## V3.1-L 女巫策略与失衡诊断 M02-B
+
+`app/main.py` 新增两个严格 schema：公开的 `witch_directive.v1` 只允许 `poison + 单一存活目标` 或不带目标的 `hold`；内部 `witch_strategy_decision.v1` 记录 NPC 女巫最终行动、原因、采信来源和分数。两者都拒绝额外隐藏字段，审计记录不进入 `GameStateResponse` 等进行中 API。
+
+公开正式发言（警上或白天会议）是本阶段唯一建议入口。玩家自由文本只有明确要求女巫毒一个角色，或明确要求压毒时才会生成结构化建议；多目标、含糊表述和对过去用药的身份声明不会被猜测。普通非警长 NPC 可在已经通过合法校验的 `public_speech_plan.v3` 后，由 Python 根据该 NPC 自己的怀疑、公开压力、置信度和 tuning 追加规范句；LLM 不决定建议事实。
+
+NPC 女巫策略按夜晚分层：
+
+- 第一夜若本人被刀，100% 自救；其他合法刀口按内部 seed 以 99% 使用解药；第一夜绝不使用毒药。
+- 第二夜及以后，有毒且有合法目标时默认选择本人 `suspicion` 最高的存活角色，公开压力只参与同分排序，不读取角色真值。
+- 上一白天的毒人建议按女巫自己的怀疑、公开压力、对建议者的关系、建议者公开说服力和本人 tuning 评分；建议可能来自任何阵营，也可能被接受后毒错。
+- 压毒建议必须明确给出“公开信息不足”一类理由并达到独立阈值。第二夜每次合法机会严格守恒为“用毒”或“采信压毒”。
+
+`app/simulation_metrics.py` 升级为 `agent_town_metrics.v2`，新增 `balance_diagnostics`：终局原因、首放阵营/身份、按 cause/camp 的出局数，以及女巫首夜救人、第二夜用毒/压毒、建议数量/采信、毒药目标阵营。simulation 升级为 `agent_town_simulation.v9` / `agent_town_simulation_batch.v9`；`scripts/simulate_games.py` 写文件时额外显示 `[BALANCE]` 和 `[WITCH]`。
+
+seed `20260719–20260818` 的 100 局中，95 局由 NPC 女巫控制：首夜 95 个救人机会全部救下，9 次本人被刀全部自救；第二夜 90 个用毒机会中 67 次用毒、23 次合理压毒。全局 72 次毒药命中狼人 42 次、好人 30 次，狼人命中率 58.33%。但好人仍仅 3 胜，首放好人 75 局、首放预言家 34 局，73 局因狼人控场结束；当前瓶颈仍是白天 belief、真假预言家可信度与放逐链。
+
 ## V3.1-K 普通好人放逐概率校准 M15-B
 
 `app/vote_calibration.py` 现在同时承担实时受控策略和离线诊断。`app/main.py` 只在 `phase == "VOTE"`、投票者为存活非玩家好人 NPC、且不是当前警长时调用 `good_exile_calibration.v1`。警长竞选票、警长本人的最终归票、`ignore_sheriff_lock` 的归票规划、狼人票、玩家票、夜间技能、结算和胜负都保留原路径。
@@ -22,7 +39,7 @@ M15-A 的纯 shadow 契约升级为 `vote_probability_trace.v2`：每份观察�
 
 controlled 分布把既有合法好人评分器拆回上述分量，加入小幅置信 belief 修正，并在原 softmax 温度上增加 `5.0`。它不改变合法候选；预言家私有金水仍被排除，私有查杀仍可形成高概率共识。若严格构造拒绝输入，实时路径确定性回退到原评分器，保证校准层不能阻断合法选票。
 
-simulation 现为 `agent_town_simulation.v8` / `agent_town_simulation_batch.v8`。批量 `vote_probability_summary.v2` 除投票类型、投票者阵营和交叉维度外，还按 consumer mode 汇总观察/候选数、平均个体熵、top 概率、实际 top 命中率、实际目标概率/排名及五项分量平均绝对值。赛后角色真值只用于评价好人放逐概率质量落在狼人/好人目标上的比例，不会倒灌进候选分布。
+M15-B 当时的 simulation 为 v8；当前 V3.1-L 已升级为 `agent_town_simulation.v9` / `agent_town_simulation_batch.v9`。批量 `vote_probability_summary.v2` 除投票类型、投票者阵营和交叉维度外，还按 consumer mode 汇总观察/候选数、平均个体熵、top 概率、实际 top 命中率、实际目标概率/排名及五项分量平均绝对值。赛后角色真值只用于评价好人放逐概率质量落在狼人/好人目标上的比例，不会倒灌进候选分布。
 
 M15-A 的 100-seed 基线有 3,264 次观察、23,209 个候选评估；普通好人放逐个体熵为 8.56%，排除警长硬归票后的可比值为 9.01%，好人误投为 64.46%，狼人目标概率质量为 34.76%。M15-B 同 seed 验收有 1,482 次 controlled 观察：个体熵 9.82%、top 概率 93.45%，总体好人误投 63.69%，好人胜场保持 2/100，狼人目标概率质量 36.14%。固定 seed 只用于回归，不是期望胜率。
 
@@ -55,10 +72,10 @@ backend/.venv/bin/python scripts/summarize_llm_observability.py
 | authorization kind | 内部变化 | 必须变化 | 允许变化 |
 | --- | --- | --- | --- |
 | `seer_private_check` | 同一 NPC 预言家的未公开验人由好人目标改为狼人目标 | 该预言家的 belief、decision context | 该预言家全部五层 M04-B 投影 |
-| `witch_private_attack` | 女巫依法看到的未公开刀口换为另一个存活目标 | 该女巫的 belief | belief、stance、continuity、fallback；decision context 必须不变 |
+| `witch_private_attack` | 女巫依法看到的未公开刀口换为另一个存活目标 | 该女巫的 belief | belief、stance、continuity；decision context 与首夜固定概率 fallback 必须不变 |
 | `wolf_team_membership` | 一名非悍跳狼与守卫/猎人交换内部 `role/camp` | 其余狼人的 belief、decision context | 其余狼人全部五层；两个被换身份 actor 不参与对比 |
 
-固定 seed 的实际传播为：预言家五层全部变化；女巫四层变化；其余三名狼人均变化 belief、stance、decision context、continuity，fallback 在该夹具中保持不变。三类案例合计 `158/158` 项满足授权契约，包含每案一个必须不变的玩家公开投影，以及所有角色未变 NPC 的五层策略投影。
+固定 seed 的实际传播为：预言家五层全部变化；V3.1-L 后女巫变化 belief、stance、continuity 三层，旧的好感救人 fallback 已被首夜 99% 策略替代；其余三名狼人均变化 belief、stance、decision context、continuity，fallback 在该夹具中保持不变。三类案例合计 `158/158` 项满足授权契约，包含每案一个必须不变的玩家公开投影，以及所有角色未变 NPC 的五层策略投影。
 
 矩阵会校验 checked actor 的 `role/camp` 在变体前后相同，required 必须属于 allowed，observer/projection 必须存在且唯一。负对照把预言家的授权故意声明给普通村民，报告必须同时捕获真正预言家的越权变化和普通村民缺失的必需变化。报告不序列化 `WolfGameState` 或 belief evidence 正文，只保留授权类别、计数、摘要和首个差异路径。
 
@@ -89,7 +106,7 @@ M06-A 只锁定“无权视角不应变化”。预言家查验、女巫刀口�
 - `authorized_claim` 仅随已选择的 allowlisted `claim_option_ids` 使用，声明选项存在但未选择时不能借此改口；`mandatory_rule_response` 仅用于必须回应的公开验人和规则已有的狼队故事线；没有可比目标时使用 `unscored`。
 - 规则 fallback 主动对齐 stance。LLM 仍可做合法策略选择并允许判断错误，但未给出合法连续性原因的计划会进入既有重试/回退链。持久化 v3 计划只保存公开 signal ID 和原因，不保存私有 belief evidence ID；表达层仍只收到无事实的短语气任务。
 
-M04-B 当时的离线结果为 v6，M15-A 为 v7，当前 M15-B 为 simulation v8，并完整保留 `speech_continuity_metrics.v1`。该统计按上述六类原因守恒，不记录私有证据内容；M04-A 的 `stance_trace` 继续以 shadow 模式观察发言、警长票和放逐票。
+M04-B 当时的离线结果为 v6，M15-A/B 为 v7/v8，当前 V3.1-L 为 simulation v9，并完整保留 `speech_continuity_metrics.v1`。该统计按上述六类原因守恒，不记录私有证据内容；M04-A 的 `stance_trace` 继续以 shadow 模式观察发言、警长票和放逐票。
 
 seed `20260719–20260818` 的 100 局规则模拟统计 2,163 次受控发言：`stance_aligned=1831`、`authorized_claim=141`、`mandatory_rule_response=139`、`unscored=52`，关闭 LLM 时另外两类为 0。公开发言 `unexplained_change` 从 112 次降到 3 次，整体未解释率为 1.68%；但好人胜率只有 2%，好人误投率为 64.46%。这些数值只证明连续性约束生效，不证明 NPC 判断更准确。
 
@@ -118,7 +135,7 @@ seed `20260719–20260818` 的 100 局规则模拟统计 2,163 次受控发言�
 
 对照覆盖 `public_speech / sheriff_vote / exile_vote`。一次决定完成后使用包含该决定公开结果的摘要更新基线，避免把决定自身当成未来变化的理由。分类只用于离线诊断，不证明新证据与改票存在因果，也不在 M04-A 阻止任何合法选择。
 
-M04-A 当时的模拟 schema 为 `agent_town_simulation.v5` / `agent_town_simulation_batch.v5`，M04-B 为 v6，M15-A 为 v7，当前 M15-B 为 v8；后续版本继续保留 `stance_trace.changes / observations / final_states` 和批量 `stance_summary`。`--no-stance-trace` 保留 belief 但关闭 stance；`--no-belief-trace` 同时关闭二者，受控发言原因汇总和独立投票校准轨迹仍保留。
+M04-A 当时的模拟 schema 为 `agent_town_simulation.v5` / `agent_town_simulation_batch.v5`，M04-B 为 v6，M15-A/B 为 v7/v8，当前 V3.1-L 为 v9；后续版本继续保留 `stance_trace.changes / observations / final_states` 和批量 `stance_summary`。`--no-stance-trace` 保留 belief 但关闭 stance；`--no-belief-trace` 同时关闭二者，受控发言原因汇总和独立投票校准轨迹仍保留。
 
 seed `20260719–20260818` 的首份 100 局 shadow 诊断包含 6,133 次观察、4,516 次可评分观察和 1,617 次 `unscored`；可评分样本一致率 88.93%，未解释变化率 4.78%。放逐票、公开发言、警长票分别有 62、112、42 次未解释变化；警长票有 661 次因摘要没有信任任何当轮合法候选人而不评分。完整 JSON 约 101MB，不能把这批数值设成硬阈值或直接返回进行中客户端。
 
@@ -172,7 +189,7 @@ backend/.venv/bin/python scripts/simulate_games.py \
 
 ## V3.1-B NPC 核心指标 M02-A
 
-`app/simulation_metrics.py` 为离线模拟提供 `agent_town_metrics.v1`。入口会拒绝任何非 `GAME_OVER` 状态；该模块不被实时决策链调用，允许在赛后使用真实身份评价已经发生的投票，但不会把答案倒灌给好人或公开 API。
+`app/simulation_metrics.py` 为离线模拟提供 `agent_town_metrics.v2`。入口会拒绝任何非 `GAME_OVER` 状态；该模块不被实时决策链调用，允许在赛后使用真实身份评价已经发生的投票和用毒，但不会把答案倒灌给好人或公开 API。
 
 逐局 `metrics` 包含：
 
@@ -213,7 +230,7 @@ V2.0 基线来自 [`Agent Town Demo V2.0`](https://github.com/KEswy/agent-town-d
 
 进入 V3 后仍有四项明确限制：当前对局主要保存在进程内存中；严格结构化策略重点覆盖普通非警长白天发言，其他路径仍以规则决策加角色化改写为主；M09-A 已有脱敏本地汇总，但尚无价格版本、配置/契约指纹和成本口径；M15-B 只校准普通好人放逐票，尚未建立自动平衡阈值或更大样本的配置对比。
 
-V3 下一步可按真实 LLM 数据推进 M09-B 版本/成本维度，或回到 M01/M02 扩展 1000 局和配置对比。完整拆分和 V3.1-A 至 V3.1-K 实施状态见 [`V3 改进与开发路线表`](../docs/V3_ROADMAP.md)。
+V3 下一步应先按 V3.1-L 指标拆解真假预言家的公开可信度和首轮放逐链，再用更大样本复核；真实 LLM 数据足够后再推进 M09-B 版本/成本维度。完整拆分和 V3.1-A 至 V3.1-L 实施状态见 [`V3 改进与开发路线表`](../docs/V3_ROADMAP.md)。
 
 ## 运行
 

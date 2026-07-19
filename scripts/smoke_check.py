@@ -111,8 +111,8 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
 
-    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-K" not in root_readme:
-        raise SmokeCheckError("root README must identify the active V3.1-K iteration")
+    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-L" not in root_readme:
+        raise SmokeCheckError("root README must identify the active V3.1-L iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
@@ -124,11 +124,11 @@ def check_release_docs() -> None:
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
 
-    if "V3.1-K" not in backend_readme or "V3.1-K" not in roadmap:
-        raise SmokeCheckError("V3.1-K status must stay synchronized across development docs")
+    if "V3.1-L" not in backend_readme or "V3.1-L" not in roadmap:
+        raise SmokeCheckError("V3.1-L status must stay synchronized across development docs")
     if "scripts/simulate_games.py" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
-    if "agent_town_metrics.v1" not in commands:
+    if "agent_town_metrics.v2" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the M02 metrics schema")
     if (
         "belief_state.v2" not in commands
@@ -176,8 +176,16 @@ def check_release_docs() -> None:
         or "M15-B" not in commands
     ):
         raise SmokeCheckError("COMMANDS.md must document M15-B vote calibration")
+    if (
+        "witch_directive.v1" not in commands
+        or "99%" not in commands
+        or "[BALANCE]" not in commands
+        or "[WITCH]" not in commands
+        or "agent_town_simulation.v9" not in commands
+    ):
+        raise SmokeCheckError("COMMANDS.md must document V3.1-L witch diagnostics")
 
-    print("[OK] V3.1-K README, commands, and roadmap status are synchronized.")
+    print("[OK] V3.1-L README, commands, and roadmap status are synchronized.")
 
 
 def check_json_files() -> None:
@@ -1598,6 +1606,8 @@ for public_model in (
         raise SystemExit("shadow stance traces must not enter live API schemas")
     if "vote_calibration_trace" in public_model.model_fields:
         raise SystemExit("shadow vote probabilities must not enter live API schemas")
+    if "witch_strategy_decisions" in public_model.model_fields:
+        raise SystemExit("NPC witch audit records must not enter live API schemas")
 
 empty_distribution = summarize_ballot_distribution([])
 if empty_distribution["entropy_bits"] is not None:
@@ -1612,6 +1622,208 @@ if (
 fully_split_distribution = summarize_ballot_distribution([2, 3, 4])
 if fully_split_distribution["normalized_entropy"] != 1.0:
     raise SystemExit("all-distinct ballots must have normalized entropy one")
+
+witch_policy_state = rules.create_wolf_game_state(
+    rules.GameStartRequest(
+        player_name="女巫策略测试玩家",
+        player_role="villager",
+        enable_llm=False,
+        enable_rag=False,
+    ),
+    game_id="witch_policy_contract",
+    random_seed=20260719,
+)
+npc_witch = next(
+    character
+    for character in witch_policy_state.characters
+    if not character.is_player and character.role == "witch"
+)
+other_targets = [
+    character
+    for character in witch_policy_state.characters
+    if character.id != npc_witch.id
+]
+attacked_target = other_targets[0]
+self_save_decisions = set()
+for seed in range(100):
+    witch_policy_state.random_seed = seed
+    self_save_decisions.add(
+        rules.choose_npc_witch_action_decision(
+            witch_policy_state,
+            npc_witch,
+            npc_witch.id,
+        ).reason
+    )
+if self_save_decisions != {"first_night_self_save"}:
+    raise SystemExit("an NPC witch attacked on night one must self-save 100%")
+first_night_save_count = 0
+first_night_skip_count = 0
+for seed in range(2_000):
+    witch_policy_state.random_seed = seed
+    decision = rules.choose_npc_witch_action_decision(
+        witch_policy_state,
+        npc_witch,
+        attacked_target.id,
+    )
+    first_night_save_count += decision.action_type == "witch_save"
+    first_night_skip_count += decision.reason == "first_night_save_skip"
+if (
+    not 1_960 <= first_night_save_count <= 1_999
+    or first_night_skip_count != 2_000 - first_night_save_count
+):
+    raise SystemExit("NPC witch first-night antidote use must be deterministic 99%")
+
+poison_target = other_targets[1]
+second_target = next(
+    character
+    for character in other_targets
+    if not character.is_player
+    and character.id != poison_target.id
+    and character.role != poison_target.role
+)
+explicit_poison = rules.parse_player_speech(
+    witch_policy_state,
+    f"女巫今晚毒掉{poison_target.id}号，我最怀疑他是狼。",
+)
+if (
+    explicit_poison.witch_directive is None
+    or explicit_poison.witch_directive.action != "poison"
+    or explicit_poison.witch_directive.target_id != poison_target.id
+    or explicit_poison.witch_directive.reason_kind != "target_suspected"
+):
+    raise SystemExit("explicit player poison advice must become a structured directive")
+if rules.parse_player_speech(
+    witch_policy_state,
+    f"女巫今晚毒掉{poison_target.id}号或{second_target.id}号。",
+).witch_directive is not None:
+    raise SystemExit("ambiguous witch prose must not be guessed into a directive")
+if rules.parse_player_speech(
+    witch_policy_state,
+    f"我是女巫，我昨晚毒了{poison_target.id}号。",
+).witch_directive is not None:
+    raise SystemExit("a past potion claim must not be parsed as future poison advice")
+explicit_hold = rules.parse_player_speech(
+    witch_policy_state,
+    "女巫今晚先压毒，当前信息不足，等明天再观察。",
+)
+if (
+    explicit_hold.witch_directive is None
+    or explicit_hold.witch_directive.action != "hold"
+    or explicit_hold.witch_directive.reason_kind != "public_uncertainty"
+):
+    raise SystemExit("reasoned player hold advice must become a structured directive")
+for invalid_directive in (
+    {"action": "poison", "reason_kind": "unspecified"},
+    {
+        "action": "hold",
+        "target_id": poison_target.id,
+        "reason_kind": "public_uncertainty",
+    },
+    {
+        "action": "hold",
+        "reason_kind": "public_uncertainty",
+        "hidden_role": "werewolf",
+    },
+):
+    try:
+        rules.WitchDirectiveState.model_validate(invalid_directive)
+    except ValueError:
+        pass
+    else:
+        raise SystemExit("witch directives must reject invalid or hidden fields")
+
+witch_policy_state.day = 2
+witch_policy_state.phase = "NIGHT"
+witch_policy_state.speeches = []
+for character in other_targets:
+    npc_witch.suspicion[str(character.id)] = 10
+npc_witch.suspicion[str(poison_target.id)] = 85
+own_read_decision = rules.choose_npc_witch_action_decision(
+    witch_policy_state,
+    npc_witch,
+    attacked_target.id,
+)
+if (
+    own_read_decision.action_type != "witch_poison"
+    or own_read_decision.target_id != poison_target.id
+    or own_read_decision.reason != "own_suspicion"
+):
+    raise SystemExit("a surviving NPC witch must poison her top suspect on night two")
+
+source = other_targets[3]
+npc_witch.relationships[str(source.id)]["trust"] = 1.0
+for character in other_targets:
+    npc_witch.suspicion[str(character.id)] = 10
+witch_policy_state.speeches = [
+    rules.SpeechState(
+        day=1,
+        character_id=source.id,
+        name=source.name,
+        speech="如果女巫在场，我建议今晚先压毒，当前公开信息还不足。",
+        is_player=source.is_player,
+        witch_directive=rules.WitchDirectiveState(
+            action="hold",
+            reason_kind="public_uncertainty",
+            confidence=100,
+        ),
+    )
+]
+hold_decision = rules.choose_npc_witch_action_decision(
+    witch_policy_state,
+    npc_witch,
+    attacked_target.id,
+)
+if hold_decision.action_type != "none" or hold_decision.reason != "accepted_hold":
+    raise SystemExit("a trusted, reasoned hold request must be able to preserve poison")
+
+npc_witch.suspicion[str(poison_target.id)] = 90
+witch_policy_state.speeches = [
+    rules.SpeechState(
+        day=1,
+        character_id=source.id,
+        name=source.name,
+        speech=(
+            f"如果女巫在场，我建议今晚毒掉{poison_target.id}号，"
+            "这是我当前最怀疑的位置。"
+        ),
+        is_player=source.is_player,
+        witch_directive=rules.WitchDirectiveState(
+            action="poison",
+            target_id=poison_target.id,
+            reason_kind="target_suspected",
+            confidence=100,
+        ),
+    )
+]
+advised_decision = rules.choose_npc_witch_action_decision(
+    witch_policy_state,
+    npc_witch,
+    attacked_target.id,
+)
+hidden_swap_state = witch_policy_state.model_copy(deep=True)
+hidden_poison_target = rules.get_character(hidden_swap_state, poison_target.id)
+hidden_second_target = rules.get_character(hidden_swap_state, second_target.id)
+hidden_poison_target.role, hidden_second_target.role = (
+    hidden_second_target.role,
+    hidden_poison_target.role,
+)
+hidden_poison_target.camp, hidden_second_target.camp = (
+    hidden_second_target.camp,
+    hidden_poison_target.camp,
+)
+hidden_witch = rules.get_character(hidden_swap_state, npc_witch.id)
+hidden_decision = rules.choose_npc_witch_action_decision(
+    hidden_swap_state,
+    hidden_witch,
+    attacked_target.id,
+)
+if (
+    advised_decision.reason != "accepted_poison"
+    or advised_decision.target_id != poison_target.id
+    or advised_decision.model_dump(mode="json")
+    != hidden_decision.model_dump(mode="json")
+):
+    raise SystemExit("witch advice must be believable but hidden-role invariant")
 
 first = run_rule_simulation(20260719)
 random.seed(11)
@@ -1629,6 +1841,29 @@ if (
     or not first["metrics"]["post_game_only"]
 ):
     raise SystemExit("a simulated game must expose versioned post-game metrics")
+if (
+    SIMULATION_SCHEMA_VERSION != "agent_town_simulation.v9"
+    or BATCH_SCHEMA_VERSION != "agent_town_simulation_batch.v9"
+    or METRICS_SCHEMA_VERSION != "agent_town_metrics.v2"
+):
+    raise SystemExit("V3.1-L simulation and metrics schemas must stay explicit")
+balance_diagnostics = first["metrics"]["balance_diagnostics"]
+if (
+    balance_diagnostics["winner_reason"] != first["winner_reason"]
+    or "first_exile" not in balance_diagnostics
+    or "witch" not in balance_diagnostics
+    or balance_diagnostics["witch"]["poison_target_count"]
+    != (
+        balance_diagnostics["witch"]["wolf_poison_target_count"]
+        + balance_diagnostics["witch"]["good_poison_target_count"]
+    )
+    or balance_diagnostics["witch"]["second_night_poison_opportunity"]
+    != (
+        balance_diagnostics["witch"]["second_night_poison_used"]
+        + balance_diagnostics["witch"]["second_night_hold_accepted"]
+    )
+):
+    raise SystemExit("V3.1-L balance and witch diagnostics must conserve outcomes")
 continuity_metrics = first["speech_continuity"]
 continuity_reasons = {
     "stance_aligned",
@@ -1892,6 +2127,21 @@ if (
     or batch["metrics"]["schema_version"] != METRICS_SCHEMA_VERSION
 ):
     raise SystemExit("batch simulation must expose compatible metric versions")
+batch_balance = batch["metrics"]["balance_diagnostics"]
+if (
+    sum(batch_balance["winner_reason_counts"].values()) != 6
+    or batch_balance["witch"]["poison_target_count"]
+    != (
+        batch_balance["witch"]["wolf_poison_target_count"]
+        + batch_balance["witch"]["good_poison_target_count"]
+    )
+    or batch_balance["witch"]["second_night_poison_opportunity"]
+    != (
+        batch_balance["witch"]["second_night_poison_used"]
+        + batch_balance["witch"]["second_night_hold_accepted"]
+    )
+):
+    raise SystemExit("batch V3.1-L balance diagnostics must conserve games and poison targets")
 if (
     batch["belief_schema_version"] != BELIEF_SCHEMA_VERSION
     or batch["belief_summary"]["schema_version"] != BELIEF_SCHEMA_VERSION
@@ -2768,7 +3018,7 @@ if (
     m06b_observed_by_kind["seer_private_check"]
     != [list(ACTOR_PROJECTION_NAMES)]
     or m06b_observed_by_kind["witch_private_attack"]
-    != [["belief", "stance", "continuity", "fallback_plan"]]
+    != [["belief", "stance", "continuity"]]
     or len(m06b_observed_by_kind["wolf_team_membership"]) != 3
     or any(
         changed_names
@@ -3386,7 +3636,7 @@ print("headless simulation smoke test passed")
         cwd=BACKEND_DIR,
         fail_message="headless deterministic simulation smoke test failed",
     )
-    print("[OK] Simulations, M06-A/B matrices, and M15-A/B vote calibration are deterministic.")
+    print("[OK] Simulations, M06-A/B matrices, M15-A/B votes, and V3.1-L witch strategy are deterministic.")
 
 
 def check_backend_search() -> None:

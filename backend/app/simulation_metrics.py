@@ -14,7 +14,7 @@ from typing import Iterable, Optional
 from . import main as rules
 
 
-METRICS_SCHEMA_VERSION = "agent_town_metrics.v1"
+METRICS_SCHEMA_VERSION = "agent_town_metrics.v2"
 
 
 def summarize_ballot_distribution(target_ids: Iterable[int]) -> dict[str, object]:
@@ -149,6 +149,10 @@ def build_game_metrics(game_state: rules.WolfGameState) -> dict[str, object]:
             game_state,
             characters,
         ),
+        "balance_diagnostics": _build_balance_diagnostics(
+            game_state,
+            characters,
+        ),
     }
     _validate_game_metric_conservation(metrics)
     return metrics
@@ -184,6 +188,11 @@ def aggregate_batch_metrics(
         "eligible_good_exile_ballots": 0,
         "following_good_exile_ballots": 0,
     }
+    winner_reason_counts: Counter[str] = Counter()
+    first_exile_camp_counts: Counter[str] = Counter()
+    first_exile_role_counts: Counter[str] = Counter()
+    elimination_cause_camp_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    witch_totals: Counter[str] = Counter()
 
     for game in game_results:
         metrics = _require_game_metrics(game)
@@ -219,6 +228,26 @@ def aggregate_batch_metrics(
             )
 
         _add_fake_seer_counts(fake_totals, metrics["fake_seer_acceptance"])
+        diagnostics = metrics["balance_diagnostics"]
+        winner_reason_counts[str(diagnostics["winner_reason"])] += 1
+        first_exile = diagnostics["first_exile"]
+        if first_exile is not None:
+            first_exile_camp_counts[str(first_exile["camp"])] += 1
+            first_exile_role_counts[str(first_exile["role"])] += 1
+        for cause, camp_counts in diagnostics[
+            "elimination_counts_by_cause_and_camp"
+        ].items():
+            elimination_cause_camp_counts[str(cause)].update(
+                {
+                    str(camp): int(count)
+                    for camp, count in camp_counts.items()
+                }
+            )
+        for key, value in diagnostics["witch"].items():
+            if isinstance(value, bool):
+                witch_totals[key] += int(value)
+            elif isinstance(value, int):
+                witch_totals[key] += value
         _add_player_role_game(by_player_role, game)
 
     aggregate = {
@@ -242,6 +271,45 @@ def aggregate_batch_metrics(
             _finalize_alignment_counts(good_alignment_totals)
         ),
         "fake_seer_acceptance": _finalize_fake_seer_counts(fake_totals),
+        "balance_diagnostics": {
+            "winner_reason_counts": {
+                reason: winner_reason_counts[reason]
+                for reason in sorted(winner_reason_counts)
+            },
+            "first_exile_camp_counts": {
+                camp: first_exile_camp_counts[camp]
+                for camp in sorted(first_exile_camp_counts)
+            },
+            "first_exile_role_counts": {
+                role: first_exile_role_counts[role]
+                for role in sorted(first_exile_role_counts)
+            },
+            "elimination_counts_by_cause_and_camp": {
+                cause: {
+                    camp: elimination_cause_camp_counts[cause][camp]
+                    for camp in sorted(elimination_cause_camp_counts[cause])
+                }
+                for cause in sorted(elimination_cause_camp_counts)
+            },
+            "witch": {
+                **{
+                    key: witch_totals[key]
+                    for key in sorted(witch_totals)
+                },
+                "first_night_save_rate": _rate(
+                    witch_totals["first_night_save_used"],
+                    witch_totals["first_night_save_opportunity"],
+                ),
+                "second_night_poison_rate": _rate(
+                    witch_totals["second_night_poison_used"],
+                    witch_totals["second_night_poison_opportunity"],
+                ),
+                "wolf_poison_rate": _rate(
+                    witch_totals["wolf_poison_target_count"],
+                    witch_totals["poison_target_count"],
+                ),
+            },
+        },
         "by_player_role": _finalize_player_role_groups(by_player_role),
         "by_voter_role": {
             role: _finalize_alignment_counts(by_voter_role_totals[role])
@@ -268,6 +336,130 @@ def aggregate_batch_metrics(
     }
     _validate_batch_metric_conservation(aggregate)
     return aggregate
+
+
+def _build_balance_diagnostics(
+    game_state: rules.WolfGameState,
+    characters: dict[int, rules.CharacterState],
+) -> dict[str, object]:
+    exiles = [
+        elimination
+        for elimination in game_state.eliminations
+        if elimination.cause == "exiled"
+    ]
+    first_exile = None
+    if exiles:
+        elimination = exiles[0]
+        character = characters[elimination.character_id]
+        first_exile = {
+            "day": elimination.day,
+            "character_id": character.id,
+            "camp": character.camp,
+            "role": character.role,
+        }
+
+    by_cause_and_camp: dict[str, Counter[str]] = defaultdict(Counter)
+    for elimination in game_state.eliminations:
+        target = characters[elimination.character_id]
+        by_cause_and_camp[elimination.cause][target.camp] += 1
+
+    witch = next(
+        character
+        for character in game_state.characters
+        if character.role == "witch"
+    )
+    npc_decisions = [
+        decision
+        for decision in game_state.witch_strategy_decisions
+        if decision.actor_id == witch.id
+    ]
+    first_night = next(
+        (decision for decision in npc_decisions if decision.day == 1),
+        None,
+    )
+    second_night = next(
+        (decision for decision in npc_decisions if decision.day == 2),
+        None,
+    )
+    poison_targets = [
+        characters[action.target_id]
+        for action in game_state.night_actions
+        if action.actor_id == witch.id
+        and action.action_type == "witch_poison"
+        and action.target_id is not None
+    ]
+    directives = [
+        speech.witch_directive
+        for speech in game_state.speeches
+        if speech.witch_directive is not None
+    ]
+    first_night_opportunity = bool(
+        first_night is not None
+        and first_night.reason
+        in {
+            "first_night_self_save",
+            "first_night_save_99",
+            "first_night_save_skip",
+        }
+    )
+    second_night_opportunity = bool(
+        second_night is not None
+        and second_night.reason not in {"poison_unavailable", "no_legal_target"}
+    )
+    return {
+        "winner_reason": game_state.winner_reason,
+        "first_exile": first_exile,
+        "elimination_counts_by_cause_and_camp": {
+            cause: {
+                camp: by_cause_and_camp[cause][camp]
+                for camp in sorted(by_cause_and_camp[cause])
+            }
+            for cause in sorted(by_cause_and_camp)
+        },
+        "witch": {
+            "npc_controlled": not witch.is_player,
+            "public_directive_count": len(directives),
+            "public_poison_directive_count": sum(
+                directive.action == "poison" for directive in directives
+            ),
+            "public_hold_directive_count": sum(
+                directive.action == "hold" for directive in directives
+            ),
+            "first_night_save_opportunity": first_night_opportunity,
+            "first_night_save_used": bool(
+                first_night is not None
+                and first_night.action_type == "witch_save"
+            ),
+            "first_night_self_save_used": bool(
+                first_night is not None
+                and first_night.reason == "first_night_self_save"
+            ),
+            "second_night_poison_opportunity": second_night_opportunity,
+            "second_night_poison_used": bool(
+                second_night is not None
+                and second_night.action_type == "witch_poison"
+            ),
+            "second_night_hold_accepted": bool(
+                second_night is not None
+                and second_night.reason == "accepted_hold"
+            ),
+            "accepted_hold_count": sum(
+                decision.reason == "accepted_hold"
+                for decision in npc_decisions
+            ),
+            "accepted_poison_directive_count": sum(
+                decision.reason == "accepted_poison"
+                for decision in npc_decisions
+            ),
+            "poison_target_count": len(poison_targets),
+            "wolf_poison_target_count": sum(
+                target.camp == "werewolf" for target in poison_targets
+            ),
+            "good_poison_target_count": sum(
+                target.camp == "good" for target in poison_targets
+            ),
+        },
+    }
 
 
 def _build_fake_seer_metrics(
@@ -633,6 +825,22 @@ def _validate_game_metric_conservation(metrics: dict[str, object]) -> None:
         fake["eligible_good_exile_ballots"]
     ):
         raise ValueError("fake-seer exile follows exceed eligible ballots")
+    witch = metrics["balance_diagnostics"]["witch"]
+    if int(witch["poison_target_count"]) != (
+        int(witch["wolf_poison_target_count"])
+        + int(witch["good_poison_target_count"])
+    ):
+        raise ValueError("witch poison-target metrics do not conserve actions")
+    if int(witch["public_directive_count"]) != (
+        int(witch["public_poison_directive_count"])
+        + int(witch["public_hold_directive_count"])
+    ):
+        raise ValueError("public witch-directive metrics do not conserve speech records")
+    if int(witch["second_night_poison_opportunity"]) != (
+        int(witch["second_night_poison_used"])
+        + int(witch["second_night_hold_accepted"])
+    ):
+        raise ValueError("night-two witch choices must be poison or accepted hold")
 
 
 def _validate_batch_metric_conservation(metrics: dict[str, object]) -> None:
@@ -645,6 +853,22 @@ def _validate_batch_metric_conservation(metrics: dict[str, object]) -> None:
         + int(good_vote["good_target_count"])
     ):
         raise ValueError("batch good-vote counts do not conserve ballots")
+    witch = metrics["balance_diagnostics"]["witch"]
+    if int(witch["poison_target_count"]) != (
+        int(witch["wolf_poison_target_count"])
+        + int(witch["good_poison_target_count"])
+    ):
+        raise ValueError("batch witch poison-target metrics do not conserve actions")
+    if int(witch["public_directive_count"]) != (
+        int(witch["public_poison_directive_count"])
+        + int(witch["public_hold_directive_count"])
+    ):
+        raise ValueError("batch public witch directives do not conserve speech records")
+    if int(witch["second_night_poison_opportunity"]) != (
+        int(witch["second_night_poison_used"])
+        + int(witch["second_night_hold_accepted"])
+    ):
+        raise ValueError("batch night-two witch choices do not conserve opportunities")
 
 
 __all__ = [

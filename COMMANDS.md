@@ -72,9 +72,13 @@ backend/.venv/bin/python scripts/simulate_games.py --help
 
 ```text
 [METRICS] good_win_rate=6.0%; exile_entropy=22.6%; good_misvote_rate=61.0%; fake_seer_sheriff_support=48.3%; fake_black_check_follow=41.6%
+[BALANCE] winner_reasons={...}; first_exile_camps={...}
+[WITCH] first_night_save=...; second_night_poison=...; accepted_hold=...; poison_wolf_hit=...
 ```
 
-完整 JSON 的根级 `metrics` 使用 `agent_town_metrics.v1`，包含阵营胜率、平均局长、警长/放逐票熵、好人正确票与误票、假预言家采信代理，以及按玩家身份、投票者角色和天数的聚合。无适用样本的比率是 `null`，不是 0。
+完整 JSON 的根级 `metrics` 使用 `agent_town_metrics.v2`，除原有阵营胜率、局长、票熵、好人误票和假预言家采信外，`balance_diagnostics` 还包含终局原因、首放阵营/身份、按出局原因/阵营计数，以及女巫救人、用毒、压毒、建议采信和毒药命中。无适用样本的比率是 `null`，不是 0。
+
+V3.1-L 的 NPC 女巫第一夜本人被刀必定自救，其他合法刀口确定性 99% 使用解药；第二夜有毒且存活时默认毒本人最怀疑的合法目标。玩家或 NPC 在公开正式发言（警上或白天会议）中可明确建议女巫毒单一目标，或以公开信息不足为理由建议压毒；Python 保存 `witch_directive.v1`，女巫按自己的合法怀疑、信任和公开信息独立决定是否采信。含糊多目标、过去用药声明和无理由压毒不会被自动当成可靠指令。
 
 默认报告还包含 `belief_state.v2` 影子信念轨迹：证据台账、每次分数变化和 11 名 NPC 的最后信念。公开软证据逐日乘以 `0.75`，公开票型/警徽动作和合法私有知识不衰减；有效私聊只按已保存的结构化目标与方向进入对应 NPC 的私有视角，不解析自由文本。100 局文件可能达到数十 MB，其中包含所有 NPC 依法拥有的赛后私有视角，不要把它直接返回给进行中的游戏客户端。
 
@@ -84,7 +88,7 @@ M04-A 默认还输出 `stance_summary.v1`：每名 NPC 的统一立场变化，�
 [STANCE] mode=shadow; observations=...; alignment=...; unexplained_change=...
 ```
 
-M04-B 把普通非警长白天发言接入 `public_speech_continuity.v1`，计划升级为 `public_speech_plan.v3`；警长票和放逐票仍保留 stance 对照。M15-B 后当前模拟结果为 `agent_town_simulation.v8` / `agent_town_simulation_batch.v8`，并继续输出不含私有 belief 内容的 `speech_continuity_metrics.v1` 原因计数：
+M04-B 把普通非警长白天发言接入 `public_speech_continuity.v1`，计划升级为 `public_speech_plan.v3`；警长票和放逐票仍保留 stance 对照。V3.1-L 后当前模拟结果为 `agent_town_simulation.v9` / `agent_town_simulation_batch.v9`，并继续输出不含私有 belief 内容的 `speech_continuity_metrics.v1` 原因计数：
 
 ```text
 [CONTINUITY] controlled_speeches=...; reasons={'stance_aligned': ..., 'new_public_evidence': ..., 'deterministic_variance': ..., 'authorized_claim': ..., 'mandatory_rule_response': ..., 'unscored': ...}
@@ -99,7 +103,7 @@ M06-A 的隐藏信息不变性矩阵已并入完整 smoke。`hidden_info_project
 M06-B 同样并入 smoke。`hidden_info_authorization.v1` 使用 `role_scoped_private_npc` 模式，在同一普通村民玩家基线上对 11 名 NPC 检查三类合法私有变化：
 
 - 预言家把未公开验人从好人目标改为狼人目标，只允许该预言家的五层投影变化。
-- 女巫看到的未公开刀口改变，只允许该女巫的 belief、stance、continuity 和 fallback 变化；decision context 保持不变。
+- 女巫看到的未公开刀口改变，只允许该女巫的 belief、stance、continuity 变化；V3.1-L 首夜固定概率救人后，decision context 和 fallback 均保持不变。
 - 一名非悍跳狼与守卫/猎人交换隐藏身份，只允许其他三名狼人更新私有狼队视角；两个本人身份已经变化的 actor 不参与对比。
 
 三类授权案例合计执行 158 项检查，所有公开投影和未授权 NPC/layer 必须不变。测试还会故意把预言家授权错配给村民，确认矩阵同时检测缺失授权与越权传播。报告不保存变体状态或私有 evidence 正文。
