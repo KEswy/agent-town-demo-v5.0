@@ -64,7 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-vote-calibration-trace",
         action="store_true",
-        help="omit M15-A shadow vote probability traces and batch summary",
+        help="omit M15-A/B vote probability traces and batch summary",
     )
     parser.add_argument(
         "--output",
@@ -147,19 +147,23 @@ def main() -> int:
             f"reasons={continuity_summary['reason_counts']}"
         )
         if vote_calibration_summary is None:
-            print("[VOTE-SHADOW] trace disabled")
+            print("[VOTE-CALIBRATION] trace disabled")
         else:
-            exile_shadow = vote_calibration_summary["by_kind"]["exile_vote"]
+            controlled_votes = vote_calibration_summary["by_consumer_mode"][
+                "controlled"
+            ]
             good_alignment = vote_calibration_summary[
                 "good_exile_probability_alignment"
             ]
             print(
-                "[VOTE-SHADOW] "
+                "[VOTE-CALIBRATION] "
                 f"observations={vote_calibration_summary['observation_count']}; "
-                "exile_entropy="
-                f"{_format_rate(exile_shadow['mean_normalized_entropy'])}; "
-                "actual_top_match="
-                f"{_format_rate(exile_shadow['actual_top_match_rate'])}; "
+                "controlled="
+                f"{vote_calibration_summary['controlled_observation_count']}; "
+                "controlled_entropy="
+                f"{_format_rate(controlled_votes['mean_normalized_entropy'])}; "
+                "controlled_top="
+                f"{_format_rate(controlled_votes['mean_top_probability'])}; "
                 "good_mass_on_wolves="
                 f"{_format_rate(good_alignment['mean_probability_mass_on_wolves'])}"
             )

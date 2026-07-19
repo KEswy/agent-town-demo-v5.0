@@ -42,8 +42,8 @@ from .vote_calibration import (
 )
 
 
-SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v7"
-BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v7"
+SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v8"
+BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v8"
 PLAYER_POLICY_VERSION = "legal_public_baseline.v1"
 SPEECH_CONTINUITY_METRICS_VERSION = "speech_continuity_metrics.v1"
 DEFAULT_MAX_DAYS = 20

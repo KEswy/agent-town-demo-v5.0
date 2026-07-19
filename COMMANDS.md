@@ -84,7 +84,7 @@ M04-A 默认还输出 `stance_summary.v1`：每名 NPC 的统一立场变化，�
 [STANCE] mode=shadow; observations=...; alignment=...; unexplained_change=...
 ```
 
-M04-B 把普通非警长白天发言接入 `public_speech_continuity.v1`，计划升级为 `public_speech_plan.v3`；警长票和放逐票仍保留 stance 对照。M15-A 后当前模拟结果为 `agent_town_simulation.v7` / `agent_town_simulation_batch.v7`，并继续输出不含私有 belief 内容的 `speech_continuity_metrics.v1` 原因计数：
+M04-B 把普通非警长白天发言接入 `public_speech_continuity.v1`，计划升级为 `public_speech_plan.v3`；警长票和放逐票仍保留 stance 对照。M15-B 后当前模拟结果为 `agent_town_simulation.v8` / `agent_town_simulation_batch.v8`，并继续输出不含私有 belief 内容的 `speech_continuity_metrics.v1` 原因计数：
 
 ```text
 [CONTINUITY] controlled_speeches=...; reasons={'stance_aligned': ..., 'new_public_evidence': ..., 'deterministic_variance': ..., 'authorized_claim': ..., 'mandatory_rule_response': ..., 'unscored': ...}
@@ -104,29 +104,29 @@ M06-B 同样并入 smoke。`hidden_info_authorization.v1` 使用 `role_scoped_pr
 
 三类授权案例合计执行 158 项检查，所有公开投影和未授权 NPC/layer 必须不变。测试还会故意把预言家授权错配给村民，确认矩阵同时检测缺失授权与越权传播。报告不保存变体状态或私有 evidence 正文。
 
-## 运行 M15-A 投票概率 shadow
+## 运行 M15-A/B 投票概率校准
 
-默认批量模拟会在每次 NPC 警长票和放逐票前记录 `vote_probability_shadow.v1`，并在批量根级输出 `vote_probability_summary.v1`。推荐用 100 个 seed 建立诊断基线，同时关闭更大的 belief/stance 明细：
+默认批量模拟会在每次 NPC 警长票和放逐票前记录 `vote_probability_trace.v2`，并在批量根级输出 `vote_probability_summary.v2`。只有 `VOTE` 阶段非警长好人 NPC 放逐票使用 `consumer_mode=controlled` / `good_exile_calibration.v1`；警长票、狼人票和规则硬约束继续为 shadow。推荐用 100 个 seed 回归，同时关闭更大的 belief/stance 明细：
 
 ```bash
 backend/.venv/bin/python scripts/simulate_games.py \
   --seed 20260719 \
   --games 100 \
   --no-belief-trace \
-  --output /tmp/agent-town-vote-shadow.json
+  --output /tmp/agent-town-vote-calibration.json
 ```
 
-`--no-belief-trace` 只关闭 belief/stance 轨迹；M15-A 会按投票阶段即时构造 actor-scoped `belief_state.v2`，因此仍保留较小的 vote shadow。终端会显示：
+`--no-belief-trace` 只关闭 belief/stance 轨迹；M15-A/B 会按投票阶段即时构造 actor-scoped `belief_state.v2`，因此仍保留较小的校准轨迹。终端会显示：
 
 ```text
-[VOTE-SHADOW] observations=...; exile_entropy=...; actual_top_match=...; good_mass_on_wolves=...
+[VOTE-CALIBRATION] observations=...; controlled=...; controlled_entropy=...; controlled_top=...; good_mass_on_wolves=...
 ```
 
-每个候选人的 utility 拆为 `belief_utility / public_influence_utility / social_utility / coordination_utility / variance_utility`，总和与概率均有守恒校验。批量摘要可按投票类型、投票者阵营及两者交叉查看个体熵、top 概率、实际票在 shadow 中的概率/排名和分量强度。真实阵营只在赛后汇总“好人概率质量落在狼人/好人目标”的评价指标，不参与候选分布生成。
+每个候选人的 utility 拆为 `belief_utility / public_influence_utility / social_utility / coordination_utility / variance_utility`，总和与概率均有守恒校验。批量摘要可按投票类型、投票者阵营、consumer mode 及交叉维度查看个体熵、top 概率、实际票概率/排名和分量强度。真实阵营只在赛后汇总“好人概率质量落在狼人/好人目标”的评价指标，不参与候选分布生成。
 
-100-seed 首份基线中，普通好人警长票/放逐票的归一化个体熵分别为 87.45%/8.56%，好人放逐 top 概率为 93.95%，且只有 34.76% 的概率质量落在狼人目标。它用于定位 M15-B 范围，不是平衡阈值；实时投票尚未读取该 shadow。
+M15-A 的 100-seed 基线中，普通好人放逐熵为 8.56%，排除警长硬票后的可比值为 9.01%，误投为 64.46%，狼人目标概率质量为 34.76%。M15-B 同 seed 的 1,482 次 controlled 观察熵为 9.82%、top 概率 93.45%；总体误投为 63.69%，狼人目标概率质量为 36.14%，好人胜场保持 2/100。这些数值是固定回归样本，不是平衡目标。
 
-如只需要规则/M02 结果并明确不要 M15-A 轨迹：
+如只需要规则/M02 结果并明确不要 M15-A/B 轨迹：
 
 ```bash
 backend/.venv/bin/python scripts/simulate_games.py \
@@ -136,6 +136,8 @@ backend/.venv/bin/python scripts/simulate_games.py \
   --no-vote-calibration-trace \
   --output /tmp/agent-town-rule-only.json
 ```
+
+`--no-vote-calibration-trace` 只关闭 JSON 诊断和汇总，不关闭 M15-B 的实时普通好人放逐策略；相同 seed 的 gameplay digest 必须与保留轨迹时一致。
 
 ## 汇总 M09-A 脱敏 LLM 观测
 
@@ -175,7 +177,7 @@ backend/.venv/bin/python scripts/simulate_games.py \
   --output /tmp/agent-town-belief-only.json
 ```
 
-准备运行 1000 局时，可关闭详细 belief/stance 轨迹，同时保留 M15-A vote shadow：
+准备运行 1000 局时，可关闭详细 belief/stance 轨迹，同时保留 M15-A/B 投票校准轨迹：
 
 ```bash
 backend/.venv/bin/python scripts/simulate_games.py \
@@ -185,7 +187,7 @@ backend/.venv/bin/python scripts/simulate_games.py \
   --output /tmp/agent-town-simulation-1000.json
 ```
 
-关闭 belief 轨迹不会改变 `gameplay_digest`、胜负或指标，会把每局 `belief_trace / stance_trace` 和批量 `belief_summary / stance_summary` 设为 `null`，但默认继续输出独立的 `vote_calibration_trace / vote_calibration_summary`。单独使用 `--no-stance-trace` 时只有 stance 两项为 `null`；加上 `--no-vote-calibration-trace` 才会同时关闭 M15-A 明细。所有精简模式都保留体积很小的 `speech_continuity` 原因汇总。
+关闭 belief 轨迹不会改变 `gameplay_digest`、胜负或指标，会把每局 `belief_trace / stance_trace` 和批量 `belief_summary / stance_summary` 设为 `null`，但默认继续输出独立的 `vote_calibration_trace / vote_calibration_summary`。单独使用 `--no-stance-trace` 时只有 stance 两项为 `null`；加上 `--no-vote-calibration-trace` 才会关闭 M15-A/B 明细，但 M15-B 实时策略仍启用。所有精简模式都保留体积很小的 `speech_continuity` 原因汇总。
 
 ## 启动后端和 LLM
 

@@ -111,8 +111,8 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
 
-    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-J" not in root_readme:
-        raise SmokeCheckError("root README must identify the active V3.1-J iteration")
+    if not root_readme.startswith("# Agent Town Demo V3") or "V3.1-K" not in root_readme:
+        raise SmokeCheckError("root README must identify the active V3.1-K iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
@@ -124,8 +124,8 @@ def check_release_docs() -> None:
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
 
-    if "V3.1-J" not in backend_readme or "V3.1-J" not in roadmap:
-        raise SmokeCheckError("V3.1-J status must stay synchronized across development docs")
+    if "V3.1-K" not in backend_readme or "V3.1-K" not in roadmap:
+        raise SmokeCheckError("V3.1-K status must stay synchronized across development docs")
     if "scripts/simulate_games.py" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
     if "agent_town_metrics.v1" not in commands:
@@ -168,15 +168,16 @@ def check_release_docs() -> None:
     ):
         raise SmokeCheckError("COMMANDS.md must document redacted M09-A observability")
     if (
-        "vote_probability_shadow.v1" not in commands
-        or "vote_probability_summary.v1" not in commands
+        "vote_probability_trace.v2" not in commands
+        or "vote_probability_summary.v2" not in commands
+        or "good_exile_calibration.v1" not in commands
         or "--no-vote-calibration-trace" not in commands
-        or "[VOTE-SHADOW]" not in commands
-        or "M15-A" not in commands
+        or "[VOTE-CALIBRATION]" not in commands
+        or "M15-B" not in commands
     ):
-        raise SmokeCheckError("COMMANDS.md must document M15-A vote shadow diagnostics")
+        raise SmokeCheckError("COMMANDS.md must document M15-B vote calibration")
 
-    print("[OK] V3.1-J README, commands, and roadmap status are synchronized.")
+    print("[OK] V3.1-K README, commands, and roadmap status are synchronized.")
 
 
 def check_json_files() -> None:
@@ -1524,6 +1525,7 @@ import random
 os.environ["AGENT_TOWN_DISABLE_VECTOR_RAG"] = "1"
 
 from app import main as rules
+from app import vote_calibration as vote_calibration_module
 from app.belief import (
     BELIEF_MODE,
     BELIEF_SCHEMA_VERSION,
@@ -1570,6 +1572,9 @@ from app.simulation_metrics import (
 )
 from app.vote_calibration import (
     COMPONENT_NAMES as VOTE_CALIBRATION_COMPONENT_NAMES,
+    GOOD_EXILE_POLICY_VERSION,
+    GOOD_EXILE_TEMPERATURE_OFFSET,
+    SHADOW_POLICY_VERSION,
     VOTE_CALIBRATION_MODE,
     VOTE_CALIBRATION_SCHEMA_VERSION,
     VOTE_CALIBRATION_SUMMARY_VERSION,
@@ -1778,7 +1783,14 @@ if (
     or vote_calibration_trace["mode"] != VOTE_CALIBRATION_MODE
     or vote_calibration_trace["observation_count"] <= 0
 ):
-    raise SystemExit("a simulation must expose a versioned M15-A vote shadow trace")
+    raise SystemExit("a simulation must expose a versioned M15-A/B vote trace")
+if (
+    vote_calibration_trace["controlled_observation_count"]
+    + vote_calibration_trace["shadow_observation_count"]
+    != vote_calibration_trace["observation_count"]
+    or GOOD_EXILE_TEMPERATURE_OFFSET != 5.0
+):
+    raise SystemExit("M15-B controlled/shadow counts and calibrated offset must be explicit")
 if vote_calibration_trace["candidate_evaluation_count"] != sum(
     len(observation["candidates"])
     for observation in vote_calibration_trace["observations"]
@@ -1786,10 +1798,29 @@ if vote_calibration_trace["candidate_evaluation_count"] != sum(
     raise SystemExit("vote shadow candidate evaluations must conserve observations")
 vote_shadow_ids = []
 vote_shadow_kinds = set()
+vote_consumer_modes = set()
+first_roles = {
+    role["character_id"]: role
+    for role in first["roles"]
+}
 for observation in vote_calibration_trace["observations"]:
     VoteProbabilityObservationV1.model_validate(observation)
     vote_shadow_ids.append(observation["observation_id"])
     vote_shadow_kinds.add(observation["vote_kind"])
+    vote_consumer_modes.add(observation["consumer_mode"])
+    voter_role = first_roles[observation["voter_id"]]
+    if observation["consumer_mode"] == "controlled":
+        if (
+            observation["policy_version"] != GOOD_EXILE_POLICY_VERSION
+            or observation["vote_kind"] != "exile_vote"
+            or observation["phase"] != "VOTE"
+            or voter_role["camp"] != "good"
+            or voter_role["is_player"]
+            or observation["hard_constraint"]
+        ):
+            raise SystemExit("M15-B may control only ordinary good-NPC exile ballots")
+    elif observation["policy_version"] != SHADOW_POLICY_VERSION:
+        raise SystemExit("non-controlled ballots must retain the M15-A shadow policy")
     if observation["voter_id"] in {
         candidate["target_id"] for candidate in observation["candidates"]
     }:
@@ -1814,6 +1845,8 @@ if len(vote_shadow_ids) != len(set(vote_shadow_ids)):
     raise SystemExit("vote shadow observation ids must be unique")
 if vote_shadow_kinds != {"sheriff_vote", "exile_vote"}:
     raise SystemExit("M15-A must observe both sheriff and exile NPC ballots")
+if vote_consumer_modes != {"shadow", "controlled"}:
+    raise SystemExit("M15-B traces must retain shadow ballots beside controlled ballots")
 try:
     VoteProbabilityObservationV1.model_validate(
         {
@@ -1893,7 +1926,24 @@ if (
         for game in batch["games"]
     )
 ):
-    raise SystemExit("batch simulation must aggregate M15-A vote probabilities")
+    raise SystemExit("batch simulation must aggregate M15-A/B vote probabilities")
+if (
+    vote_calibration_summary["controlled_observation_count"]
+    + vote_calibration_summary["shadow_observation_count"]
+    != vote_calibration_summary["observation_count"]
+    or set(vote_calibration_summary["by_consumer_mode"])
+    != {"shadow", "controlled"}
+    or sum(
+        group["observation_count"]
+        for group in vote_calibration_summary["by_consumer_mode"].values()
+    )
+    != vote_calibration_summary["observation_count"]
+    or vote_calibration_summary["by_consumer_mode"]["controlled"][
+        "observation_count"
+    ]
+    != vote_calibration_summary["controlled_observation_count"]
+):
+    raise SystemExit("M15-B consumer-mode summary groups must conserve observations")
 if set(vote_calibration_summary["by_kind"]) != {
     "sheriff_vote",
     "exile_vote",
@@ -1917,6 +1967,7 @@ for vote_kind, camp_groups in vote_calibration_summary[
 for group in [
     *vote_calibration_summary["by_kind"].values(),
     *vote_calibration_summary["by_voter_camp"].values(),
+    *vote_calibration_summary["by_consumer_mode"].values(),
 ]:
     for rate_name in (
         "mean_normalized_entropy",
@@ -2064,7 +2115,7 @@ if (
         for game in compact_batch["games"]
     )
 ):
-    raise SystemExit("belief-off mode must retain the independent M15-A vote shadow")
+    raise SystemExit("belief-off mode must retain the independent M15-A/B vote trace")
 if [game["gameplay_digest"] for game in compact_batch["games"]] != [
     game["gameplay_digest"] for game in batch["games"][:2]
 ]:
@@ -2082,11 +2133,11 @@ if (
         for game in without_vote_calibration["games"]
     )
 ):
-    raise SystemExit("vote-shadow-off mode must omit M15-A trace details")
+    raise SystemExit("vote-trace-off mode must omit M15-A/B trace details")
 if [game["gameplay_digest"] for game in without_vote_calibration["games"]] != [
     game["gameplay_digest"] for game in batch["games"][:2]
 ]:
-    raise SystemExit("M15-A vote shadow capture must not change gameplay digests")
+    raise SystemExit("M15-A/B trace capture must not change gameplay digests")
 
 belief_only_batch = run_rule_simulation_batch(
     20260719,
@@ -2204,6 +2255,131 @@ if any(
     for candidate in villager_vote_shadow["candidates"]
 ):
     raise SystemExit("good vote shadows must not receive wolf-team coordination")
+if (
+    villager_vote_shadow["consumer_mode"] != "controlled"
+    or villager_vote_shadow["policy_version"] != GOOD_EXILE_POLICY_VERSION
+):
+    raise SystemExit("an ordinary good NPC VOTE ballot must use M15-B control")
+
+def build_legacy_good_exile_probabilities(state, voter, candidate_ids):
+    candidates = [
+        rules.get_character(state, candidate_id)
+        for candidate_id in sorted(set(candidate_ids))
+        if candidate_id != voter.id
+        and rules.get_character(state, candidate_id).alive
+    ]
+    scores = {
+        candidate.id: round(
+            rules.score_npc_vote_candidate(state, voter, candidate),
+            4,
+        )
+        for candidate in candidates
+    }
+    return rules.build_softmax_vote_probabilities(
+        scores,
+        rules.get_character_strategy_tuning(voter),
+    )
+
+controlled_villager = rules.get_character(
+    left_vote_shadow_state,
+    villager_observer.id,
+)
+controlled_live_probabilities = rules.build_npc_exile_vote_probabilities(
+    left_vote_shadow_state,
+    controlled_villager,
+    vote_shadow_candidate_ids,
+)
+controlled_trace_probabilities = {
+    candidate["target_id"]: candidate["probability"]
+    for candidate in villager_vote_shadow["candidates"]
+}
+if controlled_live_probabilities != controlled_trace_probabilities:
+    raise SystemExit("the M15-B trace must match the live controlled distribution")
+legacy_villager_probabilities = build_legacy_good_exile_probabilities(
+    left_vote_shadow_state,
+    controlled_villager,
+    vote_shadow_candidate_ids,
+)
+if controlled_live_probabilities == legacy_villager_probabilities:
+    raise SystemExit("M15-B must apply its calibrated temperature in live VOTE")
+if rules.build_npc_exile_vote_probabilities(
+    left_vote_shadow_state,
+    controlled_villager,
+    vote_shadow_candidate_ids,
+    ignore_sheriff_lock=True,
+) != legacy_villager_probabilities:
+    raise SystemExit("sheriff nomination planning must remain on the legacy path")
+
+sheriff_scope_state = left_vote_shadow_state.model_copy(deep=True)
+sheriff_scope_state.sheriff_id = villager_observer.id
+sheriff_scope_voter = rules.get_character(
+    sheriff_scope_state,
+    villager_observer.id,
+)
+if rules.build_npc_exile_vote_probabilities(
+    sheriff_scope_state,
+    sheriff_scope_voter,
+    vote_shadow_candidate_ids,
+) != build_legacy_good_exile_probabilities(
+    sheriff_scope_state,
+    sheriff_scope_voter,
+    vote_shadow_candidate_ids,
+):
+    raise SystemExit("the sheriff's final nomination ballot must remain legacy")
+
+original_controlled_builder = (
+    vote_calibration_module.build_controlled_good_exile_probabilities
+)
+def reject_controlled_distribution(*_args, **_kwargs):
+    raise ValueError("synthetic M15-B contract rejection")
+vote_calibration_module.build_controlled_good_exile_probabilities = (
+    reject_controlled_distribution
+)
+try:
+    fallback_probabilities = rules.build_npc_exile_vote_probabilities(
+        left_vote_shadow_state,
+        controlled_villager,
+        vote_shadow_candidate_ids,
+    )
+finally:
+    vote_calibration_module.build_controlled_good_exile_probabilities = (
+        original_controlled_builder
+    )
+if fallback_probabilities != legacy_villager_probabilities:
+    raise SystemExit("a rejected M15-B contract must use the legal legacy fallback")
+
+strong_seer_state = left_vote_shadow_state.model_copy(deep=True)
+strong_seer = next(
+    character
+    for character in strong_seer_state.characters
+    if not character.is_player and character.role == "seer"
+)
+strong_wolf_target = next(
+    character
+    for character in strong_seer_state.characters
+    if character.role == "werewolf"
+)
+strong_seer_state.sheriff_id = None
+strong_seer_state.night_actions.append(
+    rules.NightActionState(
+        day=1,
+        actor_id=strong_seer.id,
+        action_type="seer_check",
+        target_id=strong_wolf_target.id,
+    )
+)
+strong_seer.suspicion[str(strong_wolf_target.id)] = 100
+strong_seer_probabilities = rules.build_npc_exile_vote_probabilities(
+    strong_seer_state,
+    strong_seer,
+    vote_shadow_candidate_ids,
+)
+if (
+    max(strong_seer_probabilities, key=strong_seer_probabilities.get)
+    != strong_wolf_target.id
+    or strong_seer_probabilities[strong_wolf_target.id] < 0.85
+):
+    raise SystemExit("a private seer wolf check must remain strongly persuasive")
 
 unpublished_night_swap = left.model_copy(deep=True)
 unpublished_night_swap.night_resolutions = [
@@ -2385,7 +2561,7 @@ for variant_id, variant in m06a_variants.items():
     )
     if vote_projection != m15a_baseline_projection:
         raise SystemExit(
-            f"M15-A good vote shadow leaked hidden M06-A variant: {variant_id}"
+            f"M15-B good vote control leaked hidden M06-A variant: {variant_id}"
         )
 
 def iter_report_strings(value):
@@ -2414,7 +2590,7 @@ if build_vote_probability_observation(
     vote_kind="exile_vote",
     candidate_ids=m15a_candidate_ids,
 ) == m15a_baseline_projection:
-    raise SystemExit("M15-A vote shadow must react to a changed public check result")
+    raise SystemExit("M15-B vote control must react to a changed public check result")
 m06a_negative_report = build_hidden_info_invariance_report(
     m06a_state,
     {"public_claim_result_changed": m06a_public_change},
@@ -3210,7 +3386,7 @@ print("headless simulation smoke test passed")
         cwd=BACKEND_DIR,
         fail_message="headless deterministic simulation smoke test failed",
     )
-    print("[OK] Simulations, M06-A/B matrices, and M15-A vote shadows are deterministic.")
+    print("[OK] Simulations, M06-A/B matrices, and M15-A/B vote calibration are deterministic.")
 
 
 def check_backend_search() -> None:

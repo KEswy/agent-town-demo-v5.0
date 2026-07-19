@@ -1,9 +1,9 @@
-"""Actor-scoped shadow vote probabilities for Agent Town M15-A.
+"""Actor-scoped vote probabilities for Agent Town M15-A/B.
 
-The live rule engine continues to choose every sheriff and exile ballot.  This
-module is imported only by the offline simulator and decomposes an alternative
-distribution into legal belief, public influence, social influence, authorized
-wolf coordination, and deterministic individual variance.
+M15-A records every NPC ballot in shadow mode. M15-B lets only non-sheriff good
+NPC exile ballots consume the calibrated distribution; all other observations
+remain shadow-only. Every distribution decomposes legal belief, public and
+social influence, authorized wolf coordination, and deterministic variance.
 """
 
 from __future__ import annotations
@@ -19,10 +19,14 @@ from . import main as rules
 from .belief import BELIEF_SCHEMA_VERSION, build_belief_snapshot
 
 
-VOTE_CALIBRATION_SCHEMA_VERSION = "vote_probability_shadow.v1"
-VOTE_CALIBRATION_SUMMARY_VERSION = "vote_probability_summary.v1"
-VOTE_CALIBRATION_MODE = "shadow"
+VOTE_CALIBRATION_SCHEMA_VERSION = "vote_probability_trace.v2"
+VOTE_CALIBRATION_SUMMARY_VERSION = "vote_probability_summary.v2"
+VOTE_CALIBRATION_MODE = "mixed_shadow_controlled"
+SHADOW_POLICY_VERSION = "shadow_vote_baseline.v1"
+GOOD_EXILE_POLICY_VERSION = "good_exile_calibration.v1"
+GOOD_EXILE_TEMPERATURE_OFFSET = 5.0
 VoteKind = Literal["sheriff_vote", "exile_vote"]
+ConsumerMode = Literal["shadow", "controlled"]
 COMPONENT_NAMES = (
     "belief_utility",
     "public_influence_utility",
@@ -67,14 +71,19 @@ class VoteCandidateProbabilityV1(StrictVoteCalibrationModel):
 
 
 class VoteProbabilityObservationV1(StrictVoteCalibrationModel):
-    schema_version: Literal["vote_probability_shadow.v1"] = (
+    schema_version: Literal["vote_probability_trace.v2"] = (
         VOTE_CALIBRATION_SCHEMA_VERSION
     )
-    mode: Literal["shadow"] = VOTE_CALIBRATION_MODE
+    mode: Literal["mixed_shadow_controlled"] = VOTE_CALIBRATION_MODE
     observation_id: str = Field(min_length=1)
     day: int = Field(ge=1)
     phase: str = Field(min_length=1)
     vote_kind: VoteKind
+    consumer_mode: ConsumerMode
+    policy_version: Literal[
+        "shadow_vote_baseline.v1",
+        "good_exile_calibration.v1",
+    ]
     vote_round: int = Field(ge=0)
     voter_id: int = Field(gt=0)
     belief_schema_version: Literal["belief_state.v2"] = BELIEF_SCHEMA_VERSION
@@ -97,6 +106,19 @@ class VoteProbabilityObservationV1(StrictVoteCalibrationModel):
 
     @model_validator(mode="after")
     def validate_distribution(self) -> "VoteProbabilityObservationV1":
+        expected_policy = (
+            GOOD_EXILE_POLICY_VERSION
+            if self.consumer_mode == "controlled"
+            else SHADOW_POLICY_VERSION
+        )
+        if self.policy_version != expected_policy:
+            raise ValueError("vote consumer mode and policy version must agree")
+        if self.consumer_mode == "controlled" and (
+            self.vote_kind != "exile_vote" or self.phase != "VOTE"
+        ):
+            raise ValueError(
+                "controlled vote probabilities are limited to exile ballots"
+            )
         candidate_ids = [candidate.target_id for candidate in self.candidates]
         if candidate_ids != sorted(set(candidate_ids)):
             raise ValueError("vote shadow candidates must be unique and sorted")
@@ -194,7 +216,7 @@ class PendingVoteCapture:
 
 
 class VoteCalibrationTraceRecorder:
-    """Capture shadow distributions before a vote and attach actual ballots."""
+    """Capture controlled/shadow distributions and attach actual ballots."""
 
     def __init__(self) -> None:
         self._observations: list[dict[str, object]] = []
@@ -265,11 +287,20 @@ class VoteCalibrationTraceRecorder:
         ]
         if len(observation_ids) != len(set(observation_ids)):
             raise ValueError("vote shadow observation ids must be unique")
+        controlled_count = sum(
+            1
+            for observation in self._observations
+            if observation["consumer_mode"] == "controlled"
+        )
         return {
             "schema_version": VOTE_CALIBRATION_SCHEMA_VERSION,
             "belief_schema_version": BELIEF_SCHEMA_VERSION,
             "mode": VOTE_CALIBRATION_MODE,
             "observation_count": len(self._observations),
+            "controlled_observation_count": controlled_count,
+            "shadow_observation_count": (
+                len(self._observations) - controlled_count
+            ),
             "candidate_evaluation_count": sum(
                 len(observation["candidates"])
                 for observation in self._observations
@@ -287,11 +318,27 @@ def build_vote_probability_observation(
     vote_round: int = 0,
     actor_belief: Optional[dict[str, object]] = None,
 ) -> dict[str, object]:
-    """Build one legal-perspective shadow distribution without mutating state."""
+    """Build one legal-perspective distribution without mutating state."""
 
     if voter.is_player or not voter.alive:
         raise ValueError("vote shadow observations require a living NPC voter")
     candidates = _legal_candidates(game_state, voter, candidate_ids)
+    if vote_kind == "exile_vote" and voter.role == "seer":
+        known_good_ids = {
+            target_id
+            for _day, target_id, result in rules.get_character_seer_checks(
+                game_state,
+                voter.id,
+            )
+            if result == "good"
+        }
+        coherent_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.id not in known_good_ids
+        ]
+        if coherent_candidates:
+            candidates = coherent_candidates
     if not candidates:
         raise ValueError("vote shadow observation requires a legal candidate")
     if actor_belief is None:
@@ -309,6 +356,20 @@ def build_vote_probability_observation(
     if any(candidate.id not in belief_by_target for candidate in candidates):
         raise ValueError("vote shadow belief must cover every candidate")
 
+    consumer_mode: ConsumerMode = (
+        "controlled"
+        if should_use_good_exile_calibration(
+            game_state,
+            voter,
+            vote_kind=vote_kind,
+        )
+        else "shadow"
+    )
+    policy_version = (
+        GOOD_EXILE_POLICY_VERSION
+        if consumer_mode == "controlled"
+        else SHADOW_POLICY_VERSION
+    )
     base_components = {
         candidate.id: _build_base_components(
             game_state,
@@ -316,6 +377,7 @@ def build_vote_probability_observation(
             candidate,
             vote_kind,
             belief_by_target[candidate.id],
+            consumer_mode,
         )
         for candidate in candidates
     }
@@ -345,8 +407,8 @@ def build_vote_probability_observation(
         scores[candidate.id] = total_utility
 
     tuning = rules.get_character_strategy_tuning(voter)
-    temperature = _vote_temperature(tuning)
-    probabilities = rules.build_softmax_vote_probabilities(scores, tuning)
+    temperature = _vote_temperature(tuning, consumer_mode)
+    probabilities = _build_softmax_probabilities(scores, temperature)
     hard_constraint = ""
     if (
         vote_kind == "exile_vote"
@@ -384,12 +446,14 @@ def build_vote_probability_observation(
     )
     observation = VoteProbabilityObservationV1(
         observation_id=(
-            f"vote_shadow:{vote_kind}:{game_state.day}:"
+            f"vote_probability:{vote_kind}:{game_state.day}:"
             f"{vote_round}:{voter.id}"
         ),
         day=game_state.day,
         phase=game_state.phase,
         vote_kind=vote_kind,
+        consumer_mode=consumer_mode,
+        policy_version=policy_version,
         vote_round=vote_round,
         voter_id=voter.id,
         temperature=temperature,
@@ -402,6 +466,55 @@ def build_vote_probability_observation(
         top_probability=float(ranked[0]["probability"]),
     )
     return observation.model_dump(mode="json")
+
+
+def should_use_good_exile_calibration(
+    game_state: rules.WolfGameState,
+    voter: rules.CharacterState,
+    *,
+    vote_kind: VoteKind,
+) -> bool:
+    """Return whether M15-B may control this ballot.
+
+    Sheriff ballots, sheriff nominations, player choices, wolf strategy, and
+    every non-vote phase stay on the existing rule-engine path.
+    """
+
+    return (
+        vote_kind == "exile_vote"
+        and game_state.phase == "VOTE"
+        and voter.alive
+        and not voter.is_player
+        and voter.camp == "good"
+        and voter.id != game_state.sheriff_id
+    )
+
+
+def build_controlled_good_exile_probabilities(
+    game_state: rules.WolfGameState,
+    voter: rules.CharacterState,
+    candidate_ids: list[int],
+) -> dict[int, float]:
+    """Build the M15-B live distribution for one eligible good NPC."""
+
+    if not should_use_good_exile_calibration(
+        game_state,
+        voter,
+        vote_kind="exile_vote",
+    ):
+        raise ValueError("voter is outside the M15-B controlled scope")
+    observation = build_vote_probability_observation(
+        game_state,
+        voter,
+        vote_kind="exile_vote",
+        candidate_ids=candidate_ids,
+    )
+    if observation["consumer_mode"] != "controlled":
+        raise ValueError("M15-B controlled observation unexpectedly stayed shadow")
+    return {
+        int(candidate["target_id"]): float(candidate["probability"])
+        for candidate in observation["candidates"]
+    }
 
 
 def attach_actual_vote_target(
@@ -443,7 +556,7 @@ def attach_actual_vote_target(
 def aggregate_vote_calibration_traces(
     game_results: list[dict[str, object]],
 ) -> dict[str, object]:
-    """Aggregate shadow distributions and post-game-only camp alignment."""
+    """Aggregate vote distributions and post-game-only camp alignment."""
 
     if not game_results:
         raise ValueError("vote calibration summary requires completed games")
@@ -495,6 +608,19 @@ def aggregate_vote_calibration_traces(
         }
         for vote_kind in ("sheriff_vote", "exile_vote")
     }
+    by_consumer_mode = {
+        consumer_mode: _summarize_observation_group(
+            [
+                observation
+                for observation, _camps in observations
+                if observation["consumer_mode"] == consumer_mode
+            ]
+        )
+        for consumer_mode in ("shadow", "controlled")
+    }
+    controlled_observation_count = by_consumer_mode["controlled"][
+        "observation_count"
+    ]
 
     good_exile_observations = [
         (observation, camps)
@@ -531,6 +657,10 @@ def aggregate_vote_calibration_traces(
         "mode": VOTE_CALIBRATION_MODE,
         "game_count": len(game_results),
         "observation_count": len(observations),
+        "controlled_observation_count": controlled_observation_count,
+        "shadow_observation_count": (
+            len(observations) - int(controlled_observation_count)
+        ),
         "candidate_evaluation_count": sum(
             len(observation["candidates"])
             for observation, _camps in observations
@@ -538,6 +668,7 @@ def aggregate_vote_calibration_traces(
         "by_kind": by_kind,
         "by_voter_camp": by_voter_camp,
         "by_kind_and_voter_camp": by_kind_and_voter_camp,
+        "by_consumer_mode": by_consumer_mode,
         "good_exile_probability_alignment": {
             "observation_count": good_observation_count,
             "probability_mass_on_wolves": _round_metric(
@@ -650,8 +781,17 @@ def _build_base_components(
     candidate: rules.CharacterState,
     vote_kind: VoteKind,
     seat_belief: dict[str, object],
+    consumer_mode: ConsumerMode,
 ) -> dict[str, float]:
     tuning = rules.get_character_strategy_tuning(voter)
+    if consumer_mode == "controlled":
+        return _build_controlled_good_exile_components(
+            game_state,
+            voter,
+            candidate,
+            tuning,
+            seat_belief,
+        )
     suspicion = float(seat_belief["suspicion_score"])
     confidence = float(seat_belief["confidence"])
     belief_strength = (
@@ -702,11 +842,10 @@ def _build_base_components(
     target_trust = float(
         voter.relationships.get(str(candidate.id), {}).get("trust", 0.5)
     )
-    social_utility = (
-        (target_trust - 0.5) * 28.0
-        if vote_kind == "sheriff_vote"
-        else (0.5 - target_trust) * 18.0
-    )
+    if vote_kind == "sheriff_vote":
+        social_utility = (target_trust - 0.5) * 28.0
+    else:
+        social_utility = (0.5 - target_trust) * 18.0
     if (
         vote_kind == "exile_vote"
         and game_state.sheriff_id is not None
@@ -743,6 +882,63 @@ def _build_base_components(
         "public_influence_utility": public_utility,
         "social_utility": social_utility,
         "variance_utility": centered_roll * variance_span,
+    }
+
+
+def _build_controlled_good_exile_components(
+    game_state: rules.WolfGameState,
+    voter: rules.CharacterState,
+    candidate: rules.CharacterState,
+    tuning: object,
+    seat_belief: dict[str, object],
+) -> dict[str, float]:
+    """Decompose the legal scorer plus a small confidence-scaled belief read."""
+
+    legacy_belief_utility = float(
+        voter.suspicion.get(str(candidate.id), 0)
+    )
+    belief_utility = legacy_belief_utility + (
+        float(seat_belief["suspicion_score"])
+        * float(seat_belief["confidence"])
+        * 0.03
+    )
+    target_trust = float(
+        voter.relationships.get(str(candidate.id), {}).get("trust", 0.5)
+    )
+    social_utility = (0.5 - target_trust) * 20.0
+    variance_span = (
+        2.0
+        + float(tuning.decision_variance) * 11.0
+        + float(tuning.deception_susceptibility) * 3.0
+        + float(tuning.social_susceptibility) * 2.0
+    )
+    centered_read = (
+        rules.deterministic_strategy_roll(
+            game_state,
+            voter,
+            f"exile_candidate_public_read:{candidate.id}",
+        )
+        - 0.5
+    ) * 2.0
+    variance_utility = centered_read * variance_span
+    legacy_total = rules.score_npc_vote_candidate(
+        game_state,
+        voter,
+        candidate,
+    )
+    # The remaining legacy terms are all actor-scoped public information:
+    # sheriff nomination, declared stance, claimant credibility, and badge.
+    public_utility = (
+        legacy_total
+        - legacy_belief_utility
+        - social_utility
+        - variance_utility
+    )
+    return {
+        "belief_utility": belief_utility,
+        "public_influence_utility": public_utility,
+        "social_utility": social_utility,
+        "variance_utility": variance_utility,
     }
 
 
@@ -870,7 +1066,28 @@ def _summarize_observation_group(
     }
 
 
-def _vote_temperature(tuning: object) -> float:
+def _vote_temperature(
+    tuning: object,
+    consumer_mode: ConsumerMode,
+) -> float:
+    if consumer_mode == "controlled":
+        baseline_temperature = (
+            4.0
+            + float(tuning.decision_variance) * 12.0
+            + float(tuning.deception_susceptibility) * 4.0
+            + float(tuning.social_susceptibility) * 2.0
+            - float(tuning.reasoning_skill) * 3.0
+        )
+        return round(
+            max(
+                4.5,
+                min(
+                    18.0,
+                    baseline_temperature + GOOD_EXILE_TEMPERATURE_OFFSET,
+                ),
+            ),
+            6,
+        )
     return round(
         max(
             3.0,
@@ -885,6 +1102,42 @@ def _vote_temperature(tuning: object) -> float:
         ),
         6,
     )
+
+
+def _build_softmax_probabilities(
+    candidate_scores: dict[int, float],
+    temperature: float,
+) -> dict[int, float]:
+    if not candidate_scores:
+        return {}
+    canonical_scores = {
+        int(candidate_id): float(candidate_scores[candidate_id])
+        for candidate_id in sorted(candidate_scores)
+    }
+    if any(not math.isfinite(score) for score in canonical_scores.values()):
+        raise ValueError("vote candidate scores must be finite")
+    if len(canonical_scores) == 1:
+        only_id = next(iter(canonical_scores))
+        return {only_id: 1.0}
+
+    highest_score = max(canonical_scores.values())
+    weights = {
+        candidate_id: math.exp(
+            max(-60.0, (score - highest_score) / temperature)
+        )
+        for candidate_id, score in canonical_scores.items()
+    }
+    total_weight = sum(weights.values())
+    if total_weight <= 0.0 or not math.isfinite(total_weight):
+        uniform_probability = 1.0 / len(weights)
+        return {
+            candidate_id: uniform_probability
+            for candidate_id in sorted(weights)
+        }
+    return {
+        candidate_id: weights[candidate_id] / total_weight
+        for candidate_id in sorted(weights)
+    }
 
 
 def _probability_entropy(
@@ -947,6 +1200,9 @@ def _mean_or_none(values: list[float]) -> Optional[float]:
 
 __all__ = [
     "COMPONENT_NAMES",
+    "GOOD_EXILE_POLICY_VERSION",
+    "GOOD_EXILE_TEMPERATURE_OFFSET",
+    "SHADOW_POLICY_VERSION",
     "VOTE_CALIBRATION_MODE",
     "VOTE_CALIBRATION_SCHEMA_VERSION",
     "VOTE_CALIBRATION_SUMMARY_VERSION",
@@ -955,5 +1211,7 @@ __all__ = [
     "VoteProbabilityObservationV1",
     "aggregate_vote_calibration_traces",
     "attach_actual_vote_target",
+    "build_controlled_good_exile_probabilities",
     "build_vote_probability_observation",
+    "should_use_good_exile_calibration",
 ]

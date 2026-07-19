@@ -13891,6 +13891,30 @@ def build_npc_exile_vote_probabilities(
         if coherent_candidates:
             candidates = coherent_candidates
 
+    if (
+        game_state.phase == "VOTE"
+        and not ignore_sheriff_lock
+        and voter.camp == "good"
+        and not voter.is_player
+        and voter.id != game_state.sheriff_id
+    ):
+        # M15-B controls only ordinary good-NPC exile ballots. Keeping this
+        # import local avoids a module cycle while main's rule models load.
+        # A rejected probability contract falls back to the existing stable
+        # scorer below, so calibration cannot prevent a legal ballot.
+        try:
+            from .vote_calibration import (
+                build_controlled_good_exile_probabilities,
+            )
+
+            return build_controlled_good_exile_probabilities(
+                game_state,
+                voter,
+                [candidate.id for candidate in candidates],
+            )
+        except (ArithmeticError, LookupError, TypeError, ValueError):
+            pass
+
     if voter.role == "werewolf":
         # These two public sacrifice-story obligations are intentionally hard.
         story_opponents = [
