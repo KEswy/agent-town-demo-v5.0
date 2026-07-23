@@ -939,3 +939,6 @@ Godot 4.7 的七个 `.gd.uid` 纳入源码，`.godot/` 继续忽略；`.gitattri
   `v4-origin` 推送 `v4-development` 开发快照。未创建 `v4.0.0`，历史三个 remote
   继续禁推；`3.0总结/` 保留为未跟踪本地历史资料，项目未添加根级 `LICENSE`，明确
   为未授予再分发许可。
+- `2026-07-23`：首次远端 Actions 发现 job 级 `env` 无法解析尚未创建的
+  `runner.temp` 上下文；将隔离存档和 pycache 变量下移到两个 smoke step，并增加静态
+  回归门禁。CI 的平台、工具版本、离线测试与不启动服务边界保持不变。

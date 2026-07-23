@@ -109,6 +109,9 @@ Linux 或 PATH 已包含 `godot` 时可省略 `GODOT_BIN`。无参数命令仍�
 GitHub workflow 只读源码、actions 固定完整 commit SHA，测试存档使用 runner 临时目录；
 不会启动 Godot 编辑器或常驻游戏进程。
 
+GitHub 的 `runner.temp` 上下文在 job 创建前不可用，因此临时存档与 pycache 变量必须
+位于各 smoke step 的 `env`，不能上移到 job 级；core smoke 会静态锁住这个边界。
+
 源码交付、双平台矩阵、三尺寸手工验收、隐私、依赖记录、LICENSE 决策和未来封版命令
 见 [`docs/V4_RELEASE_CHECKLIST.md`](docs/V4_RELEASE_CHECKLIST.md)。公开开发仓库
 [`KEswy/agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0) 已创建，

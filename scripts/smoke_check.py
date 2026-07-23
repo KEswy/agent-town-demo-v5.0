@@ -618,6 +618,20 @@ def check_ci_delivery_contracts() -> None:
         raise SmokeCheckError(
             "V4 CI workflow is missing contracts: " + ", ".join(missing_markers)
         )
+    invalid_job_runner_env = (
+        "\n    env:\n"
+        "      AGENT_TOWN_GAME_SAVE_DIR: ${{ runner.temp }}/agent-town-games"
+    )
+    valid_step_runner_env = (
+        "\n        env:\n"
+        "          AGENT_TOWN_GAME_SAVE_DIR: ${{ runner.temp }}/agent-town-games\n"
+        "          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/agent-town-pycache"
+    )
+    if invalid_job_runner_env in workflow or workflow.count(valid_step_runner_env) != 2:
+        raise SmokeCheckError(
+            "runner.temp is only available after a job starts; both smoke steps "
+            "must own their isolated temp env"
+        )
 
     action_lines = [
         line.strip() for line in workflow.splitlines() if line.strip().startswith("uses:")

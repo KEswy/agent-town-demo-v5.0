@@ -41,9 +41,6 @@ jobs:
         os:
           - ubuntu-24.04
           - macos-15
-    env:
-      AGENT_TOWN_GAME_SAVE_DIR: ${{ runner.temp }}/agent-town-games
-      PYTHONPYCACHEPREFIX: ${{ runner.temp }}/agent-town-pycache
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -67,6 +64,9 @@ jobs:
           python -m pip freeze --all
 
       - name: Run offline Python and document contracts
+        env:
+          AGENT_TOWN_GAME_SAVE_DIR: ${{ runner.temp }}/agent-town-games
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/agent-town-pycache
         run: python scripts/smoke_check.py --profile core
 
       - name: Assert checks did not mutate tracked files
@@ -82,9 +82,6 @@ jobs:
         os:
           - ubuntu-24.04
           - macos-15
-    env:
-      AGENT_TOWN_GAME_SAVE_DIR: ${{ runner.temp }}/agent-town-games
-      PYTHONPYCACHEPREFIX: ${{ runner.temp }}/agent-town-pycache
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -104,6 +101,9 @@ jobs:
           include-templates: false
 
       - name: Run Godot resource and scene checks
+        env:
+          AGENT_TOWN_GAME_SAVE_DIR: ${{ runner.temp }}/agent-town-games
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/agent-town-pycache
         run: |
           godot --version
           python scripts/smoke_check.py --profile godot
