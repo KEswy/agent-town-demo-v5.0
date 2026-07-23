@@ -1,16 +1,56 @@
 import hashlib
 import json
 import math
+import os
 import random
 import re
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
-from threading import Lock
-from typing import Literal, Optional
+from threading import Lock, RLock
+from typing import Literal, Optional, get_type_hints
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from .event_log import (
+    GAME_EVENT_SCHEMA_VERSION,
+    GAME_EVENT_LOG_SCHEMA_VERSION,
+    GAME_REPLAY_SCHEMA_VERSION,
+    GAME_RULESET_VERSION,
+    GameCommandCheckpoint,
+    GameRuleEventLogV1,
+    GameRuleEventV1,
+    GameRuleReplayV1,
+    append_game_rule_event,
+    begin_game_command,
+    canonical_payload_digest,
+    rule_state_digest,
+    validate_game_rule_event_chain,
+)
+from .game_persistence import (
+    GAME_RECOVERY_SCHEMA_VERSION,
+    GAME_RESTORE_SCHEMA_VERSION,
+    GAME_SAVE_RESPONSE_SCHEMA_VERSION,
+    GAME_SAVE_SCHEMA_VERSION,
+    RECOVERY_CONFIG_FINGERPRINT_VERSION,
+    GameRecoveryFailureV1,
+    GameRecoveryReportV1,
+    GameRestoreResponseV1,
+    GameSaveEnvelopeV1,
+    GameSaveResponseV1,
+    GameSaveStore,
+    utc_now_iso,
+)
+from .idempotency import (
+    GAME_COMMAND_IDEMPOTENCY_VERSION,
+    GAME_COMMAND_RESULT_SCHEMA_VERSION,
+    GameCommandResultV1,
+    IdempotentGameCommandRequest,
+    build_idempotency_request_digest,
+)
 from .llm import LLM_CLIENT, LLMGeneration, LLMJsonGeneration
 from .llm_observability import (
     LLM_OBSERVABILITY_RECORDER,
@@ -59,13 +99,61 @@ from .npc_tuning import (
     load_npc_tuning,
     resolve_npc_tuning,
 )
+from .player_speech import (
+    PLAYER_SPEECH_PREVIEW_SCHEMA_VERSION,
+    PLAYER_SPEECH_UNDERSTANDING_SCHEMA_VERSION,
+    PlayerSpeechAccusationV1,
+    PlayerSpeechBadgeFlowPreviewV1,
+    PlayerSpeechClaimV1,
+    PlayerSpeechPreviewEffectV1,
+    PlayerSpeechPreviewResponseV1,
+    PlayerSpeechUnderstandingV1,
+    PlayerSpeechWitchDirectiveV1,
+)
+from .post_game_review import (
+    ASSESSMENT_KEYS,
+    ERROR_CATEGORY_KEYS,
+    PostGameDecisionReviewV1,
+    PostGameEvidenceReferenceV1,
+    PostGameExplainableReviewV1,
+    build_post_game_review_id,
+)
+from .public_evidence import (
+    PUBLIC_COMMITMENT_STATE_SCHEMA_VERSION,
+    PUBLIC_CONTRADICTION_CANDIDATE_SCHEMA_VERSION,
+    PUBLIC_EVIDENCE_ANALYSIS_SCHEMA_VERSION,
+    PUBLIC_EVIDENCE_ITEM_SCHEMA_VERSION,
+    PUBLIC_EVIDENCE_TIMELINE_SCHEMA_VERSION,
+    PublicCommitmentStateV1,
+    PublicContradictionCandidateV1,
+    PublicEvidenceDraft,
+    PublicEvidenceAnalysisV1,
+    PublicEvidenceTimelineV1,
+    build_public_commitment_id,
+    build_public_contradiction_id,
+    build_public_evidence_timeline_from_drafts,
+)
 from .rag import HYBRID_INDEX
 
 
-app = FastAPI(title="Agent Town Backend")
+@asynccontextmanager
+async def app_lifespan(_app: FastAPI):
+    """Enable disk persistence only for a real FastAPI service lifespan."""
+
+    activate_game_persistence()
+    try:
+        yield
+    finally:
+        deactivate_game_persistence()
+
+
+app = FastAPI(title="Agent Town Backend", lifespan=app_lifespan)
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 MEMORY_FILE = DATA_DIR / "memory.json"
+GAME_SAVE_DIR = Path(
+    os.environ.get("AGENT_TOWN_GAME_SAVE_DIR", str(DATA_DIR / "games"))
+)
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
 NPC_PROFILES_FILE = CONFIG_DIR / "npc_profiles.json"
 KNOWLEDGE_BASE_FILE = CONFIG_DIR / "knowledge_base.json"
@@ -335,6 +423,7 @@ class LLMStatusResponse(BaseModel):
     model: str
     configured: bool
     base_url: str = ""
+    config_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class RagStatusResponse(BaseModel):
@@ -352,6 +441,7 @@ class GameStartRequest(BaseModel):
     roles: dict[str, int] = Field(default_factory=lambda: dict(DEFAULT_WOLF_ROLES))
     player_role: str = "random"
     enable_llm: bool = False
+    enable_llm_validation: bool = True
     enable_rag: bool = False
 
 
@@ -761,6 +851,9 @@ class WolfGameState(BaseModel):
         default_factory=list
     )
     llm_validation_failures: list[LLMValidationFailureState] = Field(default_factory=list)
+    rule_events: list[GameRuleEventV1] = Field(default_factory=list)
+    command_results: dict[str, GameCommandResultV1] = Field(default_factory=dict)
+    recovery_config_fingerprint: str = ""
     winner: Optional[str] = None
     winner_reason: str = ""
     llm_enabled: bool = False
@@ -777,6 +870,7 @@ class GameStartResponse(BaseModel):
     characters: list[CharacterView]
     message: str
     llm_enabled: bool = False
+    llm_validation_enabled: bool = False
 
 
 class GameStateResponse(BaseModel):
@@ -786,11 +880,40 @@ class GameStateResponse(BaseModel):
     characters: list[CharacterView]
     public_logs: list[str]
     public_intel: list[PublicIntelView] = Field(default_factory=list)
+    public_evidence_timeline: PublicEvidenceTimelineV1
+    public_evidence_analysis: PublicEvidenceAnalysisV1
     player_private_info: PlayerPrivateInfo
     meeting: DayMeetingView
     sheriff: SheriffView
     winner: Optional[str] = None
     llm_enabled: bool = False
+    llm_validation_enabled: bool = False
+
+
+def is_llm_validation_enabled(game_state: WolfGameState) -> bool:
+    """Return the creation-sealed per-game semantic validation preference."""
+
+    if not game_state.llm_enabled:
+        return False
+    if not game_state.rule_events:
+        return True
+
+    creation_event = game_state.rule_events[0]
+    if creation_event.event_type != "game_created":
+        return True
+    start_request = creation_event.command.get("start_request")
+    if not isinstance(start_request, dict):
+        return True
+    requested = start_request.get("enable_llm_validation", True)
+    return requested if isinstance(requested, bool) else True
+
+
+def get_llm_validation_attempt_limit(game_state: WolfGameState) -> int:
+    return (
+        MAX_LLM_VALIDATION_ATTEMPTS
+        if is_llm_validation_enabled(game_state)
+        else 0
+    )
 
 
 class GameSummaryEvent(BaseModel):
@@ -820,10 +943,11 @@ class GameSummaryResponse(BaseModel):
     winner_message: str
     characters: list[CharacterGameSummary]
     timeline: list[GameSummaryEvent]
+    explainable_review: PostGameExplainableReviewV1
     llm_validation_failures: list[LLMValidationFailureView] = Field(default_factory=list)
 
 
-class NightActionRequest(BaseModel):
+class NightActionRequest(IdempotentGameCommandRequest):
     game_id: str
     character_id: int
     action_type: str
@@ -835,7 +959,7 @@ class NightActionResponse(BaseModel):
     message: str
 
 
-class NightResolveRequest(BaseModel):
+class NightResolveRequest(IdempotentGameCommandRequest):
     game_id: str
 
 
@@ -849,7 +973,7 @@ class NightResolveResponse(BaseModel):
     player_private_result: dict[str, object] = Field(default_factory=dict)
 
 
-class HunterShotRequest(BaseModel):
+class HunterShotRequest(IdempotentGameCommandRequest):
     game_id: str
     character_id: int
     target_id: Optional[int] = None
@@ -884,9 +1008,21 @@ class BadgeFlowInput(BaseModel):
     reason_target_id: Optional[int] = Field(default=None, gt=0)
 
 
-class PlayerSpeechRequest(BaseModel):
+class PlayerSpeechRequest(IdempotentGameCommandRequest):
     game_id: str
     character_id: int
+    speech: str
+    temporary_nomination_target_id: Optional[int] = None
+    badge_flow: Optional[BadgeFlowInput] = None
+    preview_fingerprint: Optional[str] = None
+
+
+class PlayerSpeechPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    game_id: str
+    character_id: int
+    speech_kind: Literal["day", "sheriff"]
     speech: str
     temporary_nomination_target_id: Optional[int] = None
     badge_flow: Optional[BadgeFlowInput] = None
@@ -898,7 +1034,7 @@ class PlayerSpeechResponse(BaseModel):
     state_updates: dict[str, object] = Field(default_factory=dict)
 
 
-class SheriffSignupRequest(BaseModel):
+class SheriffSignupRequest(IdempotentGameCommandRequest):
     game_id: str
     character_id: int
     run_for_sheriff: bool
@@ -911,14 +1047,23 @@ class SheriffSignupResponse(BaseModel):
     next_speaker_id: Optional[int] = None
 
 
-class SheriffSpeechRequest(BaseModel):
+class SheriffSpeechRequest(IdempotentGameCommandRequest):
     game_id: str
     character_id: int
     speech: str = ""
     badge_flow: Optional[BadgeFlowInput] = None
+    preview_fingerprint: Optional[str] = None
 
 
-class SheriffWithdrawalRequest(BaseModel):
+@dataclass(frozen=True)
+class PreparedPlayerSpeech:
+    preview: PlayerSpeechPreviewResponseV1
+    parsed: ParsedPlayerSpeech
+    planned_claims: list[PublicClaimState]
+    temporary_target_id: Optional[int] = None
+
+
+class SheriffWithdrawalRequest(IdempotentGameCommandRequest):
     game_id: str
     character_id: int
     withdraw: bool = False
@@ -931,7 +1076,7 @@ class SheriffWithdrawalResponse(BaseModel):
     phase: str
 
 
-class SheriffVoteRequest(BaseModel):
+class SheriffVoteRequest(IdempotentGameCommandRequest):
     game_id: str
     character_id: int
     target_id: Optional[int] = None
@@ -950,19 +1095,19 @@ class SheriffVoteResponse(BaseModel):
     message: str
 
 
-class SheriffMeetingOrderRequest(BaseModel):
+class SheriffMeetingOrderRequest(IdempotentGameCommandRequest):
     game_id: str
     character_id: int
     side: str
 
 
-class SheriffNominationRequest(BaseModel):
+class SheriffNominationRequest(IdempotentGameCommandRequest):
     game_id: str
     character_id: int
     target_id: int
 
 
-class BadgeTransferRequest(BaseModel):
+class BadgeTransferRequest(IdempotentGameCommandRequest):
     game_id: str
     character_id: int
     target_id: Optional[int] = None
@@ -997,7 +1142,7 @@ class NpcMemoryUpdate(BaseModel):
     content: str
 
 
-class NpcSpeechesRequest(BaseModel):
+class NpcSpeechesRequest(IdempotentGameCommandRequest):
     game_id: str
     day: Optional[int] = None
     respond_to_player: bool = True
@@ -1008,7 +1153,7 @@ class NpcSpeechesResponse(BaseModel):
     memory_updates: list[NpcMemoryUpdate] = Field(default_factory=list)
 
 
-class NpcSpeechRequest(BaseModel):
+class NpcSpeechRequest(IdempotentGameCommandRequest):
     game_id: str
     character_id: int
 
@@ -1020,7 +1165,7 @@ class NpcSpeechResponse(BaseModel):
     meeting_completed: bool = False
 
 
-class EndFreeActivityRequest(BaseModel):
+class EndFreeActivityRequest(IdempotentGameCommandRequest):
     game_id: str
 
 
@@ -1029,7 +1174,7 @@ class EndFreeActivityResponse(BaseModel):
     message: str
 
 
-class PrivateChatRequest(BaseModel):
+class PrivateChatRequest(IdempotentGameCommandRequest):
     game_id: str
     npc_character_id: int
     question: str
@@ -1059,7 +1204,7 @@ class NpcVoteDecision(BaseModel):
     retrieval_mode: str = "keyword"
 
 
-class NpcVoteDecisionsRequest(BaseModel):
+class NpcVoteDecisionsRequest(IdempotentGameCommandRequest):
     game_id: str
 
 
@@ -1067,7 +1212,7 @@ class NpcVoteDecisionsResponse(BaseModel):
     npc_votes: list[NpcVoteDecision]
 
 
-class PlayerVoteRequest(BaseModel):
+class PlayerVoteRequest(IdempotentGameCommandRequest):
     game_id: str
     character_id: int
     target_id: Optional[int] = None
@@ -1079,7 +1224,7 @@ class PlayerVoteResponse(BaseModel):
     message: str
 
 
-class VoteResolveRequest(BaseModel):
+class VoteResolveRequest(IdempotentGameCommandRequest):
     game_id: str
 
 
@@ -1131,7 +1276,329 @@ NPC_TUNING_CONFIG: Optional[NPCTuningConfigV1] = None
 MEMORY_STORE: dict[str, list[MemoryItem]] = {}
 MEMORY_LOCK = Lock()
 GAME_STORE: dict[str, WolfGameState] = {}
-GAME_LOCK = Lock()
+GAME_LOCK = RLock()
+GAME_SAVE_STORE = GameSaveStore(GAME_SAVE_DIR)
+GAME_SAVE_LOCK = Lock()
+GAME_PERSISTENCE_ACTIVE = False
+PERSISTED_GAME_IDS: set[str] = set()
+LAST_GAME_RECOVERY_REPORT = GameRecoveryReportV1(
+    scanned_count=0,
+    restored_count=0,
+    skipped_terminal_count=0,
+    failure_count=0,
+)
+IDEMPOTENT_ENDPOINT_RESPONSE_MODELS: dict[str, type[BaseModel]] = {}
+
+
+def restore_game_command_checkpoint(
+    game_id: str,
+    checkpoint: GameCommandCheckpoint,
+) -> WolfGameState:
+    """Restore one command's exact pre-mutation state while GAME_LOCK is held."""
+
+    if checkpoint.state_snapshot is None:
+        raise RuntimeError("rule command checkpoint has no rollback snapshot")
+    restored_state = WolfGameState.model_validate(checkpoint.state_snapshot)
+    if restored_state.game_id != game_id:
+        raise RuntimeError("rule command rollback snapshot game_id mismatch")
+    GAME_STORE[game_id] = restored_state
+    return restored_state
+
+
+def validate_game_command_results(game_state: WolfGameState) -> None:
+    """Validate every durable idempotency result against its sealed event."""
+
+    for result_key, result in game_state.command_results.items():
+        if result_key != result.idempotency_key:
+            raise ValueError("command result key does not match its record")
+        if result.game_id != game_state.game_id:
+            raise ValueError("command result belongs to another game")
+        if result.event_sequence > len(game_state.rule_events):
+            raise ValueError("command result references a missing rule event")
+        event = game_state.rule_events[result.event_sequence - 1]
+        if (
+            event.sequence != result.event_sequence
+            or event.event_type != result.event_type
+            or event.event_digest != result.event_digest
+        ):
+            raise ValueError("command result does not match its rule event")
+        if event.command.get("idempotency_key") != result.idempotency_key:
+            raise ValueError("command result key is not sealed in its rule event")
+        command_payload = dict(event.command)
+        command_payload.pop("idempotency_key", None)
+        if canonical_payload_digest(command_payload) != result.request_digest:
+            raise ValueError("command result request digest does not match its event")
+        if canonical_payload_digest(result.response_payload) != result.response_digest:
+            raise ValueError("command result response digest is invalid")
+        response_model = IDEMPOTENT_ENDPOINT_RESPONSE_MODELS.get(result.endpoint)
+        if response_model is None:
+            raise ValueError("command result references an unknown endpoint")
+        if response_model.__name__ != result.response_model:
+            raise ValueError("command result response model has drifted")
+        normalized_response = response_model.model_validate(
+            result.response_payload
+        ).model_dump(mode="json")
+        if normalized_response != result.response_payload:
+            raise ValueError("command result response does not round-trip")
+
+
+def build_recorded_command_response(
+    result: GameCommandResultV1,
+    *,
+    endpoint_name: str,
+    request_digest: str,
+    response_model: type[BaseModel],
+) -> BaseModel:
+    """Return one exact recorded response or reject a reused external key."""
+
+    if (
+        result.endpoint != endpoint_name
+        or result.request_digest != request_digest
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="幂等 key 已被同一对局中的另一条命令或不同 payload 使用。",
+        )
+    if result.response_model != response_model.__name__:
+        raise RuntimeError(
+            "stored idempotency response model does not match endpoint"
+        )
+    return response_model.model_validate(result.response_payload)
+
+
+def load_saved_command_result(
+    game_id: str,
+    idempotency_key: str,
+) -> Optional[GameCommandResultV1]:
+    """Read a result from a validated save without activating terminal state."""
+
+    if not GAME_PERSISTENCE_ACTIVE:
+        return None
+    try:
+        _envelope, saved_state = load_validated_saved_game(game_id)
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"幂等结果存档完整性校验失败：{exc}",
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="读取幂等结果存档失败。",
+        ) from exc
+    return saved_state.command_results.get(idempotency_key)
+
+
+def transactional_rule_endpoint(endpoint):
+    """Rollback pre-commit failures and atomically commit keyed responses."""
+
+    response_model = get_type_hints(endpoint).get("return")
+    if not (
+        isinstance(response_model, type)
+        and issubclass(response_model, BaseModel)
+    ):
+        raise TypeError(
+            f"transactional endpoint {endpoint.__name__} needs a BaseModel response"
+        )
+    endpoint_name = endpoint.__name__
+    IDEMPOTENT_ENDPOINT_RESPONSE_MODELS[endpoint_name] = response_model
+
+    @wraps(endpoint)
+    def wrapped(request: BaseModel, *args, **kwargs):
+        game_id = str(getattr(request, "game_id", ""))
+        if not game_id:
+            return endpoint(request, *args, **kwargs)
+        with GAME_LOCK:
+            idempotency_key = getattr(request, "idempotency_key", None)
+            request_digest = (
+                build_idempotency_request_digest(request)
+                if idempotency_key is not None
+                else ""
+            )
+            original_state = GAME_STORE.get(game_id)
+            if original_state is None:
+                if idempotency_key is not None:
+                    saved_result = load_saved_command_result(
+                        game_id,
+                        idempotency_key,
+                    )
+                    if saved_result is not None:
+                        return build_recorded_command_response(
+                            saved_result,
+                            endpoint_name=endpoint_name,
+                            request_digest=request_digest,
+                            response_model=response_model,
+                        )
+                return endpoint(request, *args, **kwargs)
+            if idempotency_key is not None:
+                existing_result = original_state.command_results.get(
+                    idempotency_key
+                )
+                if existing_result is not None:
+                    return build_recorded_command_response(
+                        existing_result,
+                        endpoint_name=endpoint_name,
+                        request_digest=request_digest,
+                        response_model=response_model,
+                    )
+            checkpoint = begin_game_command(original_state)
+            original_event_count = len(original_state.rule_events)
+            original_last_event_digest = (
+                original_state.rule_events[-1].event_digest
+                if original_state.rule_events
+                else "0" * 64
+            )
+            keyed_commit_complete = False
+            try:
+                endpoint_result = endpoint(request, *args, **kwargs)
+                if idempotency_key is None:
+                    return endpoint_result
+                current_state = GAME_STORE.get(game_id)
+                if (
+                    current_state is None
+                    or len(current_state.rule_events) != original_event_count + 1
+                    or current_state.rule_events[-1].previous_event_digest
+                    != original_last_event_digest
+                ):
+                    raise RuntimeError(
+                        "keyed rule command did not append exactly one event"
+                    )
+                response = response_model.model_validate(endpoint_result)
+                response_payload = response.model_dump(mode="json")
+                committed_event = current_state.rule_events[-1]
+                current_state.command_results[idempotency_key] = (
+                    GameCommandResultV1(
+                        idempotency_key=idempotency_key,
+                        game_id=game_id,
+                        endpoint=endpoint_name,
+                        request_digest=request_digest,
+                        event_sequence=committed_event.sequence,
+                        event_type=committed_event.event_type,
+                        event_digest=committed_event.event_digest,
+                        response_model=response_model.__name__,
+                        response_digest=canonical_payload_digest(
+                            response_payload
+                        ),
+                        response_payload=response_payload,
+                    )
+                )
+                validate_game_command_results(current_state)
+                try:
+                    persist_game_if_enabled(current_state)
+                except (OSError, ValidationError, ValueError) as exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            "幂等规则命令未提交：结果台账持久化失败。"
+                        ),
+                    ) from exc
+                keyed_commit_complete = True
+                return response
+            except Exception:
+                current_state = GAME_STORE.get(game_id)
+                event_committed = (
+                    current_state is not None
+                    and len(current_state.rule_events) == original_event_count + 1
+                    and current_state.rule_events[-1].previous_event_digest
+                    == original_last_event_digest
+                )
+                commit_complete = (
+                    keyed_commit_complete
+                    if idempotency_key is not None
+                    else event_committed
+                )
+                snapshot_unchanged = (
+                    current_state is not None
+                    and checkpoint.state_snapshot is not None
+                    and current_state.model_dump(mode="json")
+                    == checkpoint.state_snapshot
+                )
+                if not commit_complete and not snapshot_unchanged:
+                    restore_game_command_checkpoint(game_id, checkpoint)
+                raise
+
+    return wrapped
+
+
+def build_game_config_fingerprint() -> str:
+    """Fingerprint rule-relevant live config without secrets or runtime state."""
+
+    llm_status = LLM_CLIENT.status()
+    return canonical_payload_digest(
+        {
+            "fingerprint_version": RECOVERY_CONFIG_FINGERPRINT_VERSION,
+            "ruleset_version": GAME_RULESET_VERSION,
+            "roles": DEFAULT_WOLF_ROLES,
+            "npc_names": NPC_NAMES,
+            "npc_personalities": NPC_PERSONALITIES,
+            "npc_profiles": {
+                name: profile.model_dump(mode="json")
+                for name, profile in sorted(NPC_PROFILES.items())
+            },
+            "knowledge_base": [
+                item.model_dump(mode="json") for item in KNOWLEDGE_BASE
+            ],
+            "npc_tuning": (
+                NPC_TUNING_CONFIG.model_dump(mode="json")
+                if NPC_TUNING_CONFIG is not None
+                else None
+            ),
+            "llm": {
+                "enabled": bool(llm_status.get("enabled", False)),
+                "configured": bool(llm_status.get("configured", False)),
+                "provider": str(llm_status.get("provider", "")),
+                "model": str(llm_status.get("model", "")),
+                "base_url": str(llm_status.get("base_url", "")),
+            },
+        }
+    )
+
+
+def build_game_save_envelope(game_state: WolfGameState) -> GameSaveEnvelopeV1:
+    if not game_state.rule_events:
+        raise ValueError("cannot save a game without rule events")
+    if not validate_game_rule_event_chain(game_state.rule_events):
+        raise ValueError("cannot save a game with an invalid event chain")
+    validate_game_command_results(game_state)
+    first_event = game_state.rule_events[0]
+    if first_event.event_type != "game_created":
+        raise ValueError("cannot save a game without a game_created event")
+    if (
+        first_event.command.get("recovery_config_fingerprint")
+        != game_state.recovery_config_fingerprint
+    ):
+        raise ValueError("game recovery config fingerprint is not creation-sealed")
+    last_event = game_state.rule_events[-1]
+    current_state_digest = rule_state_digest(game_state)
+    if last_event.state_digest_after != current_state_digest:
+        raise ValueError("cannot save rule state changed outside the event chain")
+    if re.fullmatch(r"[0-9a-f]{64}", game_state.recovery_config_fingerprint) is None:
+        raise ValueError("game recovery config fingerprint is invalid")
+    state_payload = game_state.model_dump(mode="json")
+    return GameSaveEnvelopeV1(
+        game_id=game_state.game_id,
+        saved_event_sequence=last_event.sequence,
+        saved_event_digest=last_event.event_digest,
+        state_digest=current_state_digest,
+        snapshot_digest=canonical_payload_digest(state_payload),
+        config_fingerprint=game_state.recovery_config_fingerprint,
+        saved_at=utc_now_iso(),
+        state=state_payload,
+    )
+
+
+def persist_game_state(game_state: WolfGameState) -> GameSaveEnvelopeV1:
+    envelope = build_game_save_envelope(game_state)
+    with GAME_SAVE_LOCK:
+        GAME_SAVE_STORE.save(envelope)
+    return envelope
+
+
+def persist_game_if_enabled(game_state: WolfGameState) -> None:
+    if GAME_PERSISTENCE_ACTIVE and game_state.game_id in PERSISTED_GAME_IDS:
+        persist_game_state(game_state)
 
 
 @app.get("/health")
@@ -1166,6 +1633,15 @@ def start_wolf_game(request: GameStartRequest) -> GameStartResponse:
     with GAME_LOCK:
         game_id = build_game_id()
         game_state = create_wolf_game_state(request, game_id=game_id)
+        if GAME_PERSISTENCE_ACTIVE:
+            try:
+                persist_game_state(game_state)
+            except (OSError, ValidationError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="创建对局存档失败，对局未写入活动缓存。",
+                ) from exc
+            PERSISTED_GAME_IDS.add(game_id)
         GAME_STORE[game_id] = game_state
 
     player = get_character(game_state, game_state.player_character_id)
@@ -1180,6 +1656,7 @@ def start_wolf_game(request: GameStartRequest) -> GameStartResponse:
             + ("本局已启用 LLM 表达。" if game_state.llm_enabled else "本局使用规则模板表达。")
         ),
         llm_enabled=game_state.llm_enabled,
+        llm_validation_enabled=is_llm_validation_enabled(game_state),
     )
 
 
@@ -1251,6 +1728,7 @@ def create_wolf_game_state(
             and bool(LLM_CLIENT.status()["configured"])
         ),
         rag_enabled=request.enable_rag,
+        recovery_config_fingerprint=build_game_config_fingerprint(),
         created_at=now,
         updated_at=now,
     )
@@ -1261,7 +1739,325 @@ def create_wolf_game_state(
     initialize_role_resources(game_state)
     ensure_npc_night_actions(game_state)
     game_state.player_private_info = build_player_private_info_dict(game_state)
+    append_game_rule_event(
+        game_state,
+        event_type="game_created",
+        visibility="system_private",
+        command={
+            "start_request": request.model_dump(mode="json"),
+            "random_seed": selected_seed,
+            "effective_llm_enabled": game_state.llm_enabled,
+            "effective_llm_validation_enabled": (
+                game_state.llm_enabled and request.enable_llm_validation
+            ),
+            "effective_rag_enabled": game_state.rag_enabled,
+            "recovery_config_fingerprint": (
+                game_state.recovery_config_fingerprint
+            ),
+        },
+        checkpoint=GameCommandCheckpoint(
+            day=0,
+            phase="UNINITIALIZED",
+            state_digest=canonical_payload_digest({}),
+        ),
+        actor_id=game_state.player_character_id,
+    )
     return game_state
+
+
+def record_rule_command(
+    game_state: WolfGameState,
+    request: BaseModel,
+    checkpoint: GameCommandCheckpoint,
+    *,
+    event_type: str,
+    visibility: Literal["public", "player_private", "system_private"],
+    actor_id: Optional[int] = None,
+) -> GameRuleEventV1:
+    """Seal one successful API rule command into the append-only chain."""
+
+    command_payload = request.model_dump(mode="json")
+    if command_payload.get("idempotency_key") is None:
+        command_payload.pop("idempotency_key", None)
+    try:
+        event = append_game_rule_event(
+            game_state,
+            event_type=event_type,
+            visibility=visibility,
+            command=command_payload,
+            checkpoint=checkpoint,
+            actor_id=actor_id,
+        )
+    except Exception:
+        restore_game_command_checkpoint(game_state.game_id, checkpoint)
+        raise
+    if getattr(request, "idempotency_key", None) is not None:
+        return event
+    try:
+        persist_game_if_enabled(game_state)
+    except (OSError, ValidationError, ValueError) as exc:
+        restore_game_command_checkpoint(game_state.game_id, checkpoint)
+        raise HTTPException(
+            status_code=503,
+            detail="规则命令未提交：持久化失败，内存状态已回滚。",
+        ) from exc
+    except Exception:
+        restore_game_command_checkpoint(game_state.game_id, checkpoint)
+        raise
+    return event
+
+
+def load_validated_saved_game(
+    game_id: str,
+) -> tuple[GameSaveEnvelopeV1, WolfGameState]:
+    with GAME_SAVE_LOCK:
+        envelope = GAME_SAVE_STORE.load(game_id)
+    if envelope.game_id != game_id:
+        raise ValueError("save envelope game_id does not match its filename")
+    if canonical_payload_digest(envelope.state) != envelope.snapshot_digest:
+        raise ValueError("saved snapshot digest does not match the envelope")
+
+    game_state = WolfGameState.model_validate(envelope.state)
+    normalized_state = game_state.model_dump(mode="json")
+    normalized_snapshot_digest = canonical_payload_digest(normalized_state)
+    if normalized_snapshot_digest != envelope.snapshot_digest:
+        # Early game_save.v1 snapshots predate the durable idempotency ledger.
+        # Accept that one exact omission only after the original snapshot digest
+        # has been verified above.  Comparing the complete normalized payload
+        # with just this field removed keeps unknown fields, other missing
+        # defaults, coercions, and malformed command_results fail-closed.
+        legacy_state = dict(normalized_state)
+        legacy_command_results = legacy_state.pop("command_results", None)
+        has_keyed_event = any(
+            event.command.get("idempotency_key") is not None
+            for event in game_state.rule_events
+        )
+        if (
+            "command_results" in envelope.state
+            or legacy_command_results != {}
+            or has_keyed_event
+            or legacy_state != envelope.state
+        ):
+            raise ValueError("saved snapshot does not round-trip through its schema")
+        envelope = GameSaveEnvelopeV1.model_validate(
+            {
+                **envelope.model_dump(mode="json"),
+                "state": normalized_state,
+                "snapshot_digest": normalized_snapshot_digest,
+            }
+        )
+    if game_state.game_id != game_id:
+        raise ValueError("saved state game_id does not match its envelope")
+    if game_state.recovery_config_fingerprint != envelope.config_fingerprint:
+        raise ValueError("saved state config fingerprint does not match its envelope")
+    if not game_state.rule_events:
+        raise ValueError("saved state has no rule events")
+    if not validate_game_rule_event_chain(game_state.rule_events):
+        raise ValueError("saved state event chain is invalid")
+    validate_game_command_results(game_state)
+    if game_state.rule_events[0].event_type != "game_created":
+        raise ValueError("saved event chain does not begin with game_created")
+    if (
+        game_state.rule_events[0].command.get("recovery_config_fingerprint")
+        != envelope.config_fingerprint
+    ):
+        raise ValueError("saved config fingerprint is not creation-sealed")
+    if any(event.game_id != game_id for event in game_state.rule_events):
+        raise ValueError("saved event chain contains another game_id")
+    if (
+        game_state.phase != "GAME_OVER"
+        and envelope.config_fingerprint != build_game_config_fingerprint()
+    ):
+        raise ValueError("save config fingerprint does not match current config")
+    last_event = game_state.rule_events[-1]
+    if last_event.sequence != envelope.saved_event_sequence:
+        raise ValueError("saved event sequence does not match the state")
+    if last_event.event_digest != envelope.saved_event_digest:
+        raise ValueError("saved event digest does not match the state")
+    current_state_digest = rule_state_digest(game_state)
+    if current_state_digest != envelope.state_digest:
+        raise ValueError("saved state digest does not match the envelope")
+    if current_state_digest != last_event.state_digest_after:
+        raise ValueError("saved state changed outside its final rule event")
+    return envelope, game_state
+
+
+def restore_saved_game(game_id: str) -> GameRestoreResponseV1:
+    with GAME_LOCK:
+        return _restore_saved_game_locked(game_id)
+
+
+def _restore_saved_game_locked(game_id: str) -> GameRestoreResponseV1:
+    try:
+        envelope, restored_state = load_validated_saved_game(game_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="未找到这局游戏的存档。") from exc
+    except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=f"存档完整性校验失败：{exc}") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="读取对局存档失败。") from exc
+
+    with GAME_LOCK:
+        cached_state = GAME_STORE.get(game_id)
+        if cached_state is not None:
+            cached_snapshot_digest = canonical_payload_digest(
+                cached_state.model_dump(mode="json")
+            )
+            if cached_snapshot_digest != envelope.snapshot_digest:
+                raise HTTPException(
+                    status_code=409,
+                    detail="内存中的同名对局与磁盘存档不一致，拒绝覆盖。",
+                )
+            PERSISTED_GAME_IDS.add(game_id)
+            return GameRestoreResponseV1(
+                game_id=game_id,
+                restored=False,
+                already_cached=True,
+                day=cached_state.day,
+                phase=cached_state.phase,
+                saved_event_sequence=envelope.saved_event_sequence,
+                state_digest=envelope.state_digest,
+                message="对局已在活动缓存中，无需重复恢复。",
+            )
+        GAME_STORE[game_id] = restored_state
+        PERSISTED_GAME_IDS.add(game_id)
+
+    return GameRestoreResponseV1(
+        game_id=game_id,
+        restored=True,
+        already_cached=False,
+        day=restored_state.day,
+        phase=restored_state.phase,
+        saved_event_sequence=envelope.saved_event_sequence,
+        state_digest=envelope.state_digest,
+        message="对局已从完整存档恢复。",
+    )
+
+
+def recover_unfinished_games_from_disk() -> GameRecoveryReportV1:
+    """Restore valid non-terminal saves as one fail-closed startup batch."""
+
+    global LAST_GAME_RECOVERY_REPORT
+
+    with GAME_SAVE_LOCK:
+        game_ids = GAME_SAVE_STORE.list_game_ids()
+    validated_games: dict[str, tuple[GameSaveEnvelopeV1, WolfGameState]] = {}
+    failures: list[GameRecoveryFailureV1] = []
+    skipped_terminal_count = 0
+    for game_id in game_ids:
+        try:
+            envelope, restored_state = load_validated_saved_game(game_id)
+            if restored_state.phase == "GAME_OVER":
+                skipped_terminal_count += 1
+                continue
+            validated_games[game_id] = (envelope, restored_state)
+        except (OSError, json.JSONDecodeError, ValidationError, ValueError) as exc:
+            failures.append(
+                GameRecoveryFailureV1(game_id=game_id, reason=str(exc))
+            )
+
+    restored_game_ids: list[str] = []
+    if not failures:
+        with GAME_LOCK:
+            for game_id, (envelope, _) in validated_games.items():
+                cached_state = GAME_STORE.get(game_id)
+                if cached_state is None:
+                    continue
+                cached_snapshot_digest = canonical_payload_digest(
+                    cached_state.model_dump(mode="json")
+                )
+                if cached_snapshot_digest != envelope.snapshot_digest:
+                    failures.append(
+                        GameRecoveryFailureV1(
+                            game_id=game_id,
+                            reason="active cache conflicts with saved state",
+                        )
+                    )
+            if not failures:
+                for game_id, (_, restored_state) in validated_games.items():
+                    if game_id not in GAME_STORE:
+                        GAME_STORE[game_id] = restored_state
+                        restored_game_ids.append(game_id)
+                    PERSISTED_GAME_IDS.add(game_id)
+
+    report = GameRecoveryReportV1(
+        scanned_count=len(game_ids),
+        restored_count=len(restored_game_ids),
+        skipped_terminal_count=skipped_terminal_count,
+        failure_count=len(failures),
+        restored_game_ids=restored_game_ids,
+        failures=failures,
+    )
+    LAST_GAME_RECOVERY_REPORT = report
+    return report
+
+
+def activate_game_persistence() -> GameRecoveryReportV1:
+    """Activate real-service writes after startup recovery has been audited."""
+
+    global GAME_PERSISTENCE_ACTIVE
+
+    GAME_PERSISTENCE_ACTIVE = False
+    report = recover_unfinished_games_from_disk()
+    if report.failure_count:
+        failed_game_ids = ", ".join(
+            failure.game_id for failure in report.failures
+        )
+        raise RuntimeError(
+            "game persistence activation refused invalid or conflicting saves: "
+            + failed_game_ids
+        )
+    GAME_PERSISTENCE_ACTIVE = True
+    return report
+
+
+def deactivate_game_persistence() -> None:
+    """Keep direct imports, simulations, and replay runs disk-free."""
+
+    global GAME_PERSISTENCE_ACTIVE
+
+    GAME_PERSISTENCE_ACTIVE = False
+
+
+@app.post(
+    "/api/game/{game_id}/save",
+    response_model=GameSaveResponseV1,
+)
+def save_active_game(game_id: str) -> GameSaveResponseV1:
+    with GAME_LOCK:
+        game_state = get_game_state_or_404(game_id)
+        persistence_was_enabled = game_id in PERSISTED_GAME_IDS
+        PERSISTED_GAME_IDS.add(game_id)
+        try:
+            envelope = persist_game_state(game_state)
+        except (OSError, ValidationError, ValueError) as exc:
+            if not persistence_was_enabled:
+                PERSISTED_GAME_IDS.discard(game_id)
+            raise HTTPException(status_code=503, detail=f"保存对局失败：{exc}") from exc
+    return GameSaveResponseV1(
+        game_id=game_id,
+        saved_event_sequence=envelope.saved_event_sequence,
+        state_digest=envelope.state_digest,
+        config_fingerprint=envelope.config_fingerprint,
+        saved_at=envelope.saved_at,
+        message="对局已原子保存。",
+    )
+
+
+@app.post(
+    "/api/game/{game_id}/restore",
+    response_model=GameRestoreResponseV1,
+)
+def restore_game_from_disk(game_id: str) -> GameRestoreResponseV1:
+    return restore_saved_game(game_id)
+
+
+@app.get(
+    "/api/game/recovery-status",
+    response_model=GameRecoveryReportV1,
+)
+def get_game_recovery_status() -> GameRecoveryReportV1:
+    return LAST_GAME_RECOVERY_REPORT
 
 
 @app.get("/api/game/{game_id}/state", response_model=GameStateResponse)
@@ -1272,9 +2068,12 @@ def get_wolf_game_state(game_id: str) -> GameStateResponse:
     if game_state is None:
         raise HTTPException(status_code=404, detail="未找到这局游戏。")
 
-    player = get_character(game_state, game_state.player_character_id)
     private_info = build_player_private_info_dict(game_state)
-    game_state.player_private_info = private_info
+    public_evidence_timeline = build_public_evidence_timeline(game_state)
+    public_evidence_analysis = build_public_evidence_analysis(
+        game_state,
+        public_evidence_timeline,
+    )
     return GameStateResponse(
         game_id=game_state.game_id,
         day=game_state.day,
@@ -1282,11 +2081,14 @@ def get_wolf_game_state(game_id: str) -> GameStateResponse:
         characters=build_character_views(game_state),
         public_logs=list(game_state.public_logs),
         public_intel=build_public_intel_views(game_state),
+        public_evidence_timeline=public_evidence_timeline,
+        public_evidence_analysis=public_evidence_analysis,
         player_private_info=PlayerPrivateInfo(**private_info),
         meeting=build_day_meeting_view(game_state),
         sheriff=build_sheriff_view(game_state),
         winner=game_state.winner,
         llm_enabled=game_state.llm_enabled,
+        llm_validation_enabled=is_llm_validation_enabled(game_state),
     )
 
 
@@ -1300,9 +2102,11 @@ def get_game_summary(game_id: str) -> GameSummaryResponse:
 
 
 @app.post("/api/night/action", response_model=NightActionResponse)
+@transactional_rule_endpoint
 def submit_night_action(request: NightActionRequest) -> NightActionResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_phase(game_state, "NIGHT")
         actor = get_character(game_state, request.character_id)
         validate_night_action(game_state, actor, request.action_type, request.target_id)
@@ -1319,14 +2123,24 @@ def submit_night_action(request: NightActionRequest) -> NightActionResponse:
             refresh_npc_witch_action(game_state)
         game_state.player_private_info = build_player_private_info_dict(game_state)
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="night_action_submitted",
+            visibility="player_private",
+            actor_id=actor.id,
+        )
 
     return NightActionResponse(success=True, message="行动已记录。")
 
 
 @app.post("/api/night/resolve", response_model=NightResolveResponse)
+@transactional_rule_endpoint
 def resolve_night(request: NightResolveRequest) -> NightResolveResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_phase(game_state, "NIGHT")
         ensure_npc_night_actions(game_state)
 
@@ -1445,6 +2259,13 @@ def resolve_night(request: NightResolveRequest) -> NightResolveResponse:
                 continue_after_elimination(game_state, "after_night")
         game_state.player_private_info = build_player_private_info_dict(game_state)
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="night_resolved",
+            visibility="system_private",
+        )
 
     return NightResolveResponse(
         game_id=game_state.game_id,
@@ -1458,9 +2279,11 @@ def resolve_night(request: NightResolveRequest) -> NightResolveResponse:
 
 
 @app.post("/api/hunter/shot", response_model=HunterShotResponse)
+@transactional_rule_endpoint
 def resolve_hunter_shot(request: HunterShotRequest) -> HunterShotResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_phase(game_state, "HUNTER_SHOT")
         if game_state.pending_hunter_id != request.character_id:
             raise HTTPException(status_code=400, detail="当前不是这名猎人的开枪时机。")
@@ -1505,6 +2328,14 @@ def resolve_hunter_shot(request: HunterShotRequest) -> HunterShotResponse:
         continue_after_elimination(game_state, continuation)
         game_state.player_private_info = build_player_private_info_dict(game_state)
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="hunter_shot_resolved",
+            visibility="public",
+            actor_id=hunter.id,
+        )
 
     return HunterShotResponse(
         success=True,
@@ -2893,12 +3724,13 @@ def record_sheriff_speech(
     speaker: CharacterState,
     speech_item: NpcSpeechItem,
     is_player: bool,
+    authoritative_speech: Optional[str] = None,
 ) -> None:
     round_number = game_state.sheriff_election.runoff_round if game_state.sheriff_election else 0
     phase_name = "SHERIFF_RUNOFF_SPEECH" if round_number > 0 else "SHERIFF_SPEECH"
     parsed = parse_player_speech(
         game_state,
-        speech_item.speech,
+        authoritative_speech or speech_item.speech,
         speaker_id=speaker.id,
     )
     speech_state = SpeechState(
@@ -3009,7 +3841,17 @@ def generate_npc_sheriff_speech(
     register_public_claims(game_state, planned_claims)
     if planned_badge_flow is not None:
         publish_badge_flow(game_state, speaker, planned_badge_flow)
-    record_sheriff_speech(game_state, speaker, speech_item, False)
+    record_sheriff_speech(
+        game_state,
+        speaker,
+        speech_item,
+        False,
+        authoritative_speech=(
+            None
+            if is_llm_validation_enabled(game_state)
+            else rule_speech
+        ),
+    )
     return speech_item
 
 
@@ -3119,11 +3961,23 @@ def get_public_persuasion_strength(
     if latest_public_speech is None:
         return round(clamp_float(persona_strength), 4)
 
-    normalized = " ".join(latest_public_speech.speech.split()).strip()
-    parsed = parse_player_speech(
+    unvalidated_display_only = is_unvalidated_npc_speech(
         game_state,
-        normalized,
-        speaker_id=speaker.id,
+        latest_public_speech,
+    )
+    normalized = (
+        ""
+        if unvalidated_display_only
+        else " ".join(latest_public_speech.speech.split()).strip()
+    )
+    parsed = (
+        None
+        if unvalidated_display_only
+        else parse_player_speech(
+            game_state,
+            normalized,
+            speaker_id=speaker.id,
+        )
     )
     direct_claims = [
         claim
@@ -3135,28 +3989,44 @@ def get_public_persuasion_strength(
         claim.claim_type == "seer_check" and claim.target_id is not None
         for claim in direct_claims
     )
-    mentions_other = any(
-        character_id != speaker.id
-        for character_id in parsed.mentioned_characters
+    position = latest_public_speech.public_position
+    mentions_other = (
+        public_position_has_substance(position)
+        if unvalidated_display_only
+        else any(
+            character_id != speaker.id
+            for character_id in parsed.mentioned_characters
+        )
     )
     speech_quality = 0.28
-    if len(normalized) >= 12:
-        speech_quality += 0.06
-    if 24 <= len(normalized) <= 260:
-        speech_quality += 0.10
+    if unvalidated_display_only:
+        if latest_public_speech.decision_plan:
+            speech_quality += 0.16
+        if position is not None and (
+            position.provisional_vote_target_id is not None
+            or position.change_condition_target_id is not None
+            or position.badge_flow_version is not None
+        ):
+            speech_quality += 0.08
+    else:
+        if len(normalized) >= 12:
+            speech_quality += 0.06
+        if 24 <= len(normalized) <= 260:
+            speech_quality += 0.10
     if mentions_other:
         speech_quality += 0.12
     if direct_claims:
         speech_quality += 0.10
     if has_role_claim and has_check_claim:
         speech_quality += 0.14
-    if any(marker in normalized for marker in ["因为", "所以", "依据", "理由", "矛盾", "逻辑"]):
-        speech_quality += 0.10
-    if any(
-        marker in normalized
-        for marker in ["警徽", "后续", "票型", "投票", "暂票", "验证", "负责"]
-    ):
-        speech_quality += 0.08
+    if not unvalidated_display_only:
+        if any(marker in normalized for marker in ["因为", "所以", "依据", "理由", "矛盾", "逻辑"]):
+            speech_quality += 0.10
+        if any(
+            marker in normalized
+            for marker in ["警徽", "后续", "票型", "投票", "暂票", "验证", "负责"]
+        ):
+            speech_quality += 0.08
     if latest_public_speech.evidence_titles:
         speech_quality += 0.02
     if is_low_information_public_speech(game_state, latest_public_speech):
@@ -4136,9 +5006,11 @@ def continue_after_elimination(game_state: WolfGameState, continuation: str) -> 
 
 
 @app.post("/api/sheriff/signup", response_model=SheriffSignupResponse)
+@transactional_rule_endpoint
 def submit_sheriff_signup(request: SheriffSignupRequest) -> SheriffSignupResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_phase(game_state, "SHERIFF_SIGNUP")
         player = get_character(game_state, request.character_id)
         if not player.is_player or player.id != game_state.player_character_id:
@@ -4158,6 +5030,14 @@ def submit_sheriff_signup(request: SheriffSignupRequest) -> SheriffSignupRespons
             )
         )
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="sheriff_signup_submitted",
+            visibility="public",
+            actor_id=player.id,
+        )
         election = game_state.sheriff_election
         candidates = list(election.candidates) if election is not None else []
     return SheriffSignupResponse(
@@ -4169,62 +5049,26 @@ def submit_sheriff_signup(request: SheriffSignupRequest) -> SheriffSignupRespons
 
 
 @app.post("/api/sheriff/player-speech", response_model=SheriffSpeechResponse)
+@transactional_rule_endpoint
 def submit_player_sheriff_speech(request: SheriffSpeechRequest) -> SheriffSpeechResponse:
-    speech = request.speech.strip()
-    if not speech:
-        raise HTTPException(status_code=400, detail="警上发言不能为空。")
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
-        ensure_sheriff_speech_turn(game_state, request.character_id)
+        command_checkpoint = begin_game_command(game_state)
         speaker = get_character(game_state, request.character_id)
-        if not speaker.is_player:
-            raise HTTPException(status_code=400, detail="该接口只接受玩家警上发言。")
-        parsed = parse_player_speech(game_state, speech)
-        planned_claims = parsed_claims_to_public_claims(
+        prepared = prepare_player_speech_preview(
             game_state,
-            speaker.id,
-            parsed.claims,
+            speaker,
+            speech_kind="sheriff",
+            speech=request.speech,
+            badge_flow=request.badge_flow,
         )
-        projected_role = get_projected_public_role_claim(
-            game_state,
-            speaker.id,
-            planned_claims,
+        validate_player_speech_preview_fingerprint(
+            request.preview_fingerprint,
+            prepared,
         )
-        if (
-            projected_role == "seer"
-            and get_active_badge_flow(game_state, speaker.id) is None
-            and request.badge_flow is None
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="警上竞选或 PK 发言中跳预言家时，必须同时交代警徽流。",
-            )
-        if request.badge_flow is not None:
-            validate_player_badge_flow_with_planned_claims(
-                game_state,
-                speaker,
-                request.badge_flow,
-                planned_claims,
-            )
-            speech = attach_canonical_badge_flow_speech_text(
-                speech,
-                game_state,
-                speaker,
-                request.badge_flow,
-                planned_claims,
-            )
-            parsed = parse_player_speech(game_state, speech)
-            planned_claims = parsed_claims_to_public_claims(
-                game_state,
-                speaker.id,
-                parsed.claims,
-            )
-            validate_player_badge_flow_with_planned_claims(
-                game_state,
-                speaker,
-                request.badge_flow,
-                planned_claims,
-            )
+        speech = prepared.preview.canonical_speech
+        parsed = prepared.parsed
+        planned_claims = prepared.planned_claims
         register_public_claims(game_state, planned_claims)
         if request.badge_flow is not None:
             publish_badge_flow(game_state, speaker, request.badge_flow)
@@ -4233,6 +5077,14 @@ def submit_player_sheriff_speech(request: SheriffSpeechRequest) -> SheriffSpeech
         record_sheriff_speech(game_state, speaker, speech_item, True)
         advance_sheriff_speech(game_state)
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="player_sheriff_speech_submitted",
+            visibility="public",
+            actor_id=speaker.id,
+        )
     return SheriffSpeechResponse(
         speech=speech_item,
         next_speaker_id=get_current_sheriff_speaker_id(game_state),
@@ -4241,9 +5093,11 @@ def submit_player_sheriff_speech(request: SheriffSpeechRequest) -> SheriffSpeech
 
 
 @app.post("/api/sheriff/npc-speech", response_model=SheriffSpeechResponse)
+@transactional_rule_endpoint
 def generate_npc_sheriff_campaign_speech(request: SheriffSpeechRequest) -> SheriffSpeechResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_sheriff_speech_turn(game_state, request.character_id)
         speaker = get_character(game_state, request.character_id)
         if speaker.is_player:
@@ -4251,6 +5105,14 @@ def generate_npc_sheriff_campaign_speech(request: SheriffSpeechRequest) -> Sheri
         speech_item = generate_npc_sheriff_speech(game_state, speaker)
         advance_sheriff_speech(game_state)
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="npc_sheriff_speech_generated",
+            visibility="public",
+            actor_id=speaker.id,
+        )
     return SheriffSpeechResponse(
         speech=speech_item,
         next_speaker_id=get_current_sheriff_speaker_id(game_state),
@@ -4259,9 +5121,11 @@ def generate_npc_sheriff_campaign_speech(request: SheriffSpeechRequest) -> Sheri
 
 
 @app.post("/api/sheriff/withdraw", response_model=SheriffWithdrawalResponse)
+@transactional_rule_endpoint
 def submit_sheriff_withdrawal(request: SheriffWithdrawalRequest) -> SheriffWithdrawalResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_phase(game_state, "SHERIFF_WITHDRAWAL")
         player = get_character(game_state, request.character_id)
         if not player.is_player:
@@ -4290,6 +5154,14 @@ def submit_sheriff_withdrawal(request: SheriffWithdrawalRequest) -> SheriffWithd
         apply_npc_sheriff_withdrawals(game_state)
         complete_sheriff_withdrawal(game_state)
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="sheriff_withdrawal_submitted",
+            visibility="public",
+            actor_id=player.id,
+        )
         active_candidates = get_active_sheriff_candidates(game_state)
         phase = game_state.phase
     return SheriffWithdrawalResponse(
@@ -4301,9 +5173,11 @@ def submit_sheriff_withdrawal(request: SheriffWithdrawalRequest) -> SheriffWithd
 
 
 @app.post("/api/sheriff/vote", response_model=SheriffVoteResponse)
+@transactional_rule_endpoint
 def submit_and_resolve_sheriff_vote(request: SheriffVoteRequest) -> SheriffVoteResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         if game_state.phase not in {"SHERIFF_VOTE", "SHERIFF_RUNOFF_VOTE"}:
             raise HTTPException(status_code=400, detail="当前不是警长投票阶段。")
         election = game_state.sheriff_election
@@ -4358,6 +5232,14 @@ def submit_and_resolve_sheriff_vote(request: SheriffVoteRequest) -> SheriffVoteR
                 )
             )
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="sheriff_vote_resolved",
+            visibility="public",
+            actor_id=player.id,
+        )
         phase = game_state.phase
     return SheriffVoteResponse(
         ballots=ballots,
@@ -4369,22 +5251,34 @@ def submit_and_resolve_sheriff_vote(request: SheriffVoteRequest) -> SheriffVoteR
 
 
 @app.post("/api/sheriff/meeting-order", response_model=SheriffActionResponse)
+@transactional_rule_endpoint
 def submit_sheriff_meeting_order(request: SheriffMeetingOrderRequest) -> SheriffActionResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_phase(game_state, "MEETING_ORDER")
         sheriff = get_character(game_state, request.character_id)
         if sheriff.id != game_state.sheriff_id or not sheriff.is_player:
             raise HTTPException(status_code=400, detail="只有玩家警长可以提交本轮发言方向。")
         set_sheriff_meeting_order(game_state, sheriff, request.side)
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="sheriff_meeting_order_submitted",
+            visibility="public",
+            actor_id=sheriff.id,
+        )
     return SheriffActionResponse(success=True, message="本轮发言顺序已确定。", phase=game_state.phase)
 
 
 @app.post("/api/sheriff/nominate", response_model=SheriffActionResponse)
+@transactional_rule_endpoint
 def submit_sheriff_nomination(request: SheriffNominationRequest) -> SheriffActionResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_phase(game_state, "SHERIFF_NOMINATION")
         sheriff = get_character(game_state, request.character_id)
         if sheriff.id != game_state.sheriff_id or not sheriff.is_player:
@@ -4392,13 +5286,23 @@ def submit_sheriff_nomination(request: SheriffNominationRequest) -> SheriffActio
         message = set_sheriff_nomination(game_state, sheriff, request.target_id)
         enter_free_activity(game_state)
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="sheriff_nomination_submitted",
+            visibility="public",
+            actor_id=sheriff.id,
+        )
     return SheriffActionResponse(success=True, message=message, phase=game_state.phase)
 
 
 @app.post("/api/sheriff/transfer", response_model=SheriffActionResponse)
+@transactional_rule_endpoint
 def submit_badge_transfer(request: BadgeTransferRequest) -> SheriffActionResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_phase(game_state, "BADGE_TRANSFER")
         if request.character_id != game_state.pending_badge_transfer_from_id:
             raise HTTPException(status_code=400, detail="当前不是这名警长移交警徽。")
@@ -4414,78 +5318,78 @@ def submit_badge_transfer(request: BadgeTransferRequest) -> SheriffActionRespons
         game_state.pending_badge_continuation = ""
         continue_after_elimination_without_badge(game_state, continuation)
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="badge_transfer_submitted",
+            visibility="public",
+            actor_id=old_sheriff.id,
+        )
     return SheriffActionResponse(success=True, message=message, phase=game_state.phase)
 
 
-@app.post("/api/day/player-speech", response_model=PlayerSpeechResponse)
-def submit_player_speech(request: PlayerSpeechRequest) -> PlayerSpeechResponse:
-    speech = request.speech.strip()
-    if not speech:
-        raise HTTPException(status_code=400, detail="发言不能为空。")
+@app.post(
+    "/api/player-speech/preview",
+    response_model=PlayerSpeechPreviewResponseV1,
+)
+def preview_player_speech(
+    request: PlayerSpeechPreviewRequest,
+) -> PlayerSpeechPreviewResponseV1:
+    """Parse and validate a player speech without mutating the game."""
 
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
-        ensure_day_speech_phase(game_state)
         speaker = get_character(game_state, request.character_id)
-        if speaker.id != game_state.player_character_id:
-            raise HTTPException(status_code=400, detail="当前版本只允许玩家提交自己的发言。")
-        if not speaker.alive:
-            raise HTTPException(status_code=400, detail="出局角色不能发言。")
-        ensure_current_meeting_speaker(game_state, speaker.id)
+        try:
+            prepared = prepare_player_speech_preview(
+                game_state,
+                speaker,
+                speech_kind=request.speech_kind,
+                speech=request.speech,
+                temporary_nomination_target_id=(
+                    request.temporary_nomination_target_id
+                ),
+                badge_flow=request.badge_flow,
+            )
+        except HTTPException as exc:
+            return build_rejected_player_speech_preview(
+                game_state,
+                request,
+                exc,
+            )
+        return prepared.preview
 
-        public_speech = speech
-        temporary_target: Optional[CharacterState] = None
-        if speaker.id == game_state.sheriff_id:
-            temporary_target_id = request.temporary_nomination_target_id
-            if temporary_target_id is not None:
-                temporary_target = get_character(game_state, temporary_target_id)
-                if not temporary_target.alive or temporary_target.id == speaker.id:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="警长只能暂时归票给另一名存活角色。",
-                    )
-                if "暂时归票" not in public_speech or temporary_target.name not in public_speech:
-                    public_speech = public_speech.rstrip("。") + f"。我暂时归票给{format_full_character_name(temporary_target)}。"
-        elif request.temporary_nomination_target_id is not None:
-            raise HTTPException(status_code=400, detail="只有警长能在发言时提出暂时归票。")
 
-        parsed = parse_player_speech(game_state, public_speech)
-        planned_claims = parsed_claims_to_public_claims(
+@app.post("/api/day/player-speech", response_model=PlayerSpeechResponse)
+@transactional_rule_endpoint
+def submit_player_speech(request: PlayerSpeechRequest) -> PlayerSpeechResponse:
+    with GAME_LOCK:
+        game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
+        speaker = get_character(game_state, request.character_id)
+        prepared = prepare_player_speech_preview(
             game_state,
-            speaker.id,
-            parsed.claims,
+            speaker,
+            speech_kind="day",
+            speech=request.speech,
+            temporary_nomination_target_id=(
+                request.temporary_nomination_target_id
+            ),
+            badge_flow=request.badge_flow,
         )
-        if request.badge_flow is not None:
-            validate_player_badge_flow_with_planned_claims(
-                game_state,
-                speaker,
-                request.badge_flow,
-                planned_claims,
-            )
-            public_speech = attach_canonical_badge_flow_speech_text(
-                public_speech,
-                game_state,
-                speaker,
-                request.badge_flow,
-                planned_claims,
-            )
-            parsed = parse_player_speech(game_state, public_speech)
-            planned_claims = parsed_claims_to_public_claims(
-                game_state,
-                speaker.id,
-                parsed.claims,
-            )
-            validate_player_badge_flow_with_planned_claims(
-                game_state,
-                speaker,
-                request.badge_flow,
-                planned_claims,
-            )
-        if temporary_target is not None:
+        validate_player_speech_preview_fingerprint(
+            request.preview_fingerprint,
+            prepared,
+        )
+        public_speech = prepared.preview.canonical_speech
+        parsed = prepared.parsed
+        planned_claims = prepared.planned_claims
+        if prepared.temporary_target_id is not None:
             set_temporary_sheriff_nomination(
                 game_state,
                 speaker,
-                temporary_target.id,
+                prepared.temporary_target_id,
             )
         added_public_claims = register_public_claims(game_state, planned_claims)
         if request.badge_flow is not None:
@@ -4520,6 +5424,14 @@ def submit_player_speech(request: PlayerSpeechRequest) -> PlayerSpeechResponse:
         game_state.public_logs.append(public_log)
         advance_day_meeting(game_state)
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="player_day_speech_submitted",
+            visibility="public",
+            actor_id=speaker.id,
+        )
 
     return PlayerSpeechResponse(
         parsed=parsed,
@@ -4537,9 +5449,11 @@ def submit_player_speech(request: PlayerSpeechRequest) -> PlayerSpeechResponse:
 
 
 @app.post("/api/day/npc-speech", response_model=NpcSpeechResponse)
+@transactional_rule_endpoint
 def generate_npc_speech(request: NpcSpeechRequest) -> NpcSpeechResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_day_speech_phase(game_state)
         ensure_current_meeting_speaker(game_state, request.character_id)
         speaker = get_character(game_state, request.character_id)
@@ -4558,6 +5472,14 @@ def generate_npc_speech(request: NpcSpeechRequest) -> NpcSpeechResponse:
         speech_item, memory_update = generate_current_npc_meeting_speech(game_state, speaker)
         advance_day_meeting(game_state)
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="npc_day_speech_generated",
+            visibility="public",
+            actor_id=speaker.id,
+        )
 
     return NpcSpeechResponse(
         speech=speech_item,
@@ -4568,9 +5490,11 @@ def generate_npc_speech(request: NpcSpeechRequest) -> NpcSpeechResponse:
 
 
 @app.post("/api/day/npc-speeches", response_model=NpcSpeechesResponse)
+@transactional_rule_endpoint
 def generate_npc_speeches(request: NpcSpeechesRequest) -> NpcSpeechesResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_day_speech_phase(game_state)
         if request.day is not None and request.day != game_state.day:
             raise HTTPException(status_code=400, detail="请求的天数和当前游戏天数不一致。")
@@ -4585,23 +5509,41 @@ def generate_npc_speeches(request: NpcSpeechesRequest) -> NpcSpeechesResponse:
         speech_item, memory_update = generate_current_npc_meeting_speech(game_state, speaker)
         advance_day_meeting(game_state)
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="npc_day_speeches_generated",
+            visibility="public",
+            actor_id=speaker.id,
+        )
 
     return NpcSpeechesResponse(speeches=[speech_item], memory_updates=[memory_update])
 
 
 @app.post("/api/day/end-free-activity", response_model=EndFreeActivityResponse)
+@transactional_rule_endpoint
 def end_free_activity(request: EndFreeActivityRequest) -> EndFreeActivityResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_phase(game_state, "FREE_ACTIVITY")
         game_state.phase = "VOTE"
         game_state.public_logs.append("会后自由活动结束，进入投票阶段。")
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="free_activity_ended",
+            visibility="public",
+        )
 
     return EndFreeActivityResponse(success=True, message="自由活动已结束，可以开始投票。")
 
 
 @app.post("/api/day/private-chat", response_model=PrivateChatResponse)
+@transactional_rule_endpoint
 def private_chat(request: PrivateChatRequest) -> PrivateChatResponse:
     question = request.question.strip()
     if not question:
@@ -4609,6 +5551,7 @@ def private_chat(request: PrivateChatRequest) -> PrivateChatResponse:
 
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_phase(game_state, "FREE_ACTIVITY")
         player = get_character(game_state, game_state.player_character_id)
         if not player.alive:
@@ -4727,6 +5670,14 @@ def private_chat(request: PrivateChatRequest) -> PrivateChatResponse:
             )
         )
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="private_chat_completed",
+            visibility="player_private",
+            actor_id=game_state.player_character_id,
+        )
 
     return PrivateChatResponse(
         npc_character_id=npc.id,
@@ -4749,21 +5700,32 @@ def private_chat(request: PrivateChatRequest) -> PrivateChatResponse:
 
 
 @app.post("/api/vote/npc-decisions", response_model=NpcVoteDecisionsResponse)
+@transactional_rule_endpoint
 def generate_npc_vote_decisions(request: NpcVoteDecisionsRequest) -> NpcVoteDecisionsResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_vote_phase(game_state)
         npc_votes = ensure_npc_vote_decisions(game_state)
         game_state.phase = "VOTE"
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="npc_vote_decisions_generated",
+            visibility="system_private",
+        )
 
     return NpcVoteDecisionsResponse(npc_votes=npc_votes)
 
 
 @app.post("/api/vote/player", response_model=PlayerVoteResponse)
+@transactional_rule_endpoint
 def submit_player_vote(request: PlayerVoteRequest) -> PlayerVoteResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_vote_phase(game_state)
         voter = get_character(game_state, request.character_id)
         if voter.id != game_state.player_character_id:
@@ -4791,19 +5753,36 @@ def submit_player_vote(request: PlayerVoteRequest) -> PlayerVoteResponse:
         )
         game_state.phase = "VOTE"
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="player_vote_submitted",
+            visibility="player_private",
+            actor_id=voter.id,
+        )
 
     return PlayerVoteResponse(success=True, message="投票已记录。")
 
 
 @app.post("/api/vote/resolve", response_model=VoteResolveResponse)
+@transactional_rule_endpoint
 def resolve_vote(request: VoteResolveRequest) -> VoteResolveResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_vote_phase(game_state)
         ensure_npc_vote_decisions(game_state)
         exiled_character_id, current_votes, public_message = finalize_current_vote(game_state)
         vote_result = {str(vote.voter_id): vote.target_id for vote in current_votes}
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="exile_vote_resolved",
+            visibility="public",
+        )
 
     return VoteResolveResponse(
         exiled_character_id=exiled_character_id,
@@ -4815,15 +5794,17 @@ def resolve_vote(request: VoteResolveRequest) -> VoteResolveResponse:
 
 
 @app.post("/api/vote/submit-and-resolve", response_model=SubmitAndResolveVoteResponse)
+@transactional_rule_endpoint
 def submit_and_resolve_all_votes(request: PlayerVoteRequest) -> SubmitAndResolveVoteResponse:
     with GAME_LOCK:
         game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
         ensure_vote_phase(game_state)
         player = get_character(game_state, request.character_id)
         if not player.is_player or player.id != game_state.player_character_id:
             raise HTTPException(status_code=400, detail="只能由玩家触发本轮同时投票。")
 
-        game_state.votes = [vote for vote in game_state.votes if vote.day != game_state.day]
+        target: Optional[CharacterState] = None
         if player.alive:
             if request.target_id is None:
                 raise HTTPException(status_code=400, detail="请选择玩家的投票目标。")
@@ -4836,6 +5817,11 @@ def submit_and_resolve_all_votes(request: PlayerVoteRequest) -> SubmitAndResolve
             ):
                 raise HTTPException(status_code=400, detail="警长的投票必须与公开归票目标一致。")
             target = get_character(game_state, request.target_id)
+        elif request.target_id is not None:
+            raise HTTPException(status_code=400, detail="玩家已经出局，不能提交投票目标。")
+
+        game_state.votes = [vote for vote in game_state.votes if vote.day != game_state.day]
+        if target is not None:
             upsert_vote(
                 game_state,
                 VoteState(
@@ -4846,8 +5832,6 @@ def submit_and_resolve_all_votes(request: PlayerVoteRequest) -> SubmitAndResolve
                     weight=1.5 if game_state.sheriff_id == player.id else 1.0,
                 ),
             )
-        elif request.target_id is not None:
-            raise HTTPException(status_code=400, detail="玩家已经出局，不能提交投票目标。")
 
         ensure_npc_vote_decisions(game_state)
         current_votes = get_current_valid_votes(game_state)
@@ -4856,6 +5840,14 @@ def submit_and_resolve_all_votes(request: PlayerVoteRequest) -> SubmitAndResolve
         exiled_character_id, _resolved_votes, public_message = finalize_current_vote(game_state)
         game_state.updated_at = datetime.now(timezone.utc).isoformat()
         phase = game_state.phase
+        record_rule_command(
+            game_state,
+            request,
+            command_checkpoint,
+            event_type="all_votes_submitted_and_resolved",
+            visibility="public",
+            actor_id=player.id,
+        )
 
     return SubmitAndResolveVoteResponse(
         exiled_character_id=exiled_character_id,
@@ -4865,6 +5857,329 @@ def submit_and_resolve_all_votes(request: PlayerVoteRequest) -> SubmitAndResolve
         is_game_over=phase == "GAME_OVER",
         phase=phase,
         winner=game_state.winner,
+    )
+
+
+def build_rule_replay_projection(game_state: WolfGameState) -> dict[str, object]:
+    """Project the terminal rule facts that V4.2 promises to reproduce."""
+
+    return {
+        "winner": game_state.winner,
+        "winner_reason": game_state.winner_reason,
+        "sheriff_id": game_state.sheriff_id,
+        "badge_destroyed": game_state.badge_destroyed,
+        "badge_flows": [flow.model_dump(mode="json") for flow in game_state.badge_flows],
+        "sheriff_ballots": [
+            event.model_dump(mode="json")
+            for event in game_state.sheriff_events
+            if event.event_type == "sheriff_vote"
+        ],
+        "exile_ballots": [vote.model_dump(mode="json") for vote in game_state.votes],
+        "eliminations": [
+            elimination.model_dump(mode="json")
+            for elimination in game_state.eliminations
+        ],
+        "final_state_digest": rule_state_digest(game_state),
+    }
+
+
+def build_game_rule_event_log(game_state: WolfGameState) -> GameRuleEventLogV1:
+    events = [
+        GameRuleEventV1.model_validate(event.model_dump(mode="json"))
+        for event in game_state.rule_events
+    ]
+    return GameRuleEventLogV1(
+        game_id=game_state.game_id,
+        event_count=len(events),
+        chain_valid=validate_game_rule_event_chain(events),
+        replay_supported=bool(events) and all(event.replayable for event in events),
+        events=events,
+    )
+
+
+def replay_game_rule_events(
+    *,
+    game_id: str,
+    events: list[GameRuleEventV1],
+    expected_projection: dict[str, object],
+) -> GameRuleReplayV1:
+    """Re-execute a terminal rule-only event chain in an isolated memory slot."""
+
+    event_count = len(events)
+    expected_final_digest = (
+        events[-1].state_digest_after if events else ""
+    )
+    expected_projection_digest = canonical_payload_digest(expected_projection)
+
+    def report(
+        *,
+        supported: bool,
+        verified: bool,
+        checked: int,
+        reason: str,
+        mismatch: Optional[int] = None,
+        actual_final_digest: str = "",
+        actual_projection_digest: str = "",
+    ) -> GameRuleReplayV1:
+        return GameRuleReplayV1(
+            game_id=game_id,
+            supported=supported,
+            verified=verified,
+            event_count=event_count,
+            checked_event_count=checked,
+            first_mismatch_sequence=mismatch,
+            reason=reason,
+            expected_final_state_digest=expected_final_digest,
+            actual_final_state_digest=actual_final_digest,
+            expected_projection_digest=expected_projection_digest,
+            actual_projection_digest=actual_projection_digest,
+        )
+
+    if not events:
+        return report(
+            supported=False,
+            verified=False,
+            checked=0,
+            reason="事件日志为空，无法重放。",
+        )
+    if not validate_game_rule_event_chain(events):
+        return report(
+            supported=False,
+            verified=False,
+            checked=0,
+            reason="事件哈希链校验失败。",
+        )
+    if events[0].event_type != "game_created":
+        return report(
+            supported=False,
+            verified=False,
+            checked=0,
+            reason="首个事件不是 game_created。",
+            mismatch=1,
+        )
+    if not all(event.replayable for event in events):
+        return report(
+            supported=False,
+            verified=False,
+            checked=0,
+            reason="启用 LLM 或 RAG 的事件链只支持审计，不执行确定性重放。",
+        )
+
+    creation_command = events[0].command
+    start_payload = creation_command.get("start_request")
+    random_seed = creation_command.get("random_seed")
+    if not isinstance(start_payload, dict) or not isinstance(random_seed, int):
+        return report(
+            supported=False,
+            verified=False,
+            checked=0,
+            reason="game_created 缺少合法的开局请求或随机种子。",
+            mismatch=1,
+        )
+
+    replay_start_payload = dict(start_payload)
+    replay_start_payload["enable_llm"] = False
+    replay_start_payload["enable_rag"] = False
+    replay_game_id = (
+        "replay_"
+        + canonical_payload_digest(
+            {
+                "game_id": game_id,
+                "last_event_digest": events[-1].event_digest,
+            }
+        )[:24]
+    )
+    replay_state: Optional[WolfGameState] = None
+    replay_registered = False
+    checked = 0
+    try:
+        replay_state = create_wolf_game_state(
+            GameStartRequest.model_validate(replay_start_payload),
+            game_id=replay_game_id,
+            random_seed=random_seed,
+        )
+        if rule_state_digest(replay_state) != events[0].state_digest_after:
+            return report(
+                supported=True,
+                verified=False,
+                checked=0,
+                reason="开局状态摘要与首事件不一致。",
+                mismatch=1,
+                actual_final_digest=rule_state_digest(replay_state),
+            )
+        checked = 1
+        with GAME_LOCK:
+            if replay_game_id in GAME_STORE:
+                return report(
+                    supported=True,
+                    verified=False,
+                    checked=checked,
+                    reason="重放临时对局 ID 冲突。",
+                )
+            GAME_STORE[replay_game_id] = replay_state
+            replay_registered = True
+
+        for event in events[1:]:
+            if rule_state_digest(replay_state) != event.state_digest_before:
+                return report(
+                    supported=True,
+                    verified=False,
+                    checked=checked,
+                    reason="命令执行前状态摘要不一致。",
+                    mismatch=event.sequence,
+                    actual_final_digest=rule_state_digest(replay_state),
+                )
+            replay_rule_event(event, replay_game_id)
+            actual_digest = rule_state_digest(replay_state)
+            actual_event = replay_state.rule_events[-1]
+            if (
+                actual_digest != event.state_digest_after
+                or actual_event.event_type != event.event_type
+                or actual_event.visibility != event.visibility
+                or actual_event.actor_id != event.actor_id
+                or actual_event.day_before != event.day_before
+                or actual_event.day_after != event.day_after
+                or actual_event.phase_before != event.phase_before
+                or actual_event.phase_after != event.phase_after
+            ):
+                return report(
+                    supported=True,
+                    verified=False,
+                    checked=checked,
+                    reason="命令重放后的规则状态或事件边界不一致。",
+                    mismatch=event.sequence,
+                    actual_final_digest=actual_digest,
+                )
+            checked += 1
+
+        actual_projection = build_rule_replay_projection(replay_state)
+        actual_projection_digest = canonical_payload_digest(actual_projection)
+        actual_final_digest = rule_state_digest(replay_state)
+        verified = (
+            actual_final_digest == expected_final_digest
+            and actual_projection_digest == expected_projection_digest
+        )
+        return report(
+            supported=True,
+            verified=verified,
+            checked=checked,
+            reason=("重放逐事件校验通过。" if verified else "终局投影摘要不一致。"),
+            mismatch=None if verified else event_count,
+            actual_final_digest=actual_final_digest,
+            actual_projection_digest=actual_projection_digest,
+        )
+    except (HTTPException, ValidationError, ValueError) as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        mismatch = min(checked + 1, event_count)
+        return report(
+            supported=True,
+            verified=False,
+            checked=checked,
+            reason=f"重放命令被规则引擎拒绝：{detail}",
+            mismatch=mismatch,
+            actual_final_digest=(
+                rule_state_digest(replay_state) if replay_state is not None else ""
+            ),
+        )
+    finally:
+        if replay_registered:
+            with GAME_LOCK:
+                GAME_STORE.pop(replay_game_id, None)
+
+
+def replay_rule_event(event: GameRuleEventV1, replay_game_id: str) -> None:
+    payload = dict(event.command)
+    payload["game_id"] = replay_game_id
+    if event.event_type in {
+        "player_sheriff_speech_submitted",
+        "player_day_speech_submitted",
+    }:
+        payload["preview_fingerprint"] = None
+
+    dispatch: dict[str, tuple[type[BaseModel], object]] = {
+        "night_action_submitted": (NightActionRequest, submit_night_action),
+        "night_resolved": (NightResolveRequest, resolve_night),
+        "hunter_shot_resolved": (HunterShotRequest, resolve_hunter_shot),
+        "sheriff_signup_submitted": (SheriffSignupRequest, submit_sheriff_signup),
+        "player_sheriff_speech_submitted": (
+            SheriffSpeechRequest,
+            submit_player_sheriff_speech,
+        ),
+        "npc_sheriff_speech_generated": (
+            SheriffSpeechRequest,
+            generate_npc_sheriff_campaign_speech,
+        ),
+        "sheriff_withdrawal_submitted": (
+            SheriffWithdrawalRequest,
+            submit_sheriff_withdrawal,
+        ),
+        "sheriff_vote_resolved": (
+            SheriffVoteRequest,
+            submit_and_resolve_sheriff_vote,
+        ),
+        "sheriff_meeting_order_submitted": (
+            SheriffMeetingOrderRequest,
+            submit_sheriff_meeting_order,
+        ),
+        "sheriff_nomination_submitted": (
+            SheriffNominationRequest,
+            submit_sheriff_nomination,
+        ),
+        "badge_transfer_submitted": (BadgeTransferRequest, submit_badge_transfer),
+        "player_day_speech_submitted": (PlayerSpeechRequest, submit_player_speech),
+        "npc_day_speech_generated": (NpcSpeechRequest, generate_npc_speech),
+        "npc_day_speeches_generated": (NpcSpeechesRequest, generate_npc_speeches),
+        "free_activity_ended": (EndFreeActivityRequest, end_free_activity),
+        "private_chat_completed": (PrivateChatRequest, private_chat),
+        "npc_vote_decisions_generated": (
+            NpcVoteDecisionsRequest,
+            generate_npc_vote_decisions,
+        ),
+        "player_vote_submitted": (PlayerVoteRequest, submit_player_vote),
+        "exile_vote_resolved": (VoteResolveRequest, resolve_vote),
+        "all_votes_submitted_and_resolved": (
+            PlayerVoteRequest,
+            submit_and_resolve_all_votes,
+        ),
+    }
+    target = dispatch.get(event.event_type)
+    if target is None:
+        raise ValueError(f"unsupported replay event type: {event.event_type}")
+    request_model, handler = target
+    request = request_model.model_validate(payload)
+    handler(request)
+
+
+@app.get(
+    "/api/game/{game_id}/events",
+    response_model=GameRuleEventLogV1,
+)
+def get_game_rule_events(game_id: str) -> GameRuleEventLogV1:
+    with GAME_LOCK:
+        game_state = get_game_state_or_404(game_id)
+        if game_state.phase != "GAME_OVER":
+            raise HTTPException(status_code=400, detail="只有游戏结束后才能导出完整事件日志。")
+        return build_game_rule_event_log(game_state)
+
+
+@app.post(
+    "/api/game/{game_id}/replay",
+    response_model=GameRuleReplayV1,
+)
+def replay_completed_game(game_id: str) -> GameRuleReplayV1:
+    with GAME_LOCK:
+        game_state = get_game_state_or_404(game_id)
+        if game_state.phase != "GAME_OVER":
+            raise HTTPException(status_code=400, detail="只有游戏结束后才能执行确定性重放。")
+        events = [
+            GameRuleEventV1.model_validate(event.model_dump(mode="json"))
+            for event in game_state.rule_events
+        ]
+        expected_projection = build_rule_replay_projection(game_state)
+    return replay_game_rule_events(
+        game_id=game_id,
+        events=events,
+        expected_projection=expected_projection,
     )
 
 
@@ -4896,13 +6211,22 @@ def search_knowledge(npc_name: str, message: str, limit: int = 3) -> KnowledgeSe
 
 @app.post("/admin/reload-config", response_model=ReloadConfigResponse)
 def reload_config() -> ReloadConfigResponse:
-    try:
-        load_config_files()
-    except (OSError, ValueError, ValidationError, json.JSONDecodeError) as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"配置重载失败，已保留原配置：{exc}",
-        ) from exc
+    with GAME_LOCK:
+        if GAME_PERSISTENCE_ACTIVE and any(
+            game_id in PERSISTED_GAME_IDS and game_state.phase != "GAME_OVER"
+            for game_id, game_state in GAME_STORE.items()
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="存在可恢复的进行中对局，不能热重载恢复相关配置。",
+            )
+        try:
+            load_config_files()
+        except (OSError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"配置重载失败，已保留原配置：{exc}",
+            ) from exc
     return ReloadConfigResponse(
         npc_count=len(NPC_PROFILES),
         knowledge_count=len(KNOWLEDGE_BASE),
@@ -5369,7 +6693,7 @@ def get_role_resources(
     game_state: WolfGameState,
     character_id: int,
 ) -> dict[str, object]:
-    return game_state.role_resources.setdefault(str(character_id), {})
+    return game_state.role_resources.get(str(character_id), {})
 
 
 def build_player_private_info_dict(game_state: WolfGameState) -> dict[str, object]:
@@ -6543,7 +7867,12 @@ def get_previous_private_third_party_id(
             continue
         parsed = parse_player_speech(
             game_state,
-            conversation.question + "\n" + conversation.reply,
+            (
+                conversation.question
+                if game_state.llm_enabled
+                and not is_llm_validation_enabled(game_state)
+                else conversation.question + "\n" + conversation.reply
+            ),
         )
         for character_id in parsed.mentioned_characters:
             if character_id not in {game_state.player_character_id, npc_character_id}:
@@ -7522,6 +8851,886 @@ def build_public_intel_views(game_state: WolfGameState) -> list[PublicIntelView]
     ]
 
 
+def build_public_evidence_timeline(
+    game_state: WolfGameState,
+) -> PublicEvidenceTimelineV1:
+    """Project one deterministic, public-only evidence timeline.
+
+    The older public collections do not carry exact per-record rule-event
+    provenance.  The projection therefore binds the complete result to the
+    latest event sequence and uses stable IDs derived only from public
+    structure.  It does not invent a source event for individual legacy items.
+    """
+
+    drafts: list[PublicEvidenceDraft] = []
+
+    def related_character_ids(*character_ids: Optional[int]) -> tuple[int, ...]:
+        return tuple(
+            dict.fromkeys(
+                character_id
+                for character_id in character_ids
+                if character_id is not None and character_id > 0
+            )
+        )
+
+    def character_fields(character_id: Optional[int]) -> tuple[Optional[int], str]:
+        if character_id is None:
+            return None, ""
+        character = get_character(game_state, character_id)
+        return character.id, character.name
+
+    visible_claim_types = {
+        "role",
+        "seer_check",
+        "witch_save",
+        "witch_poison",
+        "guard_success",
+    }
+    for claim_index, claim in enumerate(game_state.public_claims):
+        if claim.claim_type not in visible_claim_types:
+            continue
+        actor = get_character(game_state, claim.character_id)
+        target = (
+            get_character(game_state, claim.target_id)
+            if claim.target_id is not None
+            else None
+        )
+        actor_label = format_full_character_name(actor)
+        target_label = (
+            format_full_character_name(target) if target is not None else ""
+        )
+        if claim.claim_type == "role":
+            role_label = ROLE_LABELS.get(
+                claim.claimed_role or "",
+                claim.claimed_role or "未知身份",
+            )
+            display_text = (
+                f"{actor_label}公开跳{role_label}"
+                if claim.claimed_role in GOD_ROLES
+                else f"{actor_label}公开声称自己是{role_label}"
+            )
+            public_result = claim.claimed_role or ""
+        elif claim.claim_type == "seer_check":
+            result_label = "查杀" if claim.result == "werewolf" else "金水"
+            display_text = f"{actor_label}称验{target_label}：{result_label}"
+            public_result = claim.result
+        elif claim.claim_type == "witch_save":
+            display_text = f"{actor_label}声称用解药救了{target_label}"
+            public_result = claim.result
+        elif claim.claim_type == "witch_poison":
+            display_text = f"{actor_label}声称用毒药毒了{target_label}"
+            public_result = claim.result
+        else:
+            display_text = f"{actor_label}声称守护{target_label}成功"
+            public_result = claim.result
+        drafts.append(
+            PublicEvidenceDraft(
+                source_family="public_claim",
+                source_index=claim_index,
+                day=claim.day,
+                phase_rank=20,
+                source_rank=10,
+                category="claim",
+                kind=claim.claim_type,
+                verification="unverified",
+                actor_id=actor.id,
+                actor_name=actor.name,
+                target_id=target.id if target is not None else None,
+                target_name=target.name if target is not None else "",
+                related_character_ids=related_character_ids(
+                    actor.id,
+                    target.id if target is not None else None,
+                ),
+                public_result=public_result,
+                display_text=display_text,
+            )
+        )
+
+    for flow_index, flow in enumerate(build_badge_flow_views(game_state)):
+        drafts.append(
+            PublicEvidenceDraft(
+                source_family="badge_flow",
+                source_index=flow_index,
+                day=flow.day,
+                phase_rank=24,
+                source_rank=20,
+                category="commitment",
+                kind="badge_flow" if flow.version == 1 else "badge_flow_revised",
+                verification="unverified",
+                actor_id=flow.character_id,
+                actor_name=flow.character_name,
+                target_id=flow.primary_target_id,
+                target_name=flow.primary_target_name,
+                related_character_ids=related_character_ids(
+                    flow.character_id,
+                    flow.primary_target_id,
+                    flow.secondary_target_id,
+                    flow.claimed_good_anchor_id,
+                    flow.reason_target_id,
+                ),
+                public_result=flow.revision_reason,
+                display_text=flow.display_text,
+            )
+        )
+
+    public_intel = build_public_intel_views(game_state)
+    public_action_intel = {
+        (
+            item.day,
+            item.kind,
+            item.actor_id,
+            item.target_id,
+        ): item
+        for item in public_intel
+        if item.category == "confirmed_action"
+        and item.kind in {"badge_transfer", "badge_destroyed"}
+    }
+    sheriff_kind_map = {
+        "signup": "sheriff_signup",
+        "skip_signup": "sheriff_skip_signup",
+        "withdraw": "sheriff_withdrawal",
+        "continue_campaign": "sheriff_campaign_continued",
+        "sheriff_vote": "sheriff_ballot",
+        "elected": "sheriff_elected",
+        "meeting_order": "meeting_order",
+        "temporary_nomination": "temporary_nomination",
+        "nomination": "final_nomination",
+        "badge_transfer": "badge_transfer",
+        "badge_destroyed": "badge_destroyed",
+    }
+    sheriff_phase_rank = {
+        "signup": 10,
+        "skip_signup": 10,
+        "withdraw": 28,
+        "continue_campaign": 28,
+        "sheriff_vote": 32,
+        "elected": 34,
+        "meeting_order": 36,
+        "temporary_nomination": 44,
+        "nomination": 48,
+        "badge_transfer": 58,
+        "badge_destroyed": 58,
+    }
+    sheriff_result_map = {
+        "signup": "signed_up",
+        "skip_signup": "skipped_signup",
+        "withdraw": "withdrew",
+        "continue_campaign": "continued_campaign",
+        "sheriff_vote": "ballot_cast",
+        "elected": "elected",
+        "meeting_order": "order_set",
+        "temporary_nomination": "temporarily_nominated",
+        "nomination": "nominated",
+        "badge_transfer": "transferred",
+        "badge_destroyed": "destroyed",
+    }
+    for event_index, event in enumerate(game_state.sheriff_events):
+        if event.event_type in {"badge_flow", "badge_flow_revised"}:
+            continue
+        kind = sheriff_kind_map.get(event.event_type)
+        if kind is None:
+            continue
+        actor_id, actor_name = character_fields(event.actor_id)
+        target_id, target_name = character_fields(event.target_id)
+        display_text = event.detail.strip()
+        public_result = (
+            event.context.strip()
+            if event.event_type == "sheriff_vote" and event.context.strip()
+            else sheriff_result_map[event.event_type]
+        )
+        public_intel_item = public_action_intel.get(
+            (event.day, event.event_type, event.actor_id, event.target_id)
+        )
+        if public_intel_item is not None:
+            display_text = public_intel_item.display_text
+            public_result = public_intel_item.result
+        if not display_text:
+            actor_label = (
+                format_full_character_name(get_character(game_state, actor_id))
+                if actor_id is not None
+                else "场上"
+            )
+            target_label = (
+                format_full_character_name(get_character(game_state, target_id))
+                if target_id is not None
+                else "无指定目标"
+            )
+            display_text = f"{actor_label}公开执行了{kind}：{target_label}。"
+        phase_rank = sheriff_phase_rank[event.event_type]
+        if event.event_type == "badge_destroyed" and event.actor_id is None:
+            phase_rank = 34
+        drafts.append(
+            PublicEvidenceDraft(
+                source_family="sheriff_event",
+                source_index=event_index,
+                day=event.day,
+                phase_rank=phase_rank,
+                source_rank=30,
+                category="confirmed_action",
+                kind=kind,
+                verification="confirmed",
+                actor_id=actor_id,
+                actor_name=actor_name,
+                target_id=target_id,
+                target_name=target_name,
+                related_character_ids=related_character_ids(
+                    actor_id,
+                    target_id,
+                ),
+                public_result=public_result,
+                display_text=display_text,
+            )
+        )
+
+    for shot_index, shot in enumerate(game_state.hunter_shots):
+        hunter = get_character(game_state, shot.hunter_id)
+        target = (
+            get_character(game_state, shot.target_id)
+            if shot.target_id is not None
+            else None
+        )
+        display_text = (
+            f"{format_full_character_name(hunter)}出局后选择不开枪"
+            if target is None
+            else (
+                f"{format_full_character_name(hunter)}开枪带走"
+                f"{format_full_character_name(target)}"
+            )
+        )
+        drafts.append(
+            PublicEvidenceDraft(
+                source_family="hunter_shot",
+                source_index=shot_index,
+                day=shot.day,
+                phase_rank=15 if shot.trigger == "night" else 60,
+                source_rank=40,
+                category="confirmed_action",
+                kind="hunter_shot",
+                verification="confirmed",
+                actor_id=hunter.id,
+                actor_name=hunter.name,
+                target_id=target.id if target is not None else None,
+                target_name=target.name if target is not None else "",
+                related_character_ids=related_character_ids(
+                    hunter.id,
+                    target.id if target is not None else None,
+                ),
+                public_result="shot" if target is not None else "pass",
+                display_text=display_text,
+            )
+        )
+
+    resolved_vote_days = {
+        event.day_before
+        for event in game_state.rule_events
+        if event.event_type
+        in {"exile_vote_resolved", "all_votes_submitted_and_resolved"}
+    }
+    public_ballots = sorted(
+        (
+            vote
+            for vote in game_state.votes
+            if vote.day in resolved_vote_days
+        ),
+        key=lambda vote: (vote.day, vote.voter_id, vote.target_id),
+    )
+    for vote_index, vote in enumerate(public_ballots):
+        voter = get_character(game_state, vote.voter_id)
+        target = get_character(game_state, vote.target_id)
+        weight_text = f"（{vote.weight:g}票）" if vote.weight != 1.0 else ""
+        drafts.append(
+            PublicEvidenceDraft(
+                source_family="exile_ballot",
+                source_index=vote_index,
+                day=vote.day,
+                phase_rank=70,
+                source_rank=50,
+                category="confirmed_action",
+                kind="exile_ballot",
+                verification="confirmed",
+                actor_id=voter.id,
+                actor_name=voter.name,
+                target_id=target.id,
+                target_name=target.name,
+                related_character_ids=related_character_ids(voter.id, target.id),
+                public_result=f"weight:{vote.weight:g}",
+                display_text=(
+                    f"{format_full_character_name(voter)}投给"
+                    f"{format_full_character_name(target)}{weight_text}"
+                ),
+            )
+        )
+
+    public_eliminations = sorted(
+        (
+            elimination
+            for elimination in game_state.eliminations
+            if elimination.cause != "hunter_shot"
+        ),
+        key=lambda elimination: (
+            elimination.day,
+            1 if elimination.cause == "exiled" else 0,
+            elimination.character_id,
+        ),
+    )
+    for elimination_index, elimination in enumerate(public_eliminations):
+        target = get_character(game_state, elimination.character_id)
+        if elimination.cause == "exiled":
+            kind = "exile_result"
+            public_result = "exiled"
+            phase_rank = 72
+            display_text = (
+                f"{format_full_character_name(target)}经公开放逐投票出局"
+            )
+        else:
+            kind = "night_result"
+            public_result = "night_out"
+            phase_rank = 16
+            display_text = (
+                f"{format_full_character_name(target)}在夜间出局"
+                "（公开结果不区分原因）"
+            )
+        drafts.append(
+            PublicEvidenceDraft(
+                source_family="elimination",
+                source_index=elimination_index,
+                day=elimination.day,
+                phase_rank=phase_rank,
+                source_rank=60,
+                category="confirmed_action",
+                kind=kind,
+                verification="confirmed",
+                actor_id=None,
+                actor_name="",
+                target_id=target.id,
+                target_name=target.name,
+                related_character_ids=related_character_ids(target.id),
+                public_result=public_result,
+                display_text=display_text,
+            )
+        )
+
+    projected_event_sequence = (
+        game_state.rule_events[-1].sequence if game_state.rule_events else 1
+    )
+    return build_public_evidence_timeline_from_drafts(
+        game_id=game_state.game_id,
+        projected_event_sequence=projected_event_sequence,
+        drafts=drafts,
+    )
+
+
+def build_public_evidence_analysis(
+    game_state: WolfGameState,
+    timeline: Optional[PublicEvidenceTimelineV1] = None,
+) -> PublicEvidenceAnalysisV1:
+    """Analyze public commitments without consulting hidden or post-game truth.
+
+    Every result is derived from the public evidence timeline plus the public
+    shape of each versioned badge flow.  A contradiction candidate only means
+    that two public records deserve review; it is never a lie or camp verdict.
+    """
+
+    public_timeline = timeline or build_public_evidence_timeline(game_state)
+    def source_item(source_family: str, source_index: int):
+        prefix = f"public-evidence:{source_family}:{source_index + 1}:"
+        return next(
+            (
+                item
+                for item in public_timeline.items
+                if item.evidence_id.startswith(prefix)
+            ),
+            None,
+        )
+
+    public_eliminations: dict[int, object] = {}
+    for item in public_timeline.items:
+        if item.kind not in {"night_result", "exile_result", "hunter_shot"}:
+            continue
+        if item.target_id is None:
+            continue
+        previous = public_eliminations.get(item.target_id)
+        if previous is None or (item.day, item.sequence) < (
+            previous.day,
+            previous.sequence,
+        ):
+            public_eliminations[item.target_id] = item
+
+    candidate_drafts: dict[tuple[str, str, str], dict[str, object]] = {}
+
+    def add_candidate(
+        *,
+        kind: str,
+        earlier_item,
+        later_item,
+        actor_id: int,
+        actor_name: str,
+        target_id: Optional[int],
+        target_name: str,
+        display_text: str,
+    ) -> None:
+        key = (kind, earlier_item.evidence_id, later_item.evidence_id)
+        candidate_drafts.setdefault(
+            key,
+            {
+                "kind": kind,
+                "earlier_item": earlier_item,
+                "later_item": later_item,
+                "actor_id": actor_id,
+                "actor_name": actor_name,
+                "target_id": target_id,
+                "target_name": target_name,
+                "display_text": display_text,
+            },
+        )
+
+    role_claims_by_actor: dict[int, list[object]] = {}
+    seer_claims_by_actor_target: dict[tuple[int, int], list[object]] = {}
+    for item in public_timeline.items:
+        if item.actor_id is None:
+            continue
+        if item.kind == "role" and item.public_result:
+            role_claims_by_actor.setdefault(item.actor_id, []).append(item)
+        elif (
+            item.kind == "seer_check"
+            and item.target_id is not None
+            and item.public_result
+        ):
+            seer_claims_by_actor_target.setdefault(
+                (item.actor_id, item.target_id),
+                [],
+            ).append(item)
+
+    for claims in role_claims_by_actor.values():
+        for earlier, later in zip(claims, claims[1:]):
+            if earlier.public_result == later.public_result:
+                continue
+            earlier_label = ROLE_LABELS.get(
+                earlier.public_result,
+                earlier.public_result,
+            )
+            later_label = ROLE_LABELS.get(
+                later.public_result,
+                later.public_result,
+            )
+            add_candidate(
+                kind="identity_claim_changed",
+                earlier_item=earlier,
+                later_item=later,
+                actor_id=later.actor_id,
+                actor_name=later.actor_name,
+                target_id=None,
+                target_name="",
+                display_text=(
+                    f"{later.actor_id}号{later.actor_name}的公开身份说法由"
+                    f"{earlier_label}变为{later_label}，仅标记为待核对。"
+                ),
+            )
+
+    result_labels = {"good": "金水", "werewolf": "查杀"}
+    for claims in seer_claims_by_actor_target.values():
+        for earlier, later in zip(claims, claims[1:]):
+            if earlier.public_result == later.public_result:
+                continue
+            add_candidate(
+                kind="seer_result_changed",
+                earlier_item=earlier,
+                later_item=later,
+                actor_id=later.actor_id,
+                actor_name=later.actor_name,
+                target_id=later.target_id,
+                target_name=later.target_name,
+                display_text=(
+                    f"{later.actor_id}号{later.actor_name}对"
+                    f"{later.target_id}号{later.target_name}的公开查验说法由"
+                    f"{result_labels.get(earlier.public_result, earlier.public_result)}"
+                    f"变为{result_labels.get(later.public_result, later.public_result)}，"
+                    "仅标记为待核对。"
+                ),
+            )
+
+    badge_flow_views = build_badge_flow_views(game_state)
+    flow_records = []
+    for flow_index, (flow_state, flow_view) in enumerate(
+        zip(game_state.badge_flows, badge_flow_views)
+    ):
+        evidence_item = source_item("badge_flow", flow_index)
+        if evidence_item is None:
+            continue
+        flow_records.append((flow_state, flow_view, evidence_item))
+
+    next_flow_by_evidence_id = {}
+    records_by_actor: dict[int, list[tuple[object, object, object]]] = {}
+    for record in flow_records:
+        records_by_actor.setdefault(record[0].character_id, []).append(record)
+    for records in records_by_actor.values():
+        ordered = sorted(records, key=lambda record: record[0].version)
+        for current, replacement in zip(ordered, ordered[1:]):
+            next_flow_by_evidence_id[current[2].evidence_id] = replacement
+
+    after_night_actions: list[tuple[object, object]] = []
+    for event_index, event in enumerate(game_state.sheriff_events):
+        if (
+            event.event_type not in {"badge_transfer", "badge_destroyed"}
+            or event.actor_id is None
+            or event.context != "after_night"
+        ):
+            continue
+        evidence_item = source_item("sheriff_event", event_index)
+        if evidence_item is not None:
+            after_night_actions.append((event, evidence_item))
+
+    checks_by_actor: dict[int, list[object]] = {}
+    for item in public_timeline.items:
+        if (
+            item.kind == "seer_check"
+            and item.actor_id is not None
+            and item.target_id is not None
+        ):
+            checks_by_actor.setdefault(item.actor_id, []).append(item)
+
+    commitment_drafts = []
+    status_labels = {
+        "active": "仍在等待公开后续",
+        "superseded": "已被公开修订替代",
+        "fulfilled": "已有公开记录与承诺一致",
+        "invalidated": "公开条件已失效",
+        "undetermined": "公开信息不足，无法判断",
+        "contradicted": "公开后续与承诺不一致，需核对",
+    }
+    reason_labels = {
+        "awaiting_effective_night": "尚未到生效夜",
+        "awaiting_public_follow_up": "生效后尚未轮到或尚未出现公开跟进",
+        "revised_before_effective_night": "生效夜前发布了新版本",
+        "claimant_unavailable_before_effective_night": "发布者在生效夜前已公开出局",
+        "target_unavailable_before_effective_night": "第一目标在生效夜前已公开出局",
+        "reported_planned_target": "公开查验跟进仍是第一目标",
+        "badge_action_matched_published_branch": "警徽动作落在已公布分支内",
+        "published_branch_became_unavailable": "生效夜后至少一个已公布分支无法执行",
+        "reported_different_target": "生效日公开查验改报其他目标",
+        "badge_action_outside_published_branches": "警徽动作落在全部已公布分支之外",
+        "public_follow_up_missing": "到期后已有公开发言但未给出对应结果",
+        "revised_after_due_without_public_result": "到期后才修订且旧版没有公开结果",
+    }
+
+    for flow_state, flow_view, flow_item in flow_records:
+        status = "active"
+        status_reason = "awaiting_effective_night"
+        superseded_by_evidence_id = None
+        resolved_by_evidence_id = None
+        related_evidence_ids: list[str] = []
+        replacement = next_flow_by_evidence_id.get(flow_item.evidence_id)
+
+        if (
+            replacement is not None
+            and replacement[0].day < flow_state.effective_night_day
+        ):
+            status = "superseded"
+            status_reason = "revised_before_effective_night"
+            superseded_by_evidence_id = replacement[2].evidence_id
+            related_evidence_ids.append(replacement[2].evidence_id)
+        else:
+            claimant_out = public_eliminations.get(flow_state.character_id)
+            target_out = public_eliminations.get(flow_state.primary_target_id)
+            if (
+                claimant_out is not None
+                and claimant_out.day < flow_state.effective_night_day
+            ):
+                status = "invalidated"
+                status_reason = "claimant_unavailable_before_effective_night"
+                resolved_by_evidence_id = claimant_out.evidence_id
+                related_evidence_ids.append(claimant_out.evidence_id)
+            elif (
+                target_out is not None
+                and target_out.day < flow_state.effective_night_day
+            ):
+                status = "invalidated"
+                status_reason = "target_unavailable_before_effective_night"
+                resolved_by_evidence_id = target_out.evidence_id
+                related_evidence_ids.append(target_out.evidence_id)
+            else:
+                action_record = next(
+                    (
+                        (event, item)
+                        for event, item in after_night_actions
+                        if event.actor_id == flow_state.character_id
+                        and event.day == flow_state.effective_night_day
+                        and event.badge_flow_version
+                        in {None, flow_state.version}
+                    ),
+                    None,
+                )
+                if action_record is not None:
+                    action, action_item = action_record
+                    if get_matching_badge_flow_transfer_result(
+                        game_state,
+                        flow_state,
+                        action.target_id,
+                    ):
+                        status = "fulfilled"
+                        status_reason = "badge_action_matched_published_branch"
+                        resolved_by_evidence_id = action_item.evidence_id
+                        related_evidence_ids.append(action_item.evidence_id)
+                    else:
+                        branch_target_ids = [flow_state.primary_target_id]
+                        if flow_state.claimed_good_anchor_id is not None:
+                            branch_target_ids.append(
+                                flow_state.claimed_good_anchor_id
+                            )
+                        unavailable_branch_item = next(
+                            (
+                                public_eliminations[target_id]
+                                for target_id in branch_target_ids
+                                if target_id in public_eliminations
+                                and public_eliminations[target_id].day
+                                <= flow_state.effective_night_day
+                            ),
+                            None,
+                        )
+                        if unavailable_branch_item is not None:
+                            status = "invalidated"
+                            status_reason = "published_branch_became_unavailable"
+                            resolved_by_evidence_id = (
+                                unavailable_branch_item.evidence_id
+                            )
+                            related_evidence_ids.extend(
+                                [
+                                    unavailable_branch_item.evidence_id,
+                                    action_item.evidence_id,
+                                ]
+                            )
+                        else:
+                            status = "contradicted"
+                            status_reason = (
+                                "badge_action_outside_published_branches"
+                            )
+                            resolved_by_evidence_id = action_item.evidence_id
+                            related_evidence_ids.append(action_item.evidence_id)
+                            add_candidate(
+                                kind="badge_flow_action_mismatch",
+                                earlier_item=flow_item,
+                                later_item=action_item,
+                                actor_id=flow_view.character_id,
+                                actor_name=flow_view.character_name,
+                                target_id=action_item.target_id,
+                                target_name=action_item.target_name,
+                                display_text=(
+                                    f"{flow_view.character_id}号"
+                                    f"{flow_view.character_name}的警徽动作未落在"
+                                    f"第{flow_view.version}版公开分支内，仅标记为待核对。"
+                                ),
+                            )
+                else:
+                    actor_checks = checks_by_actor.get(
+                        flow_state.character_id,
+                        [],
+                    )
+                    planned_check = next(
+                        (
+                            item
+                            for item in actor_checks
+                            if item.day >= flow_state.effective_night_day
+                            and item.target_id == flow_state.primary_target_id
+                        ),
+                        None,
+                    )
+                    different_check = next(
+                        (
+                            item
+                            for item in actor_checks
+                            if item.day == flow_state.effective_night_day
+                            and item.target_id != flow_state.primary_target_id
+                        ),
+                        None,
+                    )
+                    if planned_check is not None:
+                        status = "fulfilled"
+                        status_reason = "reported_planned_target"
+                        resolved_by_evidence_id = planned_check.evidence_id
+                        related_evidence_ids.append(planned_check.evidence_id)
+                    elif different_check is not None:
+                        target_out = public_eliminations.get(
+                            flow_state.primary_target_id
+                        )
+                        if (
+                            target_out is not None
+                            and target_out.day <= flow_state.effective_night_day
+                        ):
+                            status = "invalidated"
+                            status_reason = "published_branch_became_unavailable"
+                            resolved_by_evidence_id = target_out.evidence_id
+                            related_evidence_ids.extend(
+                                [
+                                    target_out.evidence_id,
+                                    different_check.evidence_id,
+                                ]
+                            )
+                        else:
+                            status = "contradicted"
+                            status_reason = "reported_different_target"
+                            resolved_by_evidence_id = different_check.evidence_id
+                            related_evidence_ids.append(
+                                different_check.evidence_id
+                            )
+                            add_candidate(
+                                kind="badge_flow_target_mismatch",
+                                earlier_item=flow_item,
+                                later_item=different_check,
+                                actor_id=flow_view.character_id,
+                                actor_name=flow_view.character_name,
+                                target_id=flow_view.primary_target_id,
+                                target_name=flow_view.primary_target_name,
+                                display_text=(
+                                    f"{flow_view.character_id}号"
+                                    f"{flow_view.character_name}第{flow_view.version}版"
+                                    f"公开第一目标是{flow_view.primary_target_id}号"
+                                    f"{flow_view.primary_target_name}，生效日改报了"
+                                    f"{different_check.target_id}号"
+                                    f"{different_check.target_name}，仅标记为待核对。"
+                                ),
+                            )
+                    elif game_state.day < flow_state.effective_night_day:
+                        status = "active"
+                        status_reason = "awaiting_effective_night"
+                    elif (
+                        game_state.day == flow_state.effective_night_day
+                        and game_state.phase
+                        in {"NIGHT", "NIGHT_RESULT", "HUNTER_SHOT", "BADGE_TRANSFER"}
+                    ):
+                        status = "active"
+                        status_reason = "awaiting_public_follow_up"
+                    else:
+                        public_follow_up = any(
+                            speech.character_id == flow_state.character_id
+                            and speech.day >= flow_state.effective_night_day
+                            for speech in game_state.speeches
+                        )
+                        if replacement is not None:
+                            status = "undetermined"
+                            status_reason = (
+                                "revised_after_due_without_public_result"
+                            )
+                            related_evidence_ids.append(
+                                replacement[2].evidence_id
+                            )
+                        elif (
+                            game_state.day == flow_state.effective_night_day
+                            and not public_follow_up
+                            and game_state.phase != "GAME_OVER"
+                        ):
+                            status = "active"
+                            status_reason = "awaiting_public_follow_up"
+                        else:
+                            status = "undetermined"
+                            status_reason = "public_follow_up_missing"
+
+        related_evidence_ids = list(dict.fromkeys(related_evidence_ids))
+        commitment_drafts.append(
+            {
+                "flow_view": flow_view,
+                "flow_item": flow_item,
+                "status": status,
+                "status_reason": status_reason,
+                "superseded_by_evidence_id": superseded_by_evidence_id,
+                "resolved_by_evidence_id": resolved_by_evidence_id,
+                "related_evidence_ids": related_evidence_ids,
+                "display_text": (
+                    f"{flow_view.character_id}号{flow_view.character_name}"
+                    f"第{flow_view.version}版警徽流（第"
+                    f"{flow_view.effective_night_day}夜验"
+                    f"{flow_view.primary_target_id}号"
+                    f"{flow_view.primary_target_name}）："
+                    f"{status_labels[status]}。{reason_labels[status_reason]}。"
+                ),
+            }
+        )
+
+    commitments = []
+    for sequence, draft in enumerate(
+        sorted(
+            commitment_drafts,
+            key=lambda draft: draft["flow_item"].sequence,
+        ),
+        start=1,
+    ):
+        flow = draft["flow_view"]
+        source = draft["flow_item"]
+        commitments.append(
+            PublicCommitmentStateV1(
+                commitment_id=build_public_commitment_id(source.evidence_id),
+                sequence=sequence,
+                source_evidence_id=source.evidence_id,
+                day=flow.day,
+                effective_night_day=flow.effective_night_day,
+                actor_id=flow.character_id,
+                actor_name=flow.character_name,
+                primary_target_id=flow.primary_target_id,
+                primary_target_name=flow.primary_target_name,
+                secondary_target_id=flow.secondary_target_id,
+                secondary_target_name=flow.secondary_target_name,
+                claimed_good_anchor_id=flow.claimed_good_anchor_id,
+                claimed_good_anchor_name=flow.claimed_good_anchor_name,
+                werewolf_branch_destroys_badge=(
+                    flow.werewolf_result_destroys_badge
+                ),
+                version=flow.version,
+                status=draft["status"],
+                status_reason=draft["status_reason"],
+                superseded_by_evidence_id=draft[
+                    "superseded_by_evidence_id"
+                ],
+                resolved_by_evidence_id=draft["resolved_by_evidence_id"],
+                related_evidence_ids=draft["related_evidence_ids"],
+                display_text=draft["display_text"],
+            )
+        )
+
+    ordered_candidate_drafts = sorted(
+        candidate_drafts.values(),
+        key=lambda draft: (
+            draft["later_item"].sequence,
+            draft["earlier_item"].sequence,
+            draft["kind"],
+        ),
+    )
+    candidates = []
+    for sequence, draft in enumerate(ordered_candidate_drafts, start=1):
+        earlier_item = draft["earlier_item"]
+        later_item = draft["later_item"]
+        candidates.append(
+            PublicContradictionCandidateV1(
+                candidate_id=build_public_contradiction_id(
+                    draft["kind"],
+                    earlier_item.evidence_id,
+                    later_item.evidence_id,
+                ),
+                sequence=sequence,
+                day=later_item.day,
+                kind=draft["kind"],
+                actor_id=draft["actor_id"],
+                actor_name=draft["actor_name"],
+                target_id=draft["target_id"],
+                target_name=draft["target_name"],
+                earlier_evidence_id=earlier_item.evidence_id,
+                later_evidence_id=later_item.evidence_id,
+                display_text=draft["display_text"],
+            )
+        )
+
+    return PublicEvidenceAnalysisV1(
+        game_id=game_state.game_id,
+        projected_event_sequence=public_timeline.projected_event_sequence,
+        commitment_count=len(commitments),
+        contradiction_candidate_count=len(candidates),
+        commitments=commitments,
+        contradiction_candidates=candidates,
+        disclaimer=(
+            "仅比较当前对局中的公开说法、公开承诺与已确认公开动作；"
+            "矛盾候选只供核对，不代表说谎、隐藏身份或阵营判断，也不使用赛后真相。"
+        ),
+    )
+
+
 def parsed_claims_to_public_claims(
     game_state: WolfGameState,
     character_id: int,
@@ -7709,7 +9918,46 @@ def parse_player_speech(
             }
         )
 
-    for sentence in re.split(r"[。！？!?；;\n]", speech):
+    claim_clauses = re.split(r"[。！？!?；;，,\n]", speech)
+    normalized_claim_clauses: list[str] = []
+    claim_result_markers = [
+        "金水",
+        "好人",
+        "不是狼",
+        "查杀",
+        "是狼",
+        "狼人",
+    ]
+    for index, clause in enumerate(claim_clauses):
+        normalized_clause = clause
+        if (
+            any(
+                keyword in clause
+                for keyword in ["查验", "验了", "验过", "验人"]
+            )
+            and not any(marker in clause for marker in claim_result_markers)
+            and index + 1 < len(claim_clauses)
+        ):
+            result_suffix = claim_clauses[index + 1]
+            suffix_mentions_character = any(
+                re.search(
+                    rf"(?<!\d){character.id}\s*号(?!\d)",
+                    result_suffix,
+                )
+                or character.name in result_suffix
+                for character in game_state.characters
+            )
+            if (
+                not suffix_mentions_character
+                and any(
+                    marker in result_suffix
+                    for marker in claim_result_markers
+                )
+            ):
+                normalized_clause += "，" + result_suffix
+        normalized_claim_clauses.append(normalized_clause)
+
+    for sentence in normalized_claim_clauses:
         if "警徽流" in sentence or (
             "警徽" in sentence
             and any(
@@ -7856,6 +10104,470 @@ def parse_player_speech(
         ),
         tone=tone,
     )
+
+
+def build_player_speech_understanding(
+    game_state: WolfGameState,
+    parsed: ParsedPlayerSpeech,
+) -> PlayerSpeechUnderstandingV1:
+    """Convert the legacy parser result into the strict V4.1-B contract."""
+
+    claims: list[PlayerSpeechClaimV1] = []
+    for claim in parsed.claims:
+        claim_type = str(claim.get("claim_type", "role"))
+        claimed_role = (
+            str(claim["claimed_role"])
+            if claim.get("claimed_role") is not None
+            else None
+        )
+        target_id = (
+            int(claim["target_id"])
+            if claim.get("target_id") is not None
+            else None
+        )
+        result = (
+            str(claim["result"])
+            if claim.get("result") in {"good", "werewolf"}
+            else None
+        )
+        if claim_type == "seer_check" and target_id is not None:
+            target = get_character(game_state, target_id)
+            result_label = "金水" if result == "good" else "查杀"
+            display_text = (
+                f"声称查验{format_full_character_name(target)}为{result_label}"
+            )
+        else:
+            display_text = (
+                f"公开声明身份为{ROLE_LABELS.get(claimed_role or '', claimed_role or '未知')}"
+            )
+        claims.append(
+            PlayerSpeechClaimV1(
+                claim_type=claim_type,
+                claimed_role=claimed_role,
+                target_id=target_id,
+                result=result,
+                display_text=display_text,
+            )
+        )
+
+    witch_directive = (
+        PlayerSpeechWitchDirectiveV1(
+            action=parsed.witch_directive.action,
+            target_id=parsed.witch_directive.target_id,
+            reason_kind=parsed.witch_directive.reason_kind,
+            confidence=parsed.witch_directive.confidence,
+        )
+        if parsed.witch_directive is not None
+        else None
+    )
+    return PlayerSpeechUnderstandingV1(
+        mentioned_character_ids=list(parsed.mentioned_characters),
+        claims=claims,
+        accusations=[
+            PlayerSpeechAccusationV1(
+                target_id=int(accusation["target_id"]),
+                reason=str(accusation.get("reason", "")),
+                intensity=float(accusation.get("intensity", 0.0)),
+            )
+            for accusation in parsed.accusations
+            if accusation.get("target_id") is not None
+        ],
+        supported_character_ids=list(parsed.supported_ids),
+        opposed_character_ids=list(parsed.opposed_ids),
+        vote_intent_target_id=parsed.vote_intent_target_id,
+        witch_directive=witch_directive,
+        tone=parsed.tone,
+    )
+
+
+def build_player_speech_preview_fingerprint(
+    game_state: WolfGameState,
+    preview: PlayerSpeechPreviewResponseV1,
+) -> str:
+    """Bind one preview to its exact input and current public turn state."""
+
+    payload = {
+        "preview": preview.model_dump(
+            mode="json",
+            exclude={"preview_fingerprint"},
+        ),
+        "turn_state": {
+            "game_id": game_state.game_id,
+            "day": game_state.day,
+            "phase": game_state.phase,
+            "updated_at": game_state.updated_at,
+            "sheriff_id": game_state.sheriff_id,
+            "current_sheriff_speaker_id": get_current_sheriff_speaker_id(
+                game_state
+            ),
+            "current_meeting_speaker_id": get_current_meeting_speaker_id(
+                game_state
+            ),
+            "public_claim_count": len(game_state.public_claims),
+            "badge_flow_count": len(game_state.badge_flows),
+            "speech_count": len(game_state.speeches),
+        },
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _preview_character_label(
+    game_state: WolfGameState,
+    character_id: int,
+) -> str:
+    return format_full_character_name(get_character(game_state, character_id))
+
+
+def prepare_player_speech_preview(
+    game_state: WolfGameState,
+    speaker: CharacterState,
+    *,
+    speech_kind: Literal["day", "sheriff"],
+    speech: str,
+    temporary_nomination_target_id: Optional[int] = None,
+    badge_flow: Optional[BadgeFlowInput] = None,
+) -> PreparedPlayerSpeech:
+    """Parse and validate one submission without mutating game state."""
+
+    original_speech = speech.strip()
+    if not original_speech:
+        detail = (
+            "发言不能为空。"
+            if speech_kind == "day"
+            else "警上发言不能为空。"
+        )
+        raise HTTPException(status_code=400, detail=detail)
+    if speaker.id != game_state.player_character_id or not speaker.is_player:
+        raise HTTPException(
+            status_code=400,
+            detail="当前版本只允许玩家预览和提交自己的发言。",
+        )
+    if not speaker.alive:
+        raise HTTPException(status_code=400, detail="出局角色不能发言。")
+
+    public_speech = original_speech
+    temporary_target_id: Optional[int] = None
+    if speech_kind == "day":
+        ensure_day_speech_phase(game_state)
+        ensure_current_meeting_speaker(game_state, speaker.id)
+        if speaker.id == game_state.sheriff_id:
+            if temporary_nomination_target_id is not None:
+                temporary_target = get_character(
+                    game_state,
+                    temporary_nomination_target_id,
+                )
+                if not temporary_target.alive or temporary_target.id == speaker.id:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="警长只能暂时归票给另一名存活角色。",
+                    )
+                temporary_target_id = temporary_target.id
+                if (
+                    "暂时归票" not in public_speech
+                    or temporary_target.name not in public_speech
+                ):
+                    public_speech = (
+                        public_speech.rstrip("。")
+                        + "。我暂时归票给"
+                        + format_full_character_name(temporary_target)
+                        + "。"
+                    )
+        elif temporary_nomination_target_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="只有警长能在发言时提出暂时归票。",
+            )
+    else:
+        if temporary_nomination_target_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="警上发言不能提交白天暂时归票。",
+            )
+        ensure_sheriff_speech_turn(game_state, speaker.id)
+
+    parsed = parse_player_speech(
+        game_state,
+        public_speech,
+        speaker_id=speaker.id,
+    )
+    planned_claims = parsed_claims_to_public_claims(
+        game_state,
+        speaker.id,
+        parsed.claims,
+    )
+    if speech_kind == "sheriff":
+        projected_role = get_projected_public_role_claim(
+            game_state,
+            speaker.id,
+            planned_claims,
+        )
+        if (
+            projected_role == "seer"
+            and get_active_badge_flow(game_state, speaker.id) is None
+            and badge_flow is None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="警上竞选或 PK 发言中跳预言家时，必须同时交代警徽流。",
+            )
+
+    normalized_badge_flow: Optional[PlayerSpeechBadgeFlowPreviewV1] = None
+    if badge_flow is not None:
+        validate_player_badge_flow_with_planned_claims(
+            game_state,
+            speaker,
+            badge_flow,
+            planned_claims,
+        )
+        public_speech = attach_canonical_badge_flow_speech_text(
+            public_speech,
+            game_state,
+            speaker,
+            badge_flow,
+            planned_claims,
+        )
+        parsed = parse_player_speech(
+            game_state,
+            public_speech,
+            speaker_id=speaker.id,
+        )
+        planned_claims = parsed_claims_to_public_claims(
+            game_state,
+            speaker.id,
+            parsed.claims,
+        )
+        validate_player_badge_flow_with_planned_claims(
+            game_state,
+            speaker,
+            badge_flow,
+            planned_claims,
+        )
+        claimed_good_anchor = resolve_badge_flow_good_anchor(
+            game_state,
+            speaker,
+            badge_flow,
+            planned_claims,
+        )
+        normalized_badge_flow = PlayerSpeechBadgeFlowPreviewV1(
+            primary_target_id=badge_flow.primary_target_id,
+            secondary_target_id=badge_flow.secondary_target_id,
+            claimed_good_anchor_id=(
+                claimed_good_anchor.id
+                if claimed_good_anchor is not None
+                else None
+            ),
+            revision_reason=badge_flow.revision_reason,
+            canonical_text=build_badge_flow_input_speech_text(
+                game_state,
+                speaker,
+                badge_flow,
+                planned_claims,
+            ),
+        )
+
+    understanding = build_player_speech_understanding(game_state, parsed)
+    new_claim_indexes = {
+        index
+        for index, planned_claim in enumerate(planned_claims)
+        if not any(
+            existing.day == planned_claim.day
+            and existing.character_id == planned_claim.character_id
+            and existing.claim_type == planned_claim.claim_type
+            and existing.claimed_role == planned_claim.claimed_role
+            and existing.target_id == planned_claim.target_id
+            and existing.result == planned_claim.result
+            for existing in game_state.public_claims
+        )
+    }
+    public_facts: list[PlayerSpeechPreviewEffectV1] = [
+        PlayerSpeechPreviewEffectV1(
+            kind="public_claim",
+            summary=claim.display_text,
+            target_id=claim.target_id,
+        )
+        for index, claim in enumerate(understanding.claims)
+        if index in new_claim_indexes
+    ]
+    if temporary_target_id is not None:
+        public_facts.append(
+            PlayerSpeechPreviewEffectV1(
+                kind="temporary_nomination",
+                summary=(
+                    "警长暂时归票给"
+                    + _preview_character_label(
+                        game_state,
+                        temporary_target_id,
+                    )
+                ),
+                target_id=temporary_target_id,
+            )
+        )
+    if normalized_badge_flow is not None:
+        public_facts.append(
+            PlayerSpeechPreviewEffectV1(
+                kind="badge_flow",
+                summary=normalized_badge_flow.canonical_text,
+                target_id=normalized_badge_flow.primary_target_id,
+            )
+        )
+
+    strategic_signals: list[PlayerSpeechPreviewEffectV1] = []
+    for accusation in understanding.accusations:
+        strategic_signals.append(
+            PlayerSpeechPreviewEffectV1(
+                kind="accusation",
+                summary=(
+                    "怀疑"
+                    + _preview_character_label(
+                        game_state,
+                        accusation.target_id,
+                    )
+                ),
+                target_id=accusation.target_id,
+            )
+        )
+    for kind, character_ids, prefix in (
+        ("support", understanding.supported_character_ids, "支持"),
+        ("opposition", understanding.opposed_character_ids, "反对"),
+    ):
+        strategic_signals.extend(
+            PlayerSpeechPreviewEffectV1(
+                kind=kind,
+                summary=prefix + _preview_character_label(game_state, character_id),
+                target_id=character_id,
+            )
+            for character_id in character_ids
+        )
+    if understanding.vote_intent_target_id is not None:
+        strategic_signals.append(
+            PlayerSpeechPreviewEffectV1(
+                kind="vote_intent",
+                summary=(
+                    "投票意向指向"
+                    + _preview_character_label(
+                        game_state,
+                        understanding.vote_intent_target_id,
+                    )
+                ),
+                target_id=understanding.vote_intent_target_id,
+            )
+        )
+    if understanding.witch_directive is not None:
+        directive = understanding.witch_directive
+        if directive.action == "poison" and directive.target_id is not None:
+            directive_summary = (
+                "建议女巫毒"
+                + _preview_character_label(game_state, directive.target_id)
+            )
+        else:
+            directive_summary = "建议女巫暂时保留毒药"
+        strategic_signals.append(
+            PlayerSpeechPreviewEffectV1(
+                kind="witch_directive",
+                summary=directive_summary,
+                target_id=directive.target_id,
+            )
+        )
+    structured_target_ids = {
+        int(effect.target_id)
+        for effect in public_facts + strategic_signals
+        if effect.target_id is not None
+    }
+    strategic_signals.extend(
+        PlayerSpeechPreviewEffectV1(
+            kind="mention",
+            summary="仅提到" + _preview_character_label(game_state, character_id),
+            target_id=character_id,
+        )
+        for character_id in understanding.mentioned_character_ids
+        if character_id not in structured_target_ids
+        and character_id != speaker.id
+    )
+
+    preview = PlayerSpeechPreviewResponseV1(
+        accepted=True,
+        game_id=game_state.game_id,
+        character_id=speaker.id,
+        speech_kind=speech_kind,
+        original_speech=original_speech,
+        canonical_speech=public_speech,
+        understanding=understanding,
+        public_facts_to_write=public_facts,
+        strategic_signals_to_apply=strategic_signals,
+        text_only_notes=[
+            "完整规范化发言会作为公开文本保存。",
+            "未列入公开事实或策略信号的措辞只保留为文本，不会自动变成身份、技能或行动事实。",
+        ],
+        normalized_badge_flow=normalized_badge_flow,
+    )
+    preview = preview.model_copy(
+        update={
+            "preview_fingerprint": build_player_speech_preview_fingerprint(
+                game_state,
+                preview,
+            )
+        }
+    )
+    return PreparedPlayerSpeech(
+        preview=preview,
+        parsed=parsed,
+        planned_claims=planned_claims,
+        temporary_target_id=temporary_target_id,
+    )
+
+
+def build_rejected_player_speech_preview(
+    game_state: WolfGameState,
+    request: PlayerSpeechPreviewRequest,
+    error: HTTPException,
+) -> PlayerSpeechPreviewResponseV1:
+    """Return a displayable rejection without granting any submit authority."""
+
+    speech = request.speech.strip()
+    parsed = (
+        parse_player_speech(
+            game_state,
+            speech,
+            speaker_id=request.character_id,
+        )
+        if speech
+        else ParsedPlayerSpeech()
+    )
+    return PlayerSpeechPreviewResponseV1(
+        accepted=False,
+        errors=[str(error.detail)],
+        game_id=game_state.game_id,
+        character_id=request.character_id,
+        speech_kind=request.speech_kind,
+        original_speech=speech,
+        canonical_speech=speech,
+        understanding=build_player_speech_understanding(game_state, parsed),
+        text_only_notes=[
+            "本次内容未获提交授权，也没有写入任何公开或私有状态。"
+        ],
+    )
+
+
+def validate_player_speech_preview_fingerprint(
+    provided_fingerprint: Optional[str],
+    prepared: PreparedPlayerSpeech,
+) -> None:
+    """Reject stale or edited confirmed previews; legacy clients reparse safely."""
+
+    if (
+        provided_fingerprint is not None
+        and provided_fingerprint != prepared.preview.preview_fingerprint
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="发言内容或对局状态已变化，请重新预览后再确认提交。",
+        )
 
 
 def apply_player_speech_updates(game_state: WolfGameState, parsed: ParsedPlayerSpeech) -> None:
@@ -8670,7 +11382,15 @@ def generate_current_npc_meeting_speech(
         witch_directive,
     )
     parsed_rule_speech = (
-        parse_player_speech(game_state, speech, speaker_id=speaker.id)
+        parse_player_speech(
+            game_state,
+            (
+                speech
+                if is_llm_validation_enabled(game_state)
+                else rule_speech
+            ),
+            speaker_id=speaker.id,
+        )
         if not structured_speech
         else None
     )
@@ -8903,6 +11623,14 @@ def is_low_information_public_speech(
 ) -> bool:
     """Conservatively identify an already-finished speech with no contribution."""
 
+    if is_unvalidated_npc_speech(game_state, speech):
+        return not (
+            speech.focus_target_id is not None
+            or speech.claim_count > 0
+            or bool(speech.decision_plan)
+            or bool(speech.evidence_titles)
+            or public_position_has_substance(speech.public_position)
+        )
     normalized = " ".join(speech.speech.split()).strip()
     if not normalized or len(normalized) > 56:
         return False
@@ -8939,6 +11667,39 @@ def is_low_information_public_speech(
         "不下结论",
     ]
     return any(marker in normalized for marker in passive_markers)
+
+
+def is_unvalidated_npc_speech(
+    game_state: WolfGameState,
+    speech: SpeechState,
+) -> bool:
+    return (
+        game_state.llm_enabled
+        and not is_llm_validation_enabled(game_state)
+        and not speech.is_player
+        and speech.llm_used
+    )
+
+
+def public_position_has_substance(
+    position: Optional[PublicPositionV1],
+) -> bool:
+    if position is None:
+        return False
+    return any(
+        [
+            bool(position.claimed_role),
+            position.seer_support_id is not None,
+            position.seer_oppose_id is not None,
+            bool(position.trusted_target_ids),
+            bool(position.suspected_target_ids),
+            position.provisional_vote_target_id is not None,
+            bool(position.basis_signal_ids),
+            position.question_target_id is not None,
+            position.change_condition_target_id is not None,
+            position.badge_flow_version is not None,
+        ]
+    )
 
 
 def build_public_decision_signals(
@@ -9686,26 +12447,41 @@ def build_actor_legal_knowledge(
             visibility="private",
         )
     ]
-    for index, claim in enumerate(game_state.public_claims[-16:], start=1):
-        claimant = get_character(game_state, claim.character_id)
+    public_timeline = build_public_evidence_timeline(game_state)
+    public_category_titles = {
+        "claim": "公开说法（真假未确认）",
+        "commitment": "公开承诺（尚未验真）",
+        "confirmed_action": "已确认公开动作",
+    }
+    for evidence_item in public_timeline.items[-24:]:
         items.append(
             DecisionKnowledgeV1(
-                id=f"public:claim:{index}:{claim.character_id}",
-                title=f"{claimant.name}的公开声明",
-                content=(
-                    f"{format_full_character_name(claimant)}"
-                    f"{build_public_claim_label(game_state, claim)}。"
-                ),
+                id=evidence_item.evidence_id,
+                title=public_category_titles[evidence_item.category],
+                content=evidence_item.display_text,
                 visibility="public",
             )
         )
 
-    for flow in game_state.badge_flows[-6:]:
+    public_analysis = build_public_evidence_analysis(
+        game_state,
+        public_timeline,
+    )
+    for commitment in public_analysis.commitments[-8:]:
         items.append(
             DecisionKnowledgeV1(
-                id=f"public:badge_flow:{flow.character_id}:v{flow.version}",
-                title="公开警徽流",
-                content=build_badge_flow_display_text(game_state, flow),
+                id=commitment.commitment_id,
+                title="公开承诺状态（不验真）",
+                content=commitment.display_text,
+                visibility="public",
+            )
+        )
+    for candidate in public_analysis.contradiction_candidates[-8:]:
+        items.append(
+            DecisionKnowledgeV1(
+                id=candidate.candidate_id,
+                title="公开矛盾候选（仅供核对）",
+                content=candidate.display_text,
                 visibility="public",
             )
         )
@@ -10158,13 +12934,35 @@ def enforce_received_seer_check_response_plan(
         return plan
 
     # A black check needs the clearest response, otherwise use the newest gold.
-    primary_signal, primary_claim = next(
+    # If the wolf team has already committed to a public sacrifice, keep that
+    # claimant as the primary response and use the secondary target plus signal
+    # ids to acknowledge the other check. Replacing the primary target here
+    # would contradict the rule-owned wolf story even though both claims remain
+    # visible as neutral public facts.
+    wolf_story_source_ids = set(
+        get_wolf_teammate_black_check_sources(game_state, speaker.id)
+    )
+    preferred_story_pair = next(
         (
             pair
             for pair in reversed(signal_claim_pairs)
-            if pair[1].result == "werewolf"
+            if pair[0].actor_id == plan.primary_target_id
+            and pair[0].actor_id in wolf_story_source_ids
+            and pair[1].result == "werewolf"
         ),
-        signal_claim_pairs[-1],
+        None,
+    )
+    primary_signal, primary_claim = (
+        preferred_story_pair
+        if preferred_story_pair is not None
+        else next(
+            (
+                pair
+                for pair in reversed(signal_claim_pairs)
+                if pair[1].result == "werewolf"
+            ),
+            signal_claim_pairs[-1],
+        )
     )
     source_id = int(primary_signal.actor_id)
     other_source_ids = [
@@ -10930,6 +13728,31 @@ def generate_structured_public_speech_plan(
             fallback_decision,
         )
 
+    if not is_llm_validation_enabled(game_state):
+        expression_result = generate_public_speech_llm_text(
+            game_state,
+            speaker,
+            fallback_selected_target,
+            fallback_rule_text,
+            fallback_rag_context,
+            fallback_selected_claims,
+            decision_intent=fallback_decision.intent.value,
+            selected_signals=fallback_selected_signals,
+            decision_plan=fallback_decision,
+        )
+        expression_result = attach_structured_decision_intent(
+            expression_result,
+            fallback_decision.intent,
+            fallback_decision.signal_ids,
+        )
+        return (
+            fallback_selected_target,
+            fallback_selected_claims,
+            fallback_rag_context,
+            expression_result,
+            fallback_decision,
+        )
+
     context_payload = decision_context.model_dump(mode="json")
     context_payload["continuity"] = continuity_context.model_dump(mode="json")
     required_received_signals = get_required_received_seer_check_signals(
@@ -11033,8 +13856,9 @@ def generate_structured_public_speech_plan(
     )
     attempts: list[dict[str, object]] = []
     last_reason = "LLM did not return a usable structured public-speech strategy"
+    validation_attempt_limit = get_llm_validation_attempt_limit(game_state)
 
-    for attempt_number in range(1, MAX_LLM_VALIDATION_ATTEMPTS + 1):
+    for attempt_number in range(1, validation_attempt_limit + 1):
         attempt_context = dict(context_payload)
         prompt = system_prompt
         if attempts:
@@ -11296,7 +14120,7 @@ def generate_structured_public_speech_plan(
     fallback = rule_llm_generation(
         fallback_rule_text,
         (
-            f"validation failed after {MAX_LLM_VALIDATION_ATTEMPTS} attempts: "
+            f"validation failed after {validation_attempt_limit} attempts: "
             f"{last_reason}"
         ),
     )
@@ -11594,14 +14418,21 @@ def generate_structured_speech_voice_prefix(
         "阵营、查验、技能、夜间结果、公开动作、投票、立场或判断，也不要复述策略。"
         "只返回 JSON 对象，格式为 {\"text\": \"开场语气\"}。"
     )
+    if not is_llm_validation_enabled(game_state):
+        return rule_llm_generation(
+            rule_text,
+            "voice-prefix validation layer is bypassed for unvalidated output",
+        )
+
     attempts: list[dict[str, object]] = []
     last_reason = "LLM did not return a safe voice prefix"
+    validation_attempt_limit = get_llm_validation_attempt_limit(game_state)
     forbidden_pattern = re.compile(
         r"\d|号|狼人|好人|预言家|女巫|猎人|守卫|村民|查验|查杀|金水|"
         r"守护|毒|救|昨夜|今晚|今天|上警|退水|警徽|出局|放逐|投|票|"
         r"支持|反对|怀疑|站边|私聊|队友"
     )
-    for attempt_number in range(1, MAX_LLM_VALIDATION_ATTEMPTS + 1):
+    for attempt_number in range(1, validation_attempt_limit + 1):
         attempt_context = dict(context)
         if attempts:
             attempt_context["validation_feedback"] = {
@@ -11670,7 +14501,7 @@ def generate_structured_speech_voice_prefix(
 
     fallback = rule_llm_generation(
         rule_text,
-        f"validation failed after {MAX_LLM_VALIDATION_ATTEMPTS} attempts: {last_reason}",
+        f"validation failed after {validation_attempt_limit} attempts: {last_reason}",
     )
     fallback.validation_attempts = attempts
     fallback.validation_failure_id = record_llm_validation_failure(
@@ -11694,7 +14525,7 @@ def generate_public_speech_llm_text(
 ) -> LLMGeneration:
     if not game_state.llm_enabled:
         return rule_llm_generation(rule_text, "LLM is disabled for this game")
-    if decision_plan is not None:
+    if decision_plan is not None and is_llm_validation_enabled(game_state):
         return generate_structured_speech_voice_prefix(
             game_state,
             speaker,
@@ -11839,10 +14670,19 @@ def generate_validated_llm_rewrite(
     )
     base_context = dict(context)
     base_context["validation_contract"] = validation_contract
+    if not is_llm_validation_enabled(game_state):
+        return LLM_CLIENT.generate_json_text(
+            system_prompt,
+            base_context,
+            rule_text,
+            max_attempts=1,
+        )
+
     attempts: list[dict[str, object]] = []
     last_reason = "LLM did not return a usable answer"
+    validation_attempt_limit = get_llm_validation_attempt_limit(game_state)
 
-    for attempt_number in range(1, MAX_LLM_VALIDATION_ATTEMPTS + 1):
+    for attempt_number in range(1, validation_attempt_limit + 1):
         attempt_context = dict(base_context)
         if attempts:
             attempt_context["validation_feedback"] = {
@@ -11930,7 +14770,7 @@ def generate_validated_llm_rewrite(
 
     fallback = rule_llm_generation(
         rule_text,
-        f"validation failed after {MAX_LLM_VALIDATION_ATTEMPTS} attempts: {last_reason}",
+        f"validation failed after {validation_attempt_limit} attempts: {last_reason}",
     )
     fallback.validation_attempts = attempts
     fallback.validation_failure_id = record_llm_validation_failure(
@@ -12133,7 +14973,7 @@ def record_llm_validation_failure(
         {
             "recorded_at": datetime.now(timezone.utc).isoformat(),
             "validator_version": LLM_VALIDATOR_VERSION,
-            "status": "fallback_after_five_attempts",
+            "status": f"fallback_after_{len(attempts)}_validation_attempts",
             **failure.model_dump(),
         }
     )
@@ -12193,6 +15033,7 @@ def record_llm_validation_observation(
             model=status.get("model", "unknown"),
             outcome=outcome,
             attempts=attempts,
+            config_fingerprint=status.get("config_fingerprint"),
         )
         LLM_OBSERVABILITY_RECORDER.record_event(event)
     except Exception:
@@ -15244,8 +18085,726 @@ def build_winner_message(winner: str, reason: str = "") -> str:
     return "游戏结束。"
 
 
+def build_post_game_explainable_review(
+    game_state: WolfGameState,
+) -> PostGameExplainableReviewV1:
+    """Explain persisted choices without pretending to reconstruct thoughts.
+
+    Public evidence from completed earlier days is the conservative knowledge
+    boundary.  Same-day selected signals and RAG titles appear only when they
+    were persisted with the decision itself.  Role truth is appended after the
+    winner has been sealed and never flows back into live game state.
+    """
+
+    if game_state.phase != "GAME_OVER" or game_state.winner is None:
+        raise ValueError("post-game explanations require a sealed terminal game")
+
+    public_timeline = build_public_evidence_timeline(game_state)
+    signal_summaries = {
+        signal.id: signal.summary
+        for signal in build_public_decision_signals(game_state)
+    }
+    false_wolf_claim_targets: dict[str, int] = {}
+    for claim in game_state.public_claims:
+        if (
+            claim.claim_type != "seer_check"
+            or claim.target_id is None
+            or claim.result not in {"good", "werewolf"}
+        ):
+            continue
+        claimant = get_character(game_state, claim.character_id)
+        target = get_character(game_state, claim.target_id)
+        signal_id = (
+            f"signal:seer_check_claim:{claim.day}:"
+            f"{claimant.id}:{target.id}:{claim.result}"
+        )
+        signal_summaries.setdefault(
+            signal_id,
+            (
+                f"第{claim.day}天，{format_full_character_name(claimant)}"
+                f"公开称验{format_full_character_name(target)}为"
+                f"{'查杀' if claim.result == 'werewolf' else '金水'}。"
+            ),
+        )
+        truth_result = "werewolf" if target.camp == "werewolf" else "good"
+        if claimant.camp == "werewolf" and claim.result != truth_result:
+            false_wolf_claim_targets[signal_id] = target.id
+
+    review_drafts: list[tuple[int, int, int, PostGameDecisionReviewV1]] = []
+
+    def unique_texts(values: list[str], limit: int = 8) -> list[str]:
+        result: list[str] = []
+        for value in values:
+            normalized = str(value).strip()
+            if normalized and normalized not in result:
+                result.append(normalized)
+            if len(result) >= limit:
+                break
+        return result
+
+    def public_evidence_references(
+        *,
+        day: int,
+        actor_id: int,
+        target_id: Optional[int],
+        relation: Literal["prior_public", "later_public"],
+    ) -> list[PostGameEvidenceReferenceV1]:
+        related_ids = {actor_id}
+        if target_id is not None:
+            related_ids.add(target_id)
+        if relation == "prior_public":
+            candidates = [
+                item
+                for item in public_timeline.items
+                if item.day < day
+                and related_ids.intersection(item.related_character_ids)
+            ][-6:]
+        else:
+            candidates = [
+                item
+                for item in public_timeline.items
+                if item.day > day
+                and related_ids.intersection(item.related_character_ids)
+            ][:6]
+        return [
+            PostGameEvidenceReferenceV1(
+                evidence_id=item.evidence_id,
+                day=item.day,
+                relation=relation,
+                display_text=item.display_text,
+            )
+            for item in candidates
+        ]
+
+    def position_read(
+        position: Optional[PublicPositionV1],
+    ) -> tuple[Optional[int], Optional[str]]:
+        if position is None:
+            return None, None
+        for target_id in [
+            position.provisional_vote_target_id,
+            position.seer_oppose_id,
+            *position.suspected_target_ids,
+        ]:
+            if target_id is not None:
+                return target_id, "oppose"
+        for target_id in [
+            position.seer_support_id,
+            *position.trusted_target_ids,
+        ]:
+            if target_id is not None:
+                return target_id, "support"
+        return None, None
+
+    def plan_read(
+        speech: SpeechState,
+    ) -> tuple[Optional[int], Optional[str], str]:
+        payload = speech.decision_plan
+        if not payload:
+            return None, None, ""
+        stance = str(payload.get("stance", ""))
+        target_id = payload.get("stance_target_id")
+        if not isinstance(target_id, int) or isinstance(target_id, bool):
+            target_id = None
+        if stance not in {"support", "oppose"}:
+            provisional_target_id = payload.get("provisional_vote_target_id")
+            if (
+                isinstance(provisional_target_id, int)
+                and not isinstance(provisional_target_id, bool)
+            ):
+                target_id = provisional_target_id
+                stance = "oppose"
+            else:
+                stance = ""
+        return target_id, stance or None, str(
+            payload.get("continuity_reason", "")
+        )
+
+    def speech_read(
+        speech: SpeechState,
+    ) -> tuple[Optional[int], Optional[str], str]:
+        target_id, direction = position_read(speech.public_position)
+        plan_target_id, plan_direction, continuity_reason = plan_read(speech)
+        if target_id is None:
+            target_id, direction = plan_target_id, plan_direction
+        if target_id is None and speech.focus_target_id is not None:
+            target_id = speech.focus_target_id
+        return target_id, direction, continuity_reason
+
+    def selected_speech_signal_ids(speech: SpeechState) -> list[str]:
+        selected = list(speech.decision_signal_ids)
+        plan_signal_ids = speech.decision_plan.get("signal_ids", [])
+        continuity_signal_ids = speech.decision_plan.get(
+            "continuity_signal_ids",
+            [],
+        )
+        if isinstance(plan_signal_ids, list):
+            selected.extend(str(item) for item in plan_signal_ids)
+        if isinstance(continuity_signal_ids, list):
+            selected.extend(str(item) for item in continuity_signal_ids)
+        if speech.public_position is not None:
+            selected.extend(speech.public_position.basis_signal_ids)
+        return unique_texts(selected, limit=12)
+
+    def speech_basis(speech: SpeechState) -> list[str]:
+        basis: list[str] = []
+        if speech.evidence_titles:
+            basis.append("公开 RAG 证据：" + "、".join(speech.evidence_titles[:3]))
+        for signal_id in selected_speech_signal_ids(speech)[:3]:
+            summary = signal_summaries.get(signal_id)
+            basis.append(
+                "已选公开信号：" + (summary if summary is not None else signal_id)
+            )
+        evidence_ids = speech.decision_plan.get("evidence_ids", [])
+        if isinstance(evidence_ids, list) and evidence_ids:
+            basis.append(
+                "计划保存的证据 ID："
+                + "、".join(str(item) for item in evidence_ids[:3])
+            )
+        continuity_reason = str(
+            speech.decision_plan.get("continuity_reason", "")
+        )
+        if continuity_reason:
+            basis.append("连续性原因：" + continuity_reason)
+        if speech.public_position is not None:
+            basis.append(
+                "公开立场卡："
+                + render_public_position_summary(game_state, speech.public_position)
+            )
+        if not basis:
+            basis.append("本条记录没有保存结构化决策依据。")
+        return unique_texts(basis)
+
+    def previous_opposite_position(
+        speech_index: int,
+        actor_id: int,
+        target_id: int,
+        direction: str,
+    ) -> bool:
+        for previous in reversed(game_state.speeches[:speech_index]):
+            if previous.character_id != actor_id:
+                continue
+            previous_target_id, previous_direction, _reason = speech_read(previous)
+            if previous_target_id == target_id and previous_direction is not None:
+                return previous_direction != direction
+        return False
+
+    def selected_false_claim(
+        speech: SpeechState,
+        target_id: int,
+    ) -> bool:
+        return any(
+            false_wolf_claim_targets.get(signal_id) == target_id
+            for signal_id in selected_speech_signal_ids(speech)
+        )
+
+    def category_explanation(
+        assessment: str,
+        error_category: str,
+    ) -> str:
+        if assessment == "accurate":
+            return "赛后真值与这次选择的方向一致。"
+        if assessment == "strategic":
+            return "该角色属于狼人阵营，这次选择按阵营策略记录，不按好人识狼正确率评分。"
+        if assessment == "neutral":
+            return "这次行动本身用于获取信息或未形成可判对错的结果，因此保持中性。"
+        if assessment == "unscored":
+            return "记录中没有足够的结构化目标与方向，不能可靠判断这次表达是否正确。"
+        explanations = {
+            "deceived": "赛后真值与判断相反，且保存的依据中含有狼人制造的失实公开验人。",
+            "insufficient_evidence": "赛后真值与判断相反；现有记录不足以证明存在更具体的错误来源。",
+            "continuity_break": "赛后真值与判断相反，且选择偏离已保存的上一立场或暂票，未留下可核验的结构化改动依据。",
+            "skill_misuse": "赛后真值显示角色技能落在了好人目标上，按技能误用归类。",
+            "deterministic_variance": "赛后真值与判断相反，但计划明确记录了规则允许的确定性概率扰动。",
+        }
+        return explanations[error_category]
+
+    def append_review(
+        *,
+        day: int,
+        phase_rank: int,
+        source_index: int,
+        source_family: str,
+        decision_kind: str,
+        phase: str,
+        actor: CharacterState,
+        target: Optional[CharacterState],
+        decision_summary: str,
+        recorded_basis: list[str],
+        assessment: str,
+        error_category: str,
+        truth_summary: str,
+    ) -> None:
+        source_ref = f"{source_family}:{source_index + 1}"
+        target_id = target.id if target is not None else None
+        prior_evidence = public_evidence_references(
+            day=day,
+            actor_id=actor.id,
+            target_id=target_id,
+            relation="prior_public",
+        )
+        later_evidence = public_evidence_references(
+            day=day,
+            actor_id=actor.id,
+            target_id=target_id,
+            relation="later_public",
+        )
+        evidence_note = (
+            f" 后续另有 {len(later_evidence)} 条跨日公开记录可供核对。"
+            if later_evidence
+            else " 没有匹配到更晚日期的相关公开记录；结论只依赖明确标注的赛后真值。"
+        )
+        review_drafts.append(
+            (
+                day,
+                phase_rank,
+                source_index,
+                PostGameDecisionReviewV1(
+                    review_id=build_post_game_review_id(
+                        decision_kind=decision_kind,
+                        source_ref=source_ref,
+                        day=day,
+                        actor_id=actor.id,
+                        target_id=target_id,
+                    ),
+                    sequence=1,
+                    source_ref=source_ref,
+                    day=day,
+                    phase=phase,
+                    decision_kind=decision_kind,
+                    actor_id=actor.id,
+                    actor_name=actor.name,
+                    actor_role=actor.role,
+                    actor_camp=actor.camp,
+                    target_id=target_id,
+                    target_name=target.name if target is not None else "",
+                    target_role=target.role if target is not None else "",
+                    target_camp=target.camp if target is not None else "",
+                    decision_summary=decision_summary,
+                    prior_public_evidence=prior_evidence,
+                    recorded_basis=unique_texts(recorded_basis),
+                    later_public_evidence=later_evidence,
+                    assessment=assessment,
+                    error_category=error_category,
+                    truth_summary=truth_summary,
+                    explanation=(
+                        category_explanation(assessment, error_category)
+                        + evidence_note
+                    ),
+                ),
+            )
+        )
+
+    for speech_index, speech in enumerate(game_state.speeches):
+        actor = get_character(game_state, speech.character_id)
+        target_id, direction, continuity_reason = speech_read(speech)
+        target = (
+            get_character(game_state, target_id)
+            if target_id is not None
+            else None
+        )
+        if actor.camp == "werewolf":
+            assessment, error_category = "strategic", "not_applicable"
+        elif target is None or direction is None:
+            assessment, error_category = "unscored", "not_applicable"
+        else:
+            direction_matches_truth = (
+                direction == "oppose" and target.camp == "werewolf"
+            ) or (direction == "support" and target.camp == "good")
+            if direction_matches_truth:
+                assessment, error_category = "accurate", "none"
+            else:
+                assessment = "mistaken"
+                if continuity_reason == "deterministic_variance":
+                    error_category = "deterministic_variance"
+                elif selected_false_claim(speech, target.id):
+                    error_category = "deceived"
+                elif previous_opposite_position(
+                    speech_index,
+                    actor.id,
+                    target.id,
+                    direction,
+                ) and continuity_reason not in {
+                    "new_public_evidence",
+                    "authorized_claim",
+                    "mandatory_rule_response",
+                }:
+                    error_category = "continuity_break"
+                else:
+                    error_category = "insufficient_evidence"
+        direction_label = {"oppose": "质疑", "support": "支持"}.get(
+            direction or "",
+            "未形成可评分立场",
+        )
+        target_label = (
+            format_full_character_name(target) if target is not None else "具体角色"
+        )
+        truth_summary = (
+            f"赛后真值：{format_full_character_name(actor)}是"
+            f"{ROLE_LABELS.get(actor.role, actor.role)}（"
+            f"{'狼人阵营' if actor.camp == 'werewolf' else '好人阵营'}）"
+        )
+        if target is not None:
+            truth_summary += (
+                f"；{format_full_character_name(target)}是"
+                f"{ROLE_LABELS.get(target.role, target.role)}（"
+                f"{'狼人阵营' if target.camp == 'werewolf' else '好人阵营'}）。"
+            )
+        else:
+            truth_summary += "；本条没有可核验的结构化目标。"
+        append_review(
+            day=speech.day,
+            phase_rank=17 if speech.phase.startswith("SHERIFF") else 20,
+            source_index=speech_index,
+            source_family="speech",
+            decision_kind="public_speech",
+            phase=speech.phase,
+            actor=actor,
+            target=target,
+            decision_summary=(
+                f"{format_full_character_name(actor)}公开发言并{direction_label}"
+                f"{target_label}：{truncate_display_text(speech.speech, 120)}"
+            ),
+            recorded_basis=speech_basis(speech),
+            assessment=assessment,
+            error_category=error_category,
+            truth_summary=truth_summary,
+        )
+
+    for vote_index, vote in enumerate(game_state.votes):
+        actor = get_character(game_state, vote.voter_id)
+        target = get_character(game_state, vote.target_id)
+        latest_speech = next(
+            (
+                speech
+                for speech in reversed(game_state.speeches)
+                if speech.day == vote.day
+                and speech.character_id == actor.id
+                and speech.phase == "DAY_MEETING"
+            ),
+            None,
+        )
+        basis = []
+        if vote.reason.strip():
+            basis.append("投票理由：" + vote.reason.strip())
+        if vote.evidence_titles:
+            basis.append("公开 RAG 证据：" + "、".join(vote.evidence_titles[:3]))
+        if latest_speech is not None and latest_speech.public_position is not None:
+            basis.append(
+                "同日最后公开立场卡："
+                + render_public_position_summary(
+                    game_state,
+                    latest_speech.public_position,
+                )
+            )
+        if not basis:
+            basis.append("本票没有保存结构化理由。")
+
+        if actor.camp == "werewolf":
+            assessment, error_category = "strategic", "not_applicable"
+        elif target.camp == "werewolf":
+            assessment, error_category = "accurate", "none"
+        else:
+            assessment = "mistaken"
+            latest_plan_reason = ""
+            planned_vote_target_id: Optional[int] = None
+            if latest_speech is not None:
+                latest_plan_reason = str(
+                    latest_speech.decision_plan.get("continuity_reason", "")
+                )
+                raw_planned_target = latest_speech.decision_plan.get(
+                    "provisional_vote_target_id"
+                )
+                if (
+                    isinstance(raw_planned_target, int)
+                    and not isinstance(raw_planned_target, bool)
+                ):
+                    planned_vote_target_id = raw_planned_target
+            position_vote_target_id = (
+                latest_speech.public_position.provisional_vote_target_id
+                if latest_speech is not None
+                and latest_speech.public_position is not None
+                else None
+            )
+            if (
+                latest_plan_reason == "deterministic_variance"
+                and planned_vote_target_id == target.id
+            ):
+                error_category = "deterministic_variance"
+            elif latest_speech is not None and selected_false_claim(
+                latest_speech,
+                target.id,
+            ):
+                error_category = "deceived"
+            elif (
+                position_vote_target_id is not None
+                and position_vote_target_id != target.id
+            ):
+                error_category = "continuity_break"
+            else:
+                error_category = "insufficient_evidence"
+        append_review(
+            day=vote.day,
+            phase_rank=40,
+            source_index=vote_index,
+            source_family="vote",
+            decision_kind="exile_vote",
+            phase="VOTE",
+            actor=actor,
+            target=target,
+            decision_summary=(
+                f"{format_full_character_name(actor)}投给"
+                f"{format_full_character_name(target)}（票值 {vote.weight:g}）。"
+            ),
+            recorded_basis=basis,
+            assessment=assessment,
+            error_category=error_category,
+            truth_summary=(
+                f"赛后真值：投票目标{format_full_character_name(target)}是"
+                f"{ROLE_LABELS.get(target.role, target.role)}（"
+                f"{'狼人阵营' if target.camp == 'werewolf' else '好人阵营'}）。"
+            ),
+        )
+
+    witch_reason_labels = {
+        "first_night_self_save": "首夜自救规则策略",
+        "first_night_save_99": "首夜按 99% 保存策略使用解药",
+        "first_night_save_skip": "首夜概率策略选择不用解药",
+        "accepted_hold": "接受公开的留毒建议",
+        "accepted_poison": "接受公开的用毒建议",
+        "own_suspicion": "依据自身合法怀疑值选择目标",
+        "poison_unavailable": "毒药不可用",
+        "no_legal_target": "没有合法目标",
+    }
+    for action_index, action in enumerate(game_state.night_actions):
+        actor = get_character(game_state, action.actor_id)
+        target = (
+            get_character(game_state, action.target_id)
+            if action.target_id is not None
+            else None
+        )
+        resolution = next(
+            (
+                item
+                for item in game_state.night_resolutions
+                if item.day == action.day
+            ),
+            None,
+        )
+        witch_decision = next(
+            (
+                item
+                for item in reversed(game_state.witch_strategy_decisions)
+                if item.day == action.day
+                and item.actor_id == actor.id
+                and item.action_type == action.action_type
+                and item.target_id == action.target_id
+            ),
+            None,
+        )
+        basis = [
+            f"合法私有视图：行动者知道自己的身份是{ROLE_LABELS.get(actor.role, actor.role)}。"
+        ]
+        if action.action_type == "seer_check":
+            basis.append("查验前不知道目标的真实身份；目标由已保存的规则策略选择。")
+        elif action.action_type == "guard_protect":
+            basis.append("守护目标通过 Python 的存活与连续守护规则校验。")
+        elif action.action_type == "werewolf_kill":
+            basis.append("狼人只在狼队合法私有视图内选择袭击目标。")
+        if witch_decision is not None:
+            basis.append(
+                "女巫策略记录："
+                + witch_reason_labels.get(witch_decision.reason, witch_decision.reason)
+                + "。"
+            )
+            if witch_decision.directive_actor_id is not None:
+                directive_actor = get_character(
+                    game_state,
+                    witch_decision.directive_actor_id,
+                )
+                basis.append(
+                    "公开建议来源："
+                    f"{format_full_character_name(directive_actor)}；"
+                    f"接受={str(witch_decision.directive_accepted).lower()}。"
+                )
+
+        if action.action_type == "werewolf_kill":
+            assessment, error_category = "strategic", "not_applicable"
+        elif action.action_type == "seer_check":
+            if target is not None and target.camp == "werewolf":
+                assessment, error_category = "accurate", "none"
+            else:
+                assessment, error_category = "neutral", "not_applicable"
+        elif action.action_type == "guard_protect":
+            blocked = (
+                target is not None
+                and resolution is not None
+                and resolution.attacked_target_id == target.id
+                and target.id in resolution.protected_ids
+                and resolution.saved_target_id != target.id
+            )
+            if blocked:
+                assessment, error_category = "accurate", "none"
+            else:
+                assessment, error_category = "neutral", "not_applicable"
+        elif action.action_type == "witch_poison" and target is not None:
+            if target.camp == "werewolf":
+                assessment, error_category = "accurate", "none"
+            else:
+                assessment = "mistaken"
+                directive_actor = (
+                    get_character(game_state, witch_decision.directive_actor_id)
+                    if witch_decision is not None
+                    and witch_decision.directive_actor_id is not None
+                    else None
+                )
+                if (
+                    witch_decision is not None
+                    and witch_decision.directive_accepted
+                    and directive_actor is not None
+                    and directive_actor.camp == "werewolf"
+                ):
+                    error_category = "deceived"
+                else:
+                    error_category = "skill_misuse"
+        elif action.action_type == "witch_save":
+            if (
+                target is not None
+                and resolution is not None
+                and resolution.saved_target_id == target.id
+            ):
+                assessment, error_category = "accurate", "none"
+            else:
+                assessment, error_category = "neutral", "not_applicable"
+        else:
+            assessment, error_category = "neutral", "not_applicable"
+
+        action_label = {
+            "werewolf_kill": "选择袭击",
+            "seer_check": "选择查验",
+            "guard_protect": "选择守护",
+            "witch_save": "使用解药救",
+            "witch_poison": "使用毒药攻击",
+            "none": "选择不发动身份技能",
+        }.get(action.action_type, action.action_type)
+        target_label = (
+            format_full_character_name(target) if target is not None else "无目标"
+        )
+        truth_summary = (
+            f"赛后真值：{format_full_character_name(actor)}是"
+            f"{ROLE_LABELS.get(actor.role, actor.role)}"
+        )
+        if target is not None:
+            truth_summary += (
+                f"；目标{format_full_character_name(target)}是"
+                f"{ROLE_LABELS.get(target.role, target.role)}（"
+                f"{'狼人阵营' if target.camp == 'werewolf' else '好人阵营'}）。"
+            )
+        else:
+            truth_summary += "；本次没有目标。"
+        append_review(
+            day=action.day,
+            phase_rank=10,
+            source_index=action_index,
+            source_family="night_action",
+            decision_kind="night_action",
+            phase="NIGHT",
+            actor=actor,
+            target=target,
+            decision_summary=(
+                f"{format_full_character_name(actor)}{action_label}{target_label}。"
+            ),
+            recorded_basis=basis,
+            assessment=assessment,
+            error_category=error_category,
+            truth_summary=truth_summary,
+        )
+
+    for shot_index, shot in enumerate(game_state.hunter_shots):
+        actor = get_character(game_state, shot.hunter_id)
+        target = (
+            get_character(game_state, shot.target_id)
+            if shot.target_id is not None
+            else None
+        )
+        if target is None:
+            assessment, error_category = "neutral", "not_applicable"
+            decision_summary = (
+                f"{format_full_character_name(actor)}出局后选择不开枪。"
+            )
+            truth_summary = "赛后真值：本次没有开枪目标。"
+        elif target.camp == "werewolf":
+            assessment, error_category = "accurate", "none"
+            decision_summary = (
+                f"{format_full_character_name(actor)}开枪带走"
+                f"{format_full_character_name(target)}。"
+            )
+            truth_summary = (
+                f"赛后真值：目标{format_full_character_name(target)}是狼人。"
+            )
+        else:
+            assessment, error_category = "mistaken", "skill_misuse"
+            decision_summary = (
+                f"{format_full_character_name(actor)}开枪带走"
+                f"{format_full_character_name(target)}。"
+            )
+            truth_summary = (
+                f"赛后真值：目标{format_full_character_name(target)}是"
+                f"{ROLE_LABELS.get(target.role, target.role)}（好人阵营）。"
+            )
+        append_review(
+            day=shot.day,
+            phase_rank=15 if shot.trigger == "night" else 46,
+            source_index=shot_index,
+            source_family="hunter_shot",
+            decision_kind="hunter_shot",
+            phase="HUNTER_SHOT",
+            actor=actor,
+            target=target,
+            decision_summary=decision_summary,
+            recorded_basis=[
+                "Python 已校验猎人出局后的合法开枪窗口。",
+                "当前存档没有保存猎人选择该目标的结构化理由。",
+            ],
+            assessment=assessment,
+            error_category=error_category,
+            truth_summary=truth_summary,
+        )
+
+    ordered_drafts = sorted(
+        review_drafts,
+        key=lambda draft: (draft[0], draft[1], draft[2], draft[3].review_id),
+    )
+    items = [
+        draft[3].model_copy(update={"sequence": sequence})
+        for sequence, draft in enumerate(ordered_drafts, start=1)
+    ]
+    assessment_counts = {
+        key: sum(item.assessment == key for item in items)
+        for key in ASSESSMENT_KEYS
+    }
+    error_category_counts = {
+        key: sum(item.error_category == key for item in items)
+        for key in ERROR_CATEGORY_KEYS
+    }
+    return PostGameExplainableReviewV1(
+        game_id=game_state.game_id,
+        generated_from_event_sequence=public_timeline.projected_event_sequence,
+        review_count=len(items),
+        assessment_counts=assessment_counts,
+        error_category_counts=error_category_counts,
+        items=items,
+        disclaimer=(
+            "以下内容仅在 GAME_OVER 后解锁真实身份与阵营。‘当时知道什么’只取已保存的"
+            "结构化依据和更早日期的公开证据；旧集合没有逐条同日事件序号，因此本复盘不"
+            "臆测未记录的心理活动，也不把同日集合顺序冒充精确因果。"
+        ),
+    )
+
+
 def build_game_summary(game_state: WolfGameState) -> GameSummaryResponse:
     timeline = build_game_summary_timeline(game_state)
+    explainable_review = build_post_game_explainable_review(game_state)
     character_summaries = []
     for character in game_state.characters:
         character_summaries.append(
@@ -15274,6 +18833,7 @@ def build_game_summary(game_state: WolfGameState) -> GameSummaryResponse:
         winner_message=build_winner_message(winner, game_state.winner_reason),
         characters=character_summaries,
         timeline=timeline,
+        explainable_review=explainable_review,
         llm_validation_failures=[
             view
             for failure in game_state.llm_validation_failures
@@ -15501,18 +19061,32 @@ def format_full_character_name(character: CharacterState) -> str:
 
 
 def build_role_pool(roles: dict[str, int]) -> list[str]:
-    role_pool = []
+    role_pool: list[str] = []
     for role, count in roles.items():
         if role not in CAMP_BY_ROLE:
             raise HTTPException(status_code=400, detail=f"未知身份：{role}")
         if count < 0:
             raise HTTPException(status_code=400, detail=f"身份数量不能为负数：{role}")
+
+    canonical_roles = [
+        role for role in DEFAULT_WOLF_ROLES if role in roles
+    ] + sorted(set(roles) - set(DEFAULT_WOLF_ROLES))
+    for role in canonical_roles:
+        count = roles[role]
         role_pool.extend([role] * count)
     return role_pool
 
 
 def build_game_id() -> str:
-    return f"game_{len(GAME_STORE) + 1:03d}"
+    with GAME_SAVE_LOCK:
+        saved_game_ids = set(GAME_SAVE_STORE.list_game_ids())
+    used_game_ids = set(GAME_STORE) | saved_game_ids
+    sequence = 1
+    while True:
+        candidate = f"game_{sequence:03d}"
+        if candidate not in used_game_ids:
+            return candidate
+        sequence += 1
 
 
 def get_character_by_id(characters: list[CharacterState], character_id: int) -> CharacterState:

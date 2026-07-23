@@ -17,8 +17,12 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
 from backend.app.simulation import (  # noqa: E402
+    DEFAULT_PLAYER_STRATEGY,
     DEFAULT_MAX_DAYS,
     DEFAULT_MAX_STEPS,
+    PLAYER_BENCHMARK_SCHEMA_VERSION,
+    PLAYER_STRATEGY_TIERS,
+    run_player_strategy_benchmark,
     run_rule_simulation_batch,
 )
 
@@ -42,12 +46,34 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--seed", type=int, default=1, help="first non-negative game seed")
-    parser.add_argument("--games", type=int, default=1, help="number of sequential seeds")
+    parser.add_argument(
+        "--games",
+        type=int,
+        default=1,
+        help=(
+            "number of sequential games, or seeds per fixed role when "
+            "--benchmark-player-strategies is used"
+        ),
+    )
     parser.add_argument(
         "--player-role",
         choices=PLAYER_ROLE_CHOICES,
         default="random",
         help="fixed simulated player role or random",
+    )
+    parser.add_argument(
+        "--player-strategy",
+        choices=PLAYER_STRATEGY_TIERS,
+        default=DEFAULT_PLAYER_STRATEGY,
+        help="offline simulated player tier; standard preserves the V3 baseline",
+    )
+    parser.add_argument(
+        "--benchmark-player-strategies",
+        action="store_true",
+        help=(
+            "run beginner/standard/expert on the same seeds for all six fixed "
+            "roles; detailed belief/stance/vote traces are disabled"
+        ),
     )
     parser.add_argument("--max-days", type=int, default=DEFAULT_MAX_DAYS)
     parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS)
@@ -67,6 +93,14 @@ def parse_args() -> argparse.Namespace:
         help="omit M15-A/B vote probability traces and batch summary",
     )
     parser.add_argument(
+        "--include-event-logs",
+        action="store_true",
+        help=(
+            "include full V4.2 event arrays in batch JSON; replay verification "
+            "and event summaries are always retained"
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         help="optional JSON file; stdout is used when omitted",
@@ -76,19 +110,40 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    report = run_rule_simulation_batch(
-        args.seed,
-        args.games,
-        player_role=args.player_role,
-        max_days=args.max_days,
-        max_steps=args.max_steps,
-        capture_beliefs=not args.no_belief_trace,
-        capture_stances=(
-            not args.no_belief_trace
-            and not args.no_stance_trace
-        ),
-        capture_vote_calibration=not args.no_vote_calibration_trace,
-    )
+    if args.benchmark_player_strategies:
+        if args.player_role != "random":
+            raise SystemExit(
+                "--player-role cannot be combined with "
+                "--benchmark-player-strategies"
+            )
+        if args.player_strategy != DEFAULT_PLAYER_STRATEGY:
+            raise SystemExit(
+                "--player-strategy cannot be combined with "
+                "--benchmark-player-strategies"
+            )
+        report = run_player_strategy_benchmark(
+            args.seed,
+            args.games,
+            max_days=args.max_days,
+            max_steps=args.max_steps,
+            capture_event_logs=args.include_event_logs,
+        )
+    else:
+        report = run_rule_simulation_batch(
+            args.seed,
+            args.games,
+            player_role=args.player_role,
+            player_strategy=args.player_strategy,
+            max_days=args.max_days,
+            max_steps=args.max_steps,
+            capture_beliefs=not args.no_belief_trace,
+            capture_stances=(
+                not args.no_belief_trace
+                and not args.no_stance_trace
+            ),
+            capture_vote_calibration=not args.no_vote_calibration_trace,
+            capture_event_logs=args.include_event_logs,
+        )
     rendered = json.dumps(
         report,
         ensure_ascii=False,
@@ -100,11 +155,53 @@ def main() -> int:
     else:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered, encoding="utf-8")
+        if report["schema_version"] == PLAYER_BENCHMARK_SCHEMA_VERSION:
+            metrics = report["metrics"]
+            strategy_wins = {
+                strategy: group["player_performance"][
+                    "player_win_count"
+                ]
+                for strategy, group in metrics["by_strategy"].items()
+            }
+            print(
+                f"[OK] benchmarked {report['games_completed']} games "
+                f"across {report['cohorts_completed']} paired cohort(s); "
+                f"player_wins={strategy_wins}; output={args.output}"
+            )
+            print(
+                "[REPLAY] "
+                f"verified={sum(1 for game in report['games'] if game['replay']['verified'])}"
+                f"/{report['games_completed']}; "
+                f"events={sum(int(game['event_summary']['event_count']) for game in report['games'])}; "
+                f"full_logs={'yes' if args.include_event_logs else 'no'}"
+            )
+            for comparison, outcome in metrics["paired_outcomes"].items():
+                print(
+                    "[PAIRED] "
+                    f"{comparison}="
+                    f"{_format_rate(outcome['player_win_rate_delta_b_minus_a'])}; "
+                    f"a_only={outcome['a_only_win_count']}; "
+                    f"b_only={outcome['b_only_win_count']}; "
+                    f"same_win={outcome['same_win_count']}; "
+                    f"same_loss={outcome['same_loss_count']}"
+                )
+            return 0
+        experiment_fingerprint = report["experiment_fingerprint"]
+        print(
+            "[EXPERIMENT] "
+            f"mode={experiment_fingerprint['execution_mode']}; "
+            "configuration="
+            f"{experiment_fingerprint['configuration_fingerprint'][:12]}; "
+            "effective="
+            f"{experiment_fingerprint['effective_fingerprint'][:12]}; "
+            "llm_requests=0"
+        )
         summary = report["summary"]
         metrics = report["metrics"]
         belief_summary = report["belief_summary"]
         stance_summary = report["stance_summary"]
         continuity_summary = report["speech_continuity_summary"]
+        speech_quality_summary = report["npc_speech_quality_summary"]
         vote_calibration_summary = report["vote_calibration_summary"]
         good_vote = metrics["good_exile_vote"]
         fake_seer = metrics["fake_seer_acceptance"]
@@ -119,6 +216,12 @@ def main() -> int:
         print(
             f"[OK] simulated {report['games_completed']} game(s); "
             f"winner_counts={summary['winner_counts']}; output={args.output}"
+        )
+        print(
+            "[REPLAY] "
+            f"verified={summary['replays_verified']}/{report['games_completed']}; "
+            f"events={summary['events_recorded']}; "
+            f"full_logs={'yes' if report['event_logs_included'] else 'no'}"
         )
         print(
             "[METRICS] "
@@ -184,6 +287,20 @@ def main() -> int:
             "[CONTINUITY] "
             f"controlled_speeches={continuity_summary['controlled_speech_count']}; "
             f"reasons={continuity_summary['reason_counts']}"
+        )
+        print(
+            "[SPEECH-QUALITY] "
+            f"speeches={speech_quality_summary['speech_count']}; "
+            "template_repeat="
+            f"{_format_rate(speech_quality_summary['template_repeat_rate'])}; "
+            "cross_actor_near_duplicate="
+            f"{_format_rate(speech_quality_summary['cross_actor_near_duplicate_pair_rate'])}; "
+            "information_increment="
+            f"{_format_rate(speech_quality_summary['information_increment_rate'])}; "
+            "evidence_citation="
+            f"{_format_rate(speech_quality_summary['evidence_citation_rate'])}; "
+            "persona_differentiation="
+            f"{_format_rate(speech_quality_summary['persona_differentiation_score'])}"
         )
         if vote_calibration_summary is None:
             print("[VOTE-CALIBRATION] trace disabled")

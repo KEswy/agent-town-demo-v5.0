@@ -2,7 +2,6 @@
 .env
 backend/.env
 game/.godot/
-game/**/*.uid
 backend/.venv/
 backend/data/
 *.sqlite3

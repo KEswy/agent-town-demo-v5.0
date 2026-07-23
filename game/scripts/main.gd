@@ -9,6 +9,7 @@ const WOLF_NIGHT_ACTION_URL := "http://127.0.0.1:8000/api/night/action"
 const WOLF_NIGHT_RESOLVE_URL := "http://127.0.0.1:8000/api/night/resolve"
 const WOLF_HUNTER_SHOT_URL := "http://127.0.0.1:8000/api/hunter/shot"
 const WOLF_PLAYER_SPEECH_URL := "http://127.0.0.1:8000/api/day/player-speech"
+const WOLF_PLAYER_SPEECH_PREVIEW_URL := "http://127.0.0.1:8000/api/player-speech/preview"
 const WOLF_NPC_SPEECH_URL := "http://127.0.0.1:8000/api/day/npc-speech"
 const WOLF_END_FREE_ACTIVITY_URL := "http://127.0.0.1:8000/api/day/end-free-activity"
 const WOLF_PRIVATE_CHAT_URL := "http://127.0.0.1:8000/api/day/private-chat"
@@ -22,14 +23,163 @@ const WOLF_SHERIFF_NOMINATE_URL := "http://127.0.0.1:8000/api/sheriff/nominate"
 const WOLF_SHERIFF_TRANSFER_URL := "http://127.0.0.1:8000/api/sheriff/transfer"
 const WOLF_COMBINED_VOTE_URL := "http://127.0.0.1:8000/api/vote/submit-and-resolve"
 const PLAYER_ID := "player"
-const WOLF_MENU_WIDTH := 440.0
+const RESPONSIVE_LAYOUT_SCHEMA_VERSION := "agent_town_responsive_layout.v1"
+const FOCUS_NAVIGATION_SCHEMA_VERSION := "agent_town_focus_navigation.v1"
+const RESPONSIVE_COMPACT_MAX_WINDOW_WIDTH := 1199
+const RESPONSIVE_WIDE_MIN_WINDOW_WIDTH := 1440
+const RESPONSIVE_WIDE_MIN_WINDOW_HEIGHT := 820
+const RESPONSIVE_LAYOUT_PROFILES := {
+	"compact": {
+		"hud_width": 448.0,
+		"wolf_menu_width": 420.0,
+		"wolf_height_ratio": 0.66,
+		"intel_panel_width": 520.0,
+		"intel_columns": 2,
+		"card_min_width": 160.0,
+		"identity_width": 270.0,
+		"setup_width": 560.0,
+		"summary_margin_horizontal": 20.0,
+		"summary_margin_vertical": 16.0,
+		"history_min_height": 320.0,
+	},
+	"default": {
+		"hud_width": 540.0,
+		"wolf_menu_width": 440.0,
+		"wolf_height_ratio": 0.62,
+		"intel_panel_width": 600.0,
+		"intel_columns": 3,
+		"card_min_width": 160.0,
+		"identity_width": 294.0,
+		"setup_width": 600.0,
+		"summary_margin_horizontal": 48.0,
+		"summary_margin_vertical": 36.0,
+		"history_min_height": 420.0,
+	},
+	"wide": {
+		"hud_width": 620.0,
+		"wolf_menu_width": 480.0,
+		"wolf_height_ratio": 0.68,
+		"intel_panel_width": 736.0,
+		"intel_columns": 4,
+		"card_min_width": 160.0,
+		"identity_width": 294.0,
+		"setup_width": 640.0,
+		"summary_margin_horizontal": 64.0,
+		"summary_margin_vertical": 48.0,
+		"history_min_height": 440.0,
+	},
+}
+const UI_FOCUS_SCOPE_WORLD := "WORLD"
+const UI_FOCUS_SCOPE_PANEL := "PANEL"
+const UI_FOCUS_SCOPE_TEXT_ENTRY := "TEXT_ENTRY"
+const UI_FOCUS_SCOPE_MODAL := "MODAL"
 const WOLF_MENU_TOP := 86.0
 const WOLF_MENU_COLLAPSED_HEIGHT := 46.0
 const WOLF_MENU_MIN_EXPANDED_HEIGHT := 320.0
 const WOLF_MENU_MAX_EXPANDED_HEIGHT := 520.0
-const INTEL_PANEL_WIDTH := 600.0
 const IDENTITY_PANEL_COLLAPSED_BOTTOM := 184.0
 const IDENTITY_PANEL_EXPANDED_BOTTOM := 500.0
+const ONBOARDING_SCHEMA_VERSION := "agent_town_onboarding.v1"
+const ONBOARDING_SETTINGS_PATH := "user://agent_town_onboarding.cfg"
+const ONBOARDING_SETTINGS_SECTION := "onboarding"
+const ONBOARDING_STATUS_VALUES := ["inactive", "active", "completed", "dismissed"]
+const ONBOARDING_STEPS := [
+	{
+		"step_id": "identity_and_scope",
+		"trigger_kind": "full_state",
+		"phases": [],
+		"roles": [],
+		"information_scope": "player_private",
+		"title": "先认清自己的身份",
+		"body": "身份、阵营、夜间结果和仅限你的技能状态来自 Python 规则状态。它们不会因为打开引导而公开，也不能被 LLM 改写。",
+	},
+	{
+		"step_id": "night_skill",
+		"trigger_kind": "phase",
+		"phases": ["NIGHT"],
+		"roles": ["werewolf", "seer", "witch", "hunter", "guard", "villager"],
+		"information_scope": "player_private",
+		"title": "夜间技能由 Python 判定",
+		"body": "只提交当前界面允许的行动和目标。可用次数、合法目标、行动结果与是否进入猎人开枪窗口都由 Python 决定。",
+	},
+	{
+		"step_id": "sheriff_flow",
+		"trigger_kind": "phase",
+		"phases": ["SHERIFF_SIGNUP", "SHERIFF_SPEECH", "SHERIFF_WITHDRAWAL", "SHERIFF_VOTE", "SHERIFF_RUNOFF_SPEECH", "SHERIFF_RUNOFF_VOTE", "MEETING_ORDER", "SHERIFF_NOMINATION", "BADGE_TRANSFER"],
+		"roles": [],
+		"information_scope": "public_unverified",
+		"title": "警长流程是公开行动",
+		"body": "报名、竞选发言、退水、警长投票、PK、归票和警徽移交都会进入公开流程。公开身份声明只是场上说法，在规则确认前不等于真实身份。",
+	},
+	{
+		"step_id": "public_speech",
+		"trigger_kind": "player_speech_turn",
+		"phases": ["SHERIFF_SPEECH", "SHERIFF_RUNOFF_SPEECH", "DAY_MEETING"],
+		"roles": [],
+		"information_scope": "public_action",
+		"title": "发言先预览，再确认提交",
+		"body": "预览只解释这段话会形成哪些公开意图、目标和声明，不会推进阶段。确认后仍由 Python 校验事实、权限和当前状态；自由文本不能绕过规则。",
+	},
+	{
+		"step_id": "private_chat",
+		"trigger_kind": "alive_phase",
+		"phases": ["FREE_ACTIVITY"],
+		"roles": [],
+		"information_scope": "player_private",
+		"title": "私聊会影响 NPC，但不会自动公开",
+		"body": "自由活动时靠近 NPC 并按 E、Enter 或 Space 私聊。内容会进入你与该 NPC 的私密互动记录，并可能影响其后续判断；它不会自动变成公开事实。",
+	},
+	{
+		"step_id": "exile_vote",
+		"trigger_kind": "alive_phase",
+		"phases": ["VOTE"],
+		"roles": [],
+		"information_scope": "public_action",
+		"title": "放逐票一次提交并统一结算",
+		"body": "选择目标并写下基于场上信息的理由。提交后 Python 同时生成 NPC 票、计算警长权重、处理平票或出局，并判断是否结束游戏。",
+	},
+	{
+		"step_id": "post_game_review",
+		"trigger_kind": "phase",
+		"phases": ["GAME_OVER"],
+		"roles": [],
+		"information_scope": "post_game_truth",
+		"title": "赛后才能解锁身份真值",
+		"body": "游戏结束后点击“复盘”，查看完整角色、公开时间线和决定解释。赛后真值只用于复盘，不会倒灌进进行中的 NPC 决策。",
+	},
+]
+const ONBOARDING_ROLE_GUIDES := {
+	"werewolf": {
+		"goal": "与狼队友协作，让狼人阵营达到 Python 判定的胜利条件。",
+		"skill": "夜间选择合法袭击目标；狼队友名单仅狼人玩家可见。",
+		"private_note": "你的狼人身份、狼队友和夜间选择仅你可见，不会自动公开。",
+	},
+	"seer": {
+		"goal": "帮助好人识别狼人并保护关键公开信息链。",
+		"skill": "夜间查验一名合法目标；查验结果先进入你的私密记录。",
+		"private_note": "查验结果只有你知道，是否以及如何公开由你在合法发言阶段决定。",
+	},
+	"witch": {
+		"goal": "利用有限药品帮助好人控制夜间损失。",
+		"skill": "夜间可用行动、刀口信息和药品余量以 Python 返回的当前状态为准。",
+		"private_note": "刀口、药品状态和你的选择仅你可见，不会自动公开。",
+	},
+	"hunter": {
+		"goal": "通过公开判断帮助好人，并在合法开枪窗口作出选择。",
+		"skill": "平时没有主动夜间按钮；只有 Python 打开猎人窗口时才可开枪或放弃。",
+		"private_note": "是否可以开枪由规则状态决定，身份不会因引导而公开。",
+	},
+	"guard": {
+		"goal": "用守护行动帮助好人减少夜间损失。",
+		"skill": "夜间只可选择 Python 当前允许的守护目标。",
+		"private_note": "守护目标和行动历史仅你可见，不会自动公开。",
+	},
+	"villager": {
+		"goal": "依靠公开发言、投票和承诺变化帮助好人找出狼人。",
+		"skill": "没有主动夜间技能；夜间按界面提示等待规则结算。",
+		"private_note": "你只知道自己的村民身份，不能读取其他角色的隐藏身份。",
+	},
+}
 const BADGE_FLOW_REVISION_REASON_OPTIONS := [
 	["目标已出局", "target_eliminated"],
 	["出现公开身份信息", "role_reveal"],
@@ -58,10 +208,12 @@ const CHARACTER_SKIN_PATHS := {
 @onready var player: CharacterBody2D = $Player
 @onready var town_background: Node2D = $TownBackground
 @onready var phase_hud: Control = $UI/PhaseHUD
+@onready var phase_title_label: Label = $UI/PhaseHUD/Panel/Margin/Row/TitleLabel
 @onready var wolf_menu_summary_label: Label = $UI/PhaseHUD/Panel/Margin/Row/MenuSummaryLabel
 @onready var refresh_state_button: Button = $UI/PhaseHUD/Panel/Margin/Row/RefreshStateButton
 @onready var review_game_button: Button = $UI/PhaseHUD/Panel/Margin/Row/ReviewGameButton
 @onready var intel_toggle_button: Button = $UI/PhaseHUD/Panel/Margin/Row/IntelToggleButton
+@onready var guide_button: Button = $UI/PhaseHUD/Panel/Margin/Row/GuideButton
 @onready var setup_toggle_button: Button = $UI/PhaseHUD/Panel/Margin/Row/SetupToggleButton
 @onready var identity_panel: PanelContainer = $UI/IdentityPanel
 @onready var player_identity_block: VBoxContainer = $UI/IdentityPanel/Margin/PlayerIdentityBlock
@@ -69,6 +221,8 @@ const CHARACTER_SKIN_PATHS := {
 @onready var wolf_teammates_label: Label = $UI/IdentityPanel/Margin/PlayerIdentityBlock/WolfTeammatesLabel
 @onready var key_info_toggle_button: Button = $UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoToggleButton
 @onready var key_info_content_panel: PanelContainer = $UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoContentPanel
+@onready var key_info_safety_label: Label = $UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoContentPanel/Margin/VBox/SafetyLabel
+@onready var key_info_scroll: ScrollContainer = $UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoContentPanel/Margin/VBox/ScrollContainer
 @onready var key_info_label: Label = $UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoContentPanel/Margin/VBox/ScrollContainer/KeyInfoLabel
 @onready var wolf_panel: Control = $UI/WolfPanel
 @onready var wolf_content_panel: PanelContainer = $UI/WolfPanel/ContentPanel
@@ -117,6 +271,10 @@ const CHARACTER_SKIN_PATHS := {
 @onready var player_speech_input: LineEdit = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/DaySpeechRow/PlayerSpeechInput
 @onready var submit_speech_button: Button = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/DaySpeechRow/SubmitSpeechButton
 @onready var end_free_activity_button: Button = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/DaySpeechRow/EndFreeActivityButton
+@onready var speech_preview_panel: PanelContainer = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel
+@onready var speech_preview_summary: Label = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel/Margin/VBox/Summary
+@onready var speech_preview_edit_button: Button = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel/Margin/VBox/Actions/EditButton
+@onready var speech_preview_confirm_button: Button = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel/Margin/VBox/Actions/ConfirmButton
 @onready var vote_action_label: Label = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/VoteActionLabel
 @onready var vote_reason_input: LineEdit = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/VoteReasonInput
 @onready var vote_action_row: HBoxContainer = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/VoteActionRow
@@ -131,6 +289,7 @@ const CHARACTER_SKIN_PATHS := {
 @onready var player_action_history_block: VBoxContainer = $UI/IntelPanel/Panel/Margin/VBox/Tabs/MyRecords/PlayerActionHistoryBlock
 @onready var player_action_history_text: TextEdit = $UI/IntelPanel/Panel/Margin/VBox/Tabs/MyRecords/PlayerActionHistoryBlock/HistoryText
 @onready var game_setup_overlay: Control = $UI/GameSetupOverlay
+@onready var game_setup_panel: PanelContainer = $UI/GameSetupOverlay/Panel
 @onready var setup_close_button: Button = $UI/GameSetupOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
 @onready var setup_explore_button: Button = $UI/GameSetupOverlay/Panel/Margin/VBox/ActionRow/ExploreButton
 @onready var setup_status_label: Label = $UI/GameSetupOverlay/Panel/Margin/VBox/SetupStatusLabel
@@ -138,12 +297,27 @@ const CHARACTER_SKIN_PATHS := {
 @onready var start_game_button: Button = $UI/GameSetupOverlay/Panel/Margin/VBox/ActionRow/StartGameButton
 @onready var player_role_option: OptionButton = $UI/GameSetupOverlay/Panel/Margin/VBox/PlayerRoleRow/PlayerRoleOption
 @onready var llm_enabled_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow/LLMEnabledToggle
+@onready var llm_settings_hint: Label = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow/LLMSettingsHint
+@onready var llm_validation_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMValidationRow/LLMValidationToggle
 @onready var game_summary_overlay: Control = $UI/GameSummaryOverlay
+@onready var game_summary_panel: PanelContainer = $UI/GameSummaryOverlay/Panel
 @onready var game_summary_close_button: Button = $UI/GameSummaryOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
 @onready var game_summary_winner_label: Label = $UI/GameSummaryOverlay/Panel/Margin/VBox/WinnerLabel
 @onready var game_summary_tabs: TabContainer = $UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs
 @onready var game_summary_character_list: VBoxContainer = $UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs/CharacterReview/Margin/CharacterList
 @onready var game_summary_timeline_label: Label = $UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs/TimelineReview/Margin/TimelineLabel
+@onready var game_summary_review_label: Label = $UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs/ExplainableReview/Margin/ReviewLabel
+@onready var onboarding_overlay: Control = $UI/OnboardingOverlay
+@onready var onboarding_panel: PanelContainer = $UI/OnboardingOverlay/Panel
+@onready var onboarding_progress_label: Label = $UI/OnboardingOverlay/Panel/Margin/VBox/HeaderRow/ProgressLabel
+@onready var onboarding_close_button: Button = $UI/OnboardingOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
+@onready var onboarding_title_label: Label = $UI/OnboardingOverlay/Panel/Margin/VBox/TitleLabel
+@onready var onboarding_scope_label: Label = $UI/OnboardingOverlay/Panel/Margin/VBox/ScopeLabel
+@onready var onboarding_body_scroll: ScrollContainer = $UI/OnboardingOverlay/Panel/Margin/VBox/BodyScroll
+@onready var onboarding_body_label: Label = $UI/OnboardingOverlay/Panel/Margin/VBox/BodyScroll/BodyLabel
+@onready var onboarding_skip_button: Button = $UI/OnboardingOverlay/Panel/Margin/VBox/ActionRow/SkipButton
+@onready var onboarding_back_button: Button = $UI/OnboardingOverlay/Panel/Margin/VBox/ActionRow/BackButton
+@onready var onboarding_next_button: Button = $UI/OnboardingOverlay/Panel/Margin/VBox/ActionRow/NextButton
 @onready var chat_request: HTTPRequest = $ChatRequest
 @onready var memory_view_request: HTTPRequest = $MemoryViewRequest
 @onready var memory_reset_request: HTTPRequest = $MemoryResetRequest
@@ -154,6 +328,7 @@ const CHARACTER_SKIN_PATHS := {
 @onready var night_resolve_request: HTTPRequest = $NightResolveRequest
 @onready var hunter_shot_request: HTTPRequest = $HunterShotRequest
 @onready var player_speech_request: HTTPRequest = $PlayerSpeechRequest
+@onready var player_speech_preview_request: HTTPRequest = $PlayerSpeechPreviewRequest
 @onready var npc_speech_request: HTTPRequest = $NpcSpeechRequest
 @onready var end_free_activity_request: HTTPRequest = $EndFreeActivityRequest
 @onready var private_chat_request: HTTPRequest = $PrivateChatRequest
@@ -175,6 +350,7 @@ var _is_loading_wolf_state := false
 var _is_submitting_night_action := false
 var _is_resolving_night := false
 var _is_submitting_hunter_shot := false
+var _is_previewing_player_speech := false
 var _is_submitting_player_speech := false
 var _is_generating_npc_speeches := false
 var _is_ending_free_activity := false
@@ -214,11 +390,67 @@ var _game_summary_data: Dictionary = {}
 var _latest_wolf_game_data: Dictionary = {}
 var _pending_player_speech_text := ""
 var _pending_sheriff_speech_text := ""
+var _pending_speech_preview_kind := ""
+var _pending_speech_preview_body: Dictionary = {}
+var _pending_speech_preview_fingerprint := ""
+var _pending_speech_submission_confirmed := false
 var _pending_vote_reason_text := ""
+var _idempotency_counter := 0
+var _pending_idempotency_commands: Dictionary = {}
 var _player_publicly_claimed_seer := false
 var _player_badge_flow_version := 0
 var _badge_flow_game_id := ""
 var _badge_flow_collapsed := true
+var _onboarding_status := "inactive"
+var _onboarding_current_step_id := ""
+var _onboarding_seen_step_ids: Dictionary = {}
+var _onboarding_pending_step_ids: Array[String] = []
+var _onboarding_automatic_enabled := true
+var _onboarding_automatic_guide_completed := false
+var _onboarding_manual_mode := false
+var _onboarding_manual_step_index := 0
+var _onboarding_game_id := ""
+var _onboarding_full_state_pending_after_manual := false
+var _game_summary_pending_after_onboarding := false
+var _responsive_layout_profile_name := "default"
+var _wolf_menu_width := 440.0
+var _intel_panel_width := 600.0
+var _character_card_min_width := 160.0
+var _ui_focus_scope := UI_FOCUS_SCOPE_WORLD
+var _setup_focus_return: Control
+var _summary_focus_return: Control
+var _onboarding_focus_return: Control
+var _intel_focus_return: Control
+var _speech_preview_focus_return: Control
+
+
+func _prepare_idempotent_body(channel: String, operation: String, body: Dictionary) -> Dictionary:
+	var payload := body.duplicate(true)
+	payload.erase("idempotency_key")
+	var signature := operation + "|" + JSON.stringify(payload)
+	var pending: Dictionary = _pending_idempotency_commands.get(channel, {})
+	if str(pending.get("signature", "")) != signature:
+		_idempotency_counter += 1
+		pending = {
+			"signature": signature,
+			"key": "cmd:%d:%d:%d" % [
+				int(Time.get_unix_time_from_system()),
+				Time.get_ticks_usec(),
+				_idempotency_counter,
+			],
+		}
+		_pending_idempotency_commands[channel] = pending
+	payload["idempotency_key"] = str(pending.get("key", ""))
+	return payload
+
+
+func _complete_idempotent_command(channel: String) -> void:
+	_pending_idempotency_commands.erase(channel)
+
+
+func _reset_idempotency_commands() -> void:
+	_pending_idempotency_commands.clear()
+	_idempotency_counter = 0
 
 
 func _ready() -> void:
@@ -235,6 +467,7 @@ func _ready() -> void:
 	night_resolve_request.request_completed.connect(_on_night_resolve_request_completed)
 	hunter_shot_request.request_completed.connect(_on_hunter_shot_request_completed)
 	player_speech_request.request_completed.connect(_on_player_speech_request_completed)
+	player_speech_preview_request.request_completed.connect(_on_player_speech_preview_request_completed)
 	npc_speech_request.request_completed.connect(_on_npc_speech_request_completed)
 	end_free_activity_request.request_completed.connect(_on_end_free_activity_request_completed)
 	private_chat_request.request_completed.connect(_on_private_chat_request_completed)
@@ -243,6 +476,8 @@ func _ready() -> void:
 	combined_vote_request.request_completed.connect(_on_combined_vote_request_completed)
 	game_summary_request.request_completed.connect(_on_game_summary_request_completed)
 	start_game_button.pressed.connect(_on_start_game_button_pressed)
+	llm_enabled_toggle.toggled.connect(_on_llm_enabled_toggled)
+	llm_validation_toggle.toggled.connect(_on_llm_validation_toggled)
 	refresh_state_button.pressed.connect(_on_refresh_state_button_pressed)
 	review_game_button.pressed.connect(_on_review_game_button_pressed)
 	submit_night_action_button.pressed.connect(_on_submit_night_action_button_pressed)
@@ -263,6 +498,8 @@ func _ready() -> void:
 	submit_speech_button.pressed.connect(_on_submit_speech_button_pressed)
 	player_speech_input.text_submitted.connect(_on_player_speech_input_submitted)
 	player_speech_input.text_changed.connect(_on_badge_flow_speech_draft_changed)
+	speech_preview_edit_button.pressed.connect(_on_speech_preview_edit_button_pressed)
+	speech_preview_confirm_button.pressed.connect(_on_speech_preview_confirm_button_pressed)
 	end_free_activity_button.pressed.connect(_on_end_free_activity_button_pressed)
 	submit_vote_button.pressed.connect(_on_submit_vote_button_pressed)
 	vote_reason_input.text_submitted.connect(_on_vote_reason_input_submitted)
@@ -270,22 +507,32 @@ func _ready() -> void:
 	key_info_toggle_button.pressed.connect(_on_key_info_toggle_button_pressed)
 	intel_toggle_button.pressed.connect(_on_intel_toggle_button_pressed)
 	intel_close_button.pressed.connect(_on_intel_close_button_pressed)
+	guide_button.pressed.connect(_on_guide_button_pressed)
 	setup_toggle_button.pressed.connect(_on_setup_toggle_button_pressed)
 	setup_close_button.pressed.connect(_on_setup_close_button_pressed)
 	setup_explore_button.pressed.connect(_on_setup_close_button_pressed)
 	game_summary_close_button.pressed.connect(_hide_game_summary)
-	get_viewport().size_changed.connect(_on_viewport_size_changed)
+	onboarding_close_button.pressed.connect(_on_onboarding_close_button_pressed)
+	onboarding_skip_button.pressed.connect(_on_onboarding_skip_button_pressed)
+	onboarding_back_button.pressed.connect(_on_onboarding_back_button_pressed)
+	onboarding_next_button.pressed.connect(_on_onboarding_next_button_pressed)
+	get_window().size_changed.connect(_on_viewport_size_changed)
 	dialog_box.call("connect", "message_submitted", Callable(self, "_on_dialog_message_submitted"))
 	dialog_box.call("connect", "memory_view_requested", Callable(self, "_on_memory_view_requested"))
 	dialog_box.call("connect", "memory_reset_requested", Callable(self, "_on_memory_reset_requested"))
 	dialog_box.call("connect", "config_reload_requested", Callable(self, "_on_config_reload_requested"))
-	_configure_wolf_panel_focus()
+	dialog_box.call("connect", "closed", Callable(self, "_on_dialog_closed"))
+	_configure_ui_focus_navigation()
 	intel_tabs.set_tab_title(0, "场上角色")
 	intel_tabs.set_tab_title(1, "公开记录")
 	intel_tabs.set_tab_title(2, "我的记录")
 	game_summary_tabs.set_tab_title(0, "角色复盘")
 	game_summary_tabs.set_tab_title(1, "对局时间线")
+	game_summary_tabs.set_tab_title(2, "解释复盘（赛后）")
 	_populate_player_role_options()
+	_update_llm_validation_controls()
+	_load_onboarding_preferences()
+	_update_responsive_layout()
 	_update_contextual_panel_visibility()
 	_set_wolf_menu_expanded(false, false)
 	_set_key_info_expanded(false, false)
@@ -317,6 +564,10 @@ func _on_intel_close_button_pressed() -> void:
 	_set_intel_panel_open(false)
 
 
+func _on_guide_button_pressed() -> void:
+	_show_manual_onboarding()
+
+
 func _on_setup_toggle_button_pressed() -> void:
 	if setup_toggle_button.disabled:
 		return
@@ -327,10 +578,35 @@ func _on_setup_close_button_pressed() -> void:
 	_hide_game_setup()
 
 
+func _on_llm_enabled_toggled(_enabled: bool) -> void:
+	_update_llm_validation_controls()
+
+
+func _on_llm_validation_toggled(_enabled: bool) -> void:
+	_update_llm_validation_controls()
+
+
+func _update_llm_validation_controls() -> void:
+	var llm_requested: bool = llm_enabled_toggle.button_pressed
+	llm_validation_toggle.disabled = not llm_requested
+	if not llm_requested:
+		llm_settings_hint.text = "启用 AI NPC 表达后可选；Python 规则结算始终独立生效"
+	elif llm_validation_toggle.button_pressed:
+		llm_settings_hint.text = "输出校验开启：不合格表达最多纠正 5 次"
+	else:
+		llm_settings_hint.text = "输出校验关闭：生成 1 次、校验 0 次并直出原文；Python 规则结算不变"
+
+
+func _llm_validation_requested() -> bool:
+	return llm_enabled_toggle.button_pressed and llm_validation_toggle.button_pressed
+
+
 func _show_game_setup() -> void:
+	if not game_setup_overlay.visible:
+		_setup_focus_return = _current_focus_control()
 	if dialog_box.call("is_open"):
-		dialog_box.call("hide_dialog")
-	_set_intel_panel_open(false)
+		dialog_box.call("hide_dialog", false)
+	_set_intel_panel_open(false, false)
 	_set_wolf_menu_expanded(false)
 	game_setup_overlay.visible = true
 	game_setup_overlay.add_to_group("dialog_open")
@@ -340,11 +616,17 @@ func _show_game_setup() -> void:
 		else "准备好后开始游戏，也可以先关闭窗口探索小镇。"
 	)
 	player.call("set_menu_safe_area", false, 0.0)
+	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
+	call_deferred("_focus_control_if_available", player_name_input)
 
 
-func _hide_game_setup() -> void:
+func _hide_game_setup(restore_focus: bool = true) -> void:
 	if _is_starting_wolf_game:
 		return
+	if not game_setup_overlay.visible:
+		return
+	var return_focus := _setup_focus_return
+	_setup_focus_return = null
 	game_setup_overlay.visible = false
 	game_setup_overlay.remove_from_group("dialog_open")
 	setup_close_button.release_focus()
@@ -352,12 +634,23 @@ func _hide_game_setup() -> void:
 	start_game_button.release_focus()
 	_release_movement_actions()
 	_update_ui_safe_area()
+	if restore_focus:
+		call_deferred(
+			"_restore_focus_after_close",
+			return_focus,
+			setup_toggle_button
+		)
+	else:
+		_release_focus_to_world()
 
 
-func _set_intel_panel_open(open: bool) -> void:
+func _set_intel_panel_open(open: bool, restore_focus: bool = true) -> void:
 	if open and _current_wolf_game_id.is_empty():
 		return
+	var was_open := _intel_panel_open
 	if open:
+		if not was_open:
+			_intel_focus_return = _current_focus_control()
 		_set_wolf_menu_expanded(false)
 	_intel_panel_open = open
 	intel_panel.visible = open
@@ -365,7 +658,16 @@ func _set_intel_panel_open(open: bool) -> void:
 	intel_toggle_button.tooltip_text = "关闭对局情报" if open else "查看场上角色、公开记录和我的记录"
 	if not open:
 		intel_close_button.release_focus()
-		_release_wolf_panel_focus()
+		if was_open and restore_focus:
+			call_deferred(
+				"_restore_focus_after_close",
+				_intel_focus_return,
+				intel_toggle_button
+			)
+		_intel_focus_return = null
+	elif not was_open:
+		_set_ui_focus_scope(UI_FOCUS_SCOPE_PANEL)
+		call_deferred("_focus_control_if_available", intel_close_button)
 	_update_ui_safe_area()
 
 
@@ -385,9 +687,461 @@ func _populate_player_role_options() -> void:
 
 
 func _on_viewport_size_changed() -> void:
+	_update_responsive_layout()
+
+
+func _responsive_profile_name_for_window(window_size: Vector2i) -> String:
+	if window_size.x <= RESPONSIVE_COMPACT_MAX_WINDOW_WIDTH:
+		return "compact"
+	if (
+		window_size.x >= RESPONSIVE_WIDE_MIN_WINDOW_WIDTH
+		and window_size.y >= RESPONSIVE_WIDE_MIN_WINDOW_HEIGHT
+	):
+		return "wide"
+	return "default"
+
+
+func _update_responsive_layout() -> void:
+	var window_size := get_window().size
+	var viewport_size := get_viewport().get_visible_rect().size
+	_responsive_layout_profile_name = _responsive_profile_name_for_window(window_size)
+	var profile: Dictionary = RESPONSIVE_LAYOUT_PROFILES.get(
+		_responsive_layout_profile_name,
+		RESPONSIVE_LAYOUT_PROFILES["default"]
+	)
+	_wolf_menu_width = float(profile.get("wolf_menu_width", 440.0))
+	_intel_panel_width = float(profile.get("intel_panel_width", 600.0))
+	_character_card_min_width = float(profile.get("card_min_width", 160.0))
+
+	var hud_width := minf(
+		float(profile.get("hud_width", 540.0)),
+		maxf(360.0, viewport_size.x - 32.0)
+	)
+	phase_hud.anchor_left = 0.5
+	phase_hud.anchor_right = 0.5
+	phase_hud.offset_left = hud_width * -0.5
+	phase_hud.offset_right = hud_width * 0.5
+	phase_title_label.visible = _responsive_layout_profile_name != "compact"
+
+	identity_panel.offset_right = (
+		identity_panel.offset_left
+		+ float(profile.get("identity_width", 294.0))
+	)
+	wolf_panel.offset_left = -_wolf_menu_width - 16.0
+	wolf_panel.offset_right = -16.0
+	intel_panel.offset_left = -_intel_panel_width - 16.0
+	intel_panel.offset_right = -16.0
+	character_grid.columns = int(profile.get("intel_columns", 3))
+	player_action_history_text.custom_minimum_size.y = minf(
+		float(profile.get("history_min_height", 420.0)),
+		maxf(280.0, viewport_size.y - 300.0)
+	)
+	_apply_character_card_sizes()
+
+	var setup_width := minf(
+		float(profile.get("setup_width", 600.0)),
+		maxf(320.0, viewport_size.x - 32.0)
+	)
+	var setup_height := minf(450.0, maxf(400.0, viewport_size.y - 32.0))
+	game_setup_panel.offset_left = setup_width * -0.5
+	game_setup_panel.offset_right = setup_width * 0.5
+	game_setup_panel.offset_top = setup_height * -0.5
+	game_setup_panel.offset_bottom = setup_height * 0.5
+
+	var summary_margin_horizontal := minf(
+		float(profile.get("summary_margin_horizontal", 48.0)),
+		maxf(16.0, (viewport_size.x - 320.0) * 0.5)
+	)
+	var summary_margin_vertical := minf(
+		float(profile.get("summary_margin_vertical", 36.0)),
+		maxf(16.0, (viewport_size.y - 360.0) * 0.5)
+	)
+	game_summary_panel.offset_left = summary_margin_horizontal
+	game_summary_panel.offset_right = -summary_margin_horizontal
+	game_summary_panel.offset_top = summary_margin_vertical
+	game_summary_panel.offset_bottom = -summary_margin_vertical
+
 	_update_wolf_menu_size()
 	_set_key_info_expanded(_key_info_expanded, false)
+	_update_onboarding_layout()
+	if dialog_box.has_method("_update_responsive_layout"):
+		dialog_box.call("_update_responsive_layout")
 	_update_ui_safe_area()
+
+
+func _apply_character_card_sizes() -> void:
+	for child in character_grid.get_children():
+		if child is Control:
+			child.custom_minimum_size = Vector2(_character_card_min_width, 205.0)
+
+
+func _load_onboarding_preferences() -> void:
+	var config := ConfigFile.new()
+	if config.load(ONBOARDING_SETTINGS_PATH) != OK:
+		return
+	if str(config.get_value(ONBOARDING_SETTINGS_SECTION, "schema_version", "")) != ONBOARDING_SCHEMA_VERSION:
+		return
+	var completed_value: Variant = config.get_value(
+		ONBOARDING_SETTINGS_SECTION,
+		"automatic_guide_completed",
+		false
+	)
+	if typeof(completed_value) != TYPE_BOOL:
+		return
+	_onboarding_automatic_guide_completed = bool(completed_value)
+	_onboarding_automatic_enabled = not _onboarding_automatic_guide_completed
+	_onboarding_status = (
+		"completed" if _onboarding_automatic_guide_completed else "inactive"
+	)
+
+
+func _save_onboarding_preferences() -> void:
+	var config := ConfigFile.new()
+	config.set_value(
+		ONBOARDING_SETTINGS_SECTION,
+		"schema_version",
+		ONBOARDING_SCHEMA_VERSION
+	)
+	config.set_value(
+		ONBOARDING_SETTINGS_SECTION,
+		"automatic_guide_completed",
+		_onboarding_automatic_guide_completed
+	)
+	var save_error := config.save(ONBOARDING_SETTINGS_PATH)
+	if save_error != OK:
+		push_warning("无法保存新手引导偏好；本次运行仍会保留当前选择。")
+
+
+func _update_onboarding_layout() -> void:
+	var viewport_size := get_viewport().get_visible_rect().size
+	var panel_width := minf(680.0, maxf(300.0, viewport_size.x - 32.0))
+	var panel_height := minf(500.0, maxf(360.0, viewport_size.y - 32.0))
+	onboarding_panel.offset_left = panel_width * -0.5
+	onboarding_panel.offset_right = panel_width * 0.5
+	onboarding_panel.offset_top = panel_height * -0.5
+	onboarding_panel.offset_bottom = panel_height * 0.5
+
+
+func _show_manual_onboarding() -> void:
+	if dialog_box.call("is_open"):
+		return
+	_onboarding_manual_mode = true
+	_onboarding_pending_step_ids.clear()
+	_onboarding_manual_step_index = _manual_onboarding_start_index()
+	_open_onboarding_step(
+		str(ONBOARDING_STEPS[_onboarding_manual_step_index].get("step_id", "")),
+		true
+	)
+
+
+func _manual_onboarding_start_index() -> int:
+	if _current_wolf_game_id.is_empty():
+		return 0
+	for index in range(ONBOARDING_STEPS.size()):
+		var step: Dictionary = ONBOARDING_STEPS[index]
+		var phases: Variant = step.get("phases", [])
+		if typeof(phases) == TYPE_ARRAY and _current_wolf_phase in phases:
+			return index
+	return 0
+
+
+func _evaluate_automatic_onboarding(game_data: Dictionary) -> void:
+	if (
+		not _onboarding_automatic_enabled
+		or _onboarding_automatic_guide_completed
+		or onboarding_overlay.visible
+		or game_setup_overlay.visible
+		or game_summary_overlay.visible
+		or dialog_box.call("is_open")
+	):
+		return
+	var private_info: Variant = game_data.get("player_private_info", null)
+	if (
+		typeof(private_info) != TYPE_DICTIONARY
+		or str(private_info.get("role", "")).is_empty()
+	):
+		# GameStartResponse deliberately has no player-private projection.  Only
+		# the complete GET /state response may activate automatic onboarding.
+		return
+	var incoming_game_id := str(game_data.get("game_id", ""))
+	if incoming_game_id.is_empty():
+		return
+	_reset_onboarding_for_game(incoming_game_id)
+
+	var eligible_step_ids: Array[String] = []
+	for raw_step in ONBOARDING_STEPS:
+		var step: Dictionary = raw_step
+		var step_id := str(step.get("step_id", ""))
+		if step_id.is_empty() or _onboarding_seen_step_ids.has(step_id):
+			continue
+		if _onboarding_step_is_eligible(step):
+			eligible_step_ids.append(step_id)
+	if eligible_step_ids.is_empty():
+		return
+
+	_onboarding_pending_step_ids.clear()
+	for index in range(1, eligible_step_ids.size()):
+		_onboarding_pending_step_ids.append(eligible_step_ids[index])
+	_open_onboarding_step(eligible_step_ids[0], false)
+
+
+func _reset_onboarding_for_game(game_id: String) -> void:
+	if game_id == _onboarding_game_id:
+		return
+	_onboarding_game_id = game_id
+	_onboarding_seen_step_ids.clear()
+	_onboarding_pending_step_ids.clear()
+	_onboarding_current_step_id = ""
+	if not _onboarding_automatic_guide_completed:
+		_onboarding_status = "inactive"
+
+
+func _onboarding_step_is_eligible(step: Dictionary) -> bool:
+	var roles: Variant = step.get("roles", [])
+	if (
+		typeof(roles) == TYPE_ARRAY
+		and not roles.is_empty()
+		and _current_player_role not in roles
+	):
+		return false
+	var phases: Variant = step.get("phases", [])
+	var phase_matches: bool = (
+		typeof(phases) == TYPE_ARRAY
+		and _current_wolf_phase in phases
+	)
+	match str(step.get("trigger_kind", "")):
+		"full_state":
+			return not _current_player_role.is_empty()
+		"phase":
+			return phase_matches
+		"alive_phase":
+			return _current_player_alive and phase_matches
+		"player_speech_turn":
+			if not _current_player_alive or not phase_matches:
+				return false
+			if _current_wolf_phase == "DAY_MEETING":
+				return _current_meeting_speaker_id == _current_player_character_id
+			return _current_sheriff_speaker_id == _current_player_character_id
+		_:
+			return false
+
+
+func _open_onboarding_step(step_id: String, manual_mode: bool) -> void:
+	var step := _find_onboarding_step(step_id)
+	if step.is_empty():
+		return
+	if not onboarding_overlay.visible:
+		_onboarding_focus_return = _current_focus_control()
+	_onboarding_manual_mode = manual_mode
+	_onboarding_current_step_id = step_id
+	_onboarding_status = "active"
+	if not manual_mode:
+		_onboarding_seen_step_ids[step_id] = true
+	onboarding_overlay.visible = true
+	if not onboarding_overlay.is_in_group("dialog_open"):
+		onboarding_overlay.add_to_group("dialog_open")
+	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
+	_render_onboarding_step(step)
+	_release_movement_actions()
+	call_deferred("_focus_onboarding_primary_action")
+
+
+func _find_onboarding_step(step_id: String) -> Dictionary:
+	for raw_step in ONBOARDING_STEPS:
+		var step: Dictionary = raw_step
+		if str(step.get("step_id", "")) == step_id:
+			return step
+	return {}
+
+
+func _onboarding_step_index(step_id: String) -> int:
+	for index in range(ONBOARDING_STEPS.size()):
+		if str(ONBOARDING_STEPS[index].get("step_id", "")) == step_id:
+			return index
+	return 0
+
+
+func _render_onboarding_step(step: Dictionary) -> void:
+	var step_index := _onboarding_step_index(_onboarding_current_step_id)
+	onboarding_progress_label.text = (
+		"新手引导 · %d / %d" % [step_index + 1, ONBOARDING_STEPS.size()]
+		if _onboarding_manual_mode
+		else "新手引导 · 当前阶段提示"
+	)
+	onboarding_title_label.text = str(step.get("title", "新手引导"))
+	onboarding_scope_label.text = _onboarding_scope_text(
+		str(step.get("information_scope", "public_action"))
+	)
+	var body := str(step.get("body", ""))
+	if _onboarding_current_step_id in ["identity_and_scope", "night_skill"]:
+		body += _current_role_onboarding_text(
+			_onboarding_current_step_id == "identity_and_scope"
+		)
+	if not _current_wolf_game_id.is_empty():
+		body += "\n\n当前阶段：" + _format_summary_phase(_current_wolf_phase)
+	onboarding_body_label.text = body
+	onboarding_body_scroll.scroll_vertical = 0
+
+	onboarding_back_button.visible = _onboarding_manual_mode
+	onboarding_back_button.disabled = (
+		not _onboarding_manual_mode or _onboarding_manual_step_index <= 0
+	)
+	if _onboarding_manual_mode:
+		onboarding_next_button.text = (
+			"完成"
+			if _onboarding_manual_step_index >= ONBOARDING_STEPS.size() - 1
+			else "下一步"
+		)
+	else:
+		onboarding_next_button.text = (
+			"下一条" if not _onboarding_pending_step_ids.is_empty() else "知道了"
+		)
+	onboarding_skip_button.text = (
+		"跳过全部" if _onboarding_automatic_enabled else "自动引导已关闭"
+	)
+	onboarding_skip_button.disabled = not _onboarding_automatic_enabled
+
+
+func _onboarding_scope_text(scope: String) -> String:
+	match scope:
+		"player_private":
+			return "信息范围：[仅你可见] 不会自动成为公开事实"
+		"public_unverified":
+			return "信息范围：[全场公开 · 未验真] 公开说法不等于身份真值"
+		"public_action":
+			return "信息范围：[全场公开行动] 以 Python 结算后的状态为准"
+		"post_game_truth":
+			return "信息范围：[仅赛后解锁] 不参与进行中的角色判断"
+		_:
+			return "信息范围：以当前 Python 状态投影为准"
+
+
+func _current_role_onboarding_text(include_goal: bool) -> String:
+	var role_guide: Dictionary = ONBOARDING_ROLE_GUIDES.get(
+		_current_player_role,
+		{}
+	)
+	if role_guide.is_empty():
+		return "\n\n开始游戏并完成状态同步后，这里只会显示你自己的身份说明。"
+	var lines: Array[String] = [
+		"\n\n你的身份：" + _format_role_name(_current_player_role),
+	]
+	if include_goal:
+		lines.append("目标：" + str(role_guide.get("goal", "")))
+	lines.append("技能：" + str(role_guide.get("skill", "")))
+	lines.append("[仅你可见] " + str(role_guide.get("private_note", "")))
+	return "\n".join(lines)
+
+
+func _focus_onboarding_primary_action() -> void:
+	if onboarding_overlay.visible:
+		onboarding_next_button.grab_focus()
+
+
+func _move_onboarding_focus(direction: int) -> void:
+	_move_focus_in_scope(onboarding_overlay, direction)
+
+
+func _on_onboarding_close_button_pressed() -> void:
+	_close_onboarding(false)
+
+
+func _on_onboarding_skip_button_pressed() -> void:
+	if not _onboarding_automatic_enabled:
+		return
+	_onboarding_automatic_enabled = false
+	_onboarding_automatic_guide_completed = true
+	_onboarding_status = "completed"
+	_save_onboarding_preferences()
+	_close_onboarding(true)
+
+
+func _on_onboarding_back_button_pressed() -> void:
+	if not _onboarding_manual_mode or _onboarding_manual_step_index <= 0:
+		return
+	_onboarding_manual_step_index -= 1
+	_open_onboarding_step(
+		str(ONBOARDING_STEPS[_onboarding_manual_step_index].get("step_id", "")),
+		true
+	)
+
+
+func _on_onboarding_next_button_pressed() -> void:
+	if _onboarding_manual_mode:
+		if _onboarding_manual_step_index >= ONBOARDING_STEPS.size() - 1:
+			_close_onboarding(false)
+			return
+		_onboarding_manual_step_index += 1
+		_open_onboarding_step(
+			str(ONBOARDING_STEPS[_onboarding_manual_step_index].get("step_id", "")),
+			true
+		)
+		return
+
+	if not _onboarding_pending_step_ids.is_empty():
+		var next_step_id: String = str(_onboarding_pending_step_ids.pop_front())
+		_open_onboarding_step(next_step_id, false)
+		return
+	if _onboarding_current_step_id == "post_game_review":
+		_onboarding_automatic_enabled = false
+		_onboarding_automatic_guide_completed = true
+		_onboarding_status = "completed"
+		_save_onboarding_preferences()
+	_close_onboarding(_onboarding_automatic_guide_completed)
+
+
+func _close_onboarding(completed: bool) -> void:
+	if not onboarding_overlay.visible:
+		return
+	var was_manual_mode := _onboarding_manual_mode
+	var return_focus := _onboarding_focus_return
+	var show_pending_summary := _game_summary_pending_after_onboarding
+	_onboarding_focus_return = null
+	onboarding_overlay.visible = false
+	onboarding_overlay.remove_from_group("dialog_open")
+	for button in [
+		onboarding_close_button,
+		onboarding_skip_button,
+		onboarding_back_button,
+		onboarding_next_button,
+	]:
+		button.release_focus()
+	_onboarding_pending_step_ids.clear()
+	_onboarding_manual_mode = false
+	_onboarding_status = "completed" if completed else "dismissed"
+	_release_movement_actions()
+	if show_pending_summary:
+		_game_summary_pending_after_onboarding = false
+		call_deferred("_show_game_summary")
+	else:
+		call_deferred(
+			"_restore_focus_after_close",
+			return_focus,
+			guide_button
+		)
+	if was_manual_mode and _onboarding_full_state_pending_after_manual:
+		_onboarding_full_state_pending_after_manual = false
+		call_deferred("_evaluate_latest_automatic_onboarding")
+
+
+func _evaluate_latest_automatic_onboarding() -> void:
+	if (
+		_latest_wolf_game_data.is_empty()
+		or not _onboarding_automatic_enabled
+		or _onboarding_automatic_guide_completed
+	):
+		return
+	var manually_viewed_step_id := _onboarding_current_step_id
+	var incoming_game_id := str(_latest_wolf_game_data.get("game_id", ""))
+	if not incoming_game_id.is_empty():
+		_reset_onboarding_for_game(incoming_game_id)
+	var manually_viewed_step := _find_onboarding_step(manually_viewed_step_id)
+	if (
+		not manually_viewed_step.is_empty()
+		and _onboarding_step_is_eligible(manually_viewed_step)
+	):
+		_onboarding_seen_step_ids[manually_viewed_step_id] = true
+	_evaluate_automatic_onboarding(_latest_wolf_game_data)
 
 
 func _key_info_target_bottom() -> float:
@@ -432,6 +1186,10 @@ func _set_key_info_expanded(expanded: bool, animate: bool = true) -> void:
 
 
 func _update_key_public_info(game_data: Dictionary) -> void:
+	key_info_safety_label.text = (
+		"[全场公开] ◇ 公开说法（真假未确认） · ◆ 公开承诺（未验真） · ● 已确认公开动作\n"
+		+ "! 矛盾候选仅供核对，不代表说谎或阵营判断"
+	)
 	var incoming_game_id := str(game_data.get("game_id", ""))
 	if incoming_game_id != _key_info_game_id:
 		_key_info_game_id = incoming_game_id
@@ -439,16 +1197,24 @@ func _update_key_public_info(game_data: Dictionary) -> void:
 		_set_key_info_expanded(false, false)
 
 	var lines: Array[String] = []
-	var public_intel = game_data.get("public_intel", [])
-	if typeof(public_intel) == TYPE_ARRAY:
-		for item in public_intel:
+	var public_items: Variant = []
+	var public_timeline = game_data.get("public_evidence_timeline", {})
+	if (
+		typeof(public_timeline) == TYPE_DICTIONARY
+		and str(public_timeline.get("schema_version", "")) == "public_evidence_timeline.v1"
+	):
+		public_items = public_timeline.get("items", [])
+	else:
+		public_items = game_data.get("public_intel", [])
+	if typeof(public_items) == TYPE_ARRAY:
+		for item in public_items:
 			if typeof(item) != TYPE_DICTIONARY:
 				continue
 			var display_text := str(item.get("display_text", "")).strip_edges()
 			if display_text.is_empty():
 				continue
 			var day := int(item.get("day", _current_wolf_day))
-			var marker := "●" if str(item.get("category", "claim")) == "confirmed_action" else "◇"
+			var marker := _public_evidence_marker(str(item.get("category", "claim")))
 			lines.append(marker + " 第" + str(day) + "天 · " + display_text)
 
 	key_info_label.text = (
@@ -464,12 +1230,13 @@ func _update_key_public_info(game_data: Dictionary) -> void:
 
 
 func _set_wolf_menu_expanded(expanded: bool, animate: bool = true) -> void:
+	if not expanded and speech_preview_panel.visible:
+		return
 	if expanded and _intel_panel_open:
 		_set_intel_panel_open(false)
 	_wolf_menu_expanded = expanded
 	if not expanded:
 		_release_wolf_panel_focus()
-		call_deferred("_release_wolf_panel_focus")
 	if _wolf_menu_tween != null and _wolf_menu_tween.is_valid():
 		_wolf_menu_tween.kill()
 
@@ -496,9 +1263,9 @@ func _set_wolf_menu_expanded(expanded: bool, animate: bool = true) -> void:
 func _update_ui_safe_area() -> void:
 	var safe_width := 0.0
 	if _intel_panel_open:
-		safe_width = INTEL_PANEL_WIDTH
+		safe_width = _intel_panel_width
 	elif _wolf_menu_expanded:
-		safe_width = WOLF_MENU_WIDTH
+		safe_width = _wolf_menu_width
 	player.call("set_menu_safe_area", safe_width > 0.0, safe_width)
 
 
@@ -513,17 +1280,61 @@ func _get_wolf_menu_target_height() -> float:
 	if not _wolf_menu_expanded:
 		return WOLF_MENU_COLLAPSED_HEIGHT
 	var viewport_height := float(get_viewport().get_visible_rect().size.y)
+	var profile: Dictionary = RESPONSIVE_LAYOUT_PROFILES.get(
+		_responsive_layout_profile_name,
+		RESPONSIVE_LAYOUT_PROFILES["default"]
+	)
+	var height_ratio := float(profile.get("wolf_height_ratio", 0.62))
 	return clampf(
-		viewport_height * 0.62,
+		viewport_height * height_ratio,
 		WOLF_MENU_MIN_EXPANDED_HEIGHT,
 		WOLF_MENU_MAX_EXPANDED_HEIGHT
 	)
 
 
-func _unhandled_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
+	if (
+		event is InputEventKey
+		and event.pressed
+		and not event.echo
+		and event.keycode == KEY_F1
+	):
+		if not onboarding_overlay.visible:
+			_show_manual_onboarding()
+		get_viewport().set_input_as_handled()
+		return
+
+	if onboarding_overlay.visible:
+		if event.is_action_pressed("ui_cancel"):
+			_close_onboarding(false)
+			get_viewport().set_input_as_handled()
+		elif event.is_action_pressed("ui_focus_prev"):
+			_move_onboarding_focus(-1)
+			get_viewport().set_input_as_handled()
+		elif event.is_action_pressed("ui_focus_next"):
+			_move_onboarding_focus(1)
+			get_viewport().set_input_as_handled()
+		elif event.is_action_pressed("ui_left"):
+			_on_onboarding_back_button_pressed()
+			get_viewport().set_input_as_handled()
+		elif event.is_action_pressed("ui_right"):
+			_on_onboarding_next_button_pressed()
+			get_viewport().set_input_as_handled()
+		elif _handle_modal_focus_direction(event, onboarding_overlay):
+			get_viewport().set_input_as_handled()
+		return
+
 	if game_summary_overlay.visible:
 		if event.is_action_pressed("ui_cancel"):
 			_hide_game_summary()
+			get_viewport().set_input_as_handled()
+		elif event.is_action_pressed("ui_focus_prev"):
+			_move_focus_in_scope(game_summary_overlay, -1)
+			get_viewport().set_input_as_handled()
+		elif event.is_action_pressed("ui_focus_next"):
+			_move_focus_in_scope(game_summary_overlay, 1)
+			get_viewport().set_input_as_handled()
+		elif _handle_modal_focus_direction(event, game_summary_overlay):
 			get_viewport().set_input_as_handled()
 		return
 
@@ -531,10 +1342,89 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.is_action_pressed("ui_cancel"):
 			_hide_game_setup()
 			get_viewport().set_input_as_handled()
+		elif event.is_action_pressed("ui_focus_prev"):
+			_move_focus_in_scope(game_setup_overlay, -1)
+			get_viewport().set_input_as_handled()
+		elif event.is_action_pressed("ui_focus_next"):
+			_move_focus_in_scope(game_setup_overlay, 1)
+			get_viewport().set_input_as_handled()
+		elif _handle_modal_focus_direction(event, game_setup_overlay):
+			get_viewport().set_input_as_handled()
 		return
 
-	if event.is_action_pressed("ui_cancel") and dialog_box.call("is_open"):
-		dialog_box.call("hide_dialog")
+	if speech_preview_panel.is_visible_in_tree():
+		if event is InputEventMouseButton and event.pressed:
+			var mouse_event := event as InputEventMouseButton
+			var visible_preview_rect := speech_preview_panel.get_global_rect().intersection(
+				wolf_scroll_container.get_global_rect()
+			)
+			if not visible_preview_rect.has_point(mouse_event.position):
+				get_viewport().set_input_as_handled()
+				return
+		if event.is_action_pressed("ui_cancel"):
+			_on_speech_preview_edit_button_pressed()
+			get_viewport().set_input_as_handled()
+		elif event.is_action_pressed("ui_focus_prev"):
+			_move_focus_in_scope(speech_preview_panel, -1)
+			get_viewport().set_input_as_handled()
+		elif event.is_action_pressed("ui_focus_next"):
+			_move_focus_in_scope(speech_preview_panel, 1)
+			get_viewport().set_input_as_handled()
+		elif _handle_modal_focus_direction(event, speech_preview_panel):
+			get_viewport().set_input_as_handled()
+		return
+
+	if dialog_box.call("is_open"):
+		return
+
+	if event is InputEventMouseButton and event.pressed:
+		_release_focus_to_world()
+		return
+
+	if _is_wasd_key_event(event) and not _current_focus_is_editable_text():
+		_release_focus_to_world()
+		return
+
+	if event.is_action_pressed("ui_focus_prev"):
+		_move_focus_in_active_panel(-1)
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("ui_focus_next"):
+		_move_focus_in_active_panel(1)
+		get_viewport().set_input_as_handled()
+		return
+
+	var focus_owner := get_viewport().gui_get_focus_owner()
+	if (
+		_ui_focus_scope == UI_FOCUS_SCOPE_PANEL
+		and focus_owner is BaseButton
+		and not focus_owner is OptionButton
+	):
+		if event.is_action_pressed("ui_left") or event.is_action_pressed("ui_up"):
+			_move_focus_in_active_panel(-1)
+			get_viewport().set_input_as_handled()
+		elif event.is_action_pressed("ui_right") or event.is_action_pressed("ui_down"):
+			_move_focus_in_active_panel(1)
+			get_viewport().set_input_as_handled()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if onboarding_overlay.visible:
+		# The guide is a modal input boundary.  In particular, the world
+		# interaction action also contains E/Enter/Space and must not open an NPC
+		# dialog behind the onboarding overlay.
+		get_viewport().set_input_as_handled()
+		return
+
+	if game_summary_overlay.visible:
+		get_viewport().set_input_as_handled()
+		return
+
+	if game_setup_overlay.visible:
+		get_viewport().set_input_as_handled()
+		return
+
+	if speech_preview_panel.is_visible_in_tree() or dialog_box.call("is_open"):
 		get_viewport().set_input_as_handled()
 		return
 
@@ -542,14 +1432,14 @@ func _unhandled_input(event: InputEvent) -> void:
 		_set_intel_panel_open(false)
 		get_viewport().set_input_as_handled()
 		return
+	if event.is_action_pressed("ui_cancel") and _ui_focus_scope != UI_FOCUS_SCOPE_WORLD:
+		_release_focus_to_world()
+		get_viewport().set_input_as_handled()
+		return
 
 	if not event.is_action_pressed("interact"):
 		return
-
-	if dialog_box.call("is_open"):
-		if dialog_box.call("has_text_focus"):
-			return
-		dialog_box.call("hide_dialog")
+	if _ui_focus_scope != UI_FOCUS_SCOPE_WORLD or _current_focus_control() != null:
 		get_viewport().set_input_as_handled()
 		return
 
@@ -570,7 +1460,7 @@ func _on_npc_dialog_requested(npc_name: String, dialog_text: String, wolf_charac
 	if _wolf_menu_expanded:
 		_set_wolf_menu_expanded(false)
 	if _intel_panel_open:
-		_set_intel_panel_open(false)
+		_set_intel_panel_open(false, false)
 	_fallback_npc_name = npc_name
 	_fallback_dialog_text = dialog_text
 	_current_npc_name = npc_name
@@ -607,9 +1497,9 @@ func _on_npc_dialog_requested(npc_name: String, dialog_text: String, wolf_charac
 				dialog_box.call("show_notice", npc_name, "你已经出局，不能进行私密追问。")
 				return
 			var used := bool(_wolf_private_question_used.get(wolf_character_id, false))
-			var prompt := "这是今天第一次有效私密追问，你的说法会影响我的判断。"
+			var prompt := "这是今天第一次有效私密追问。原文不会自动公开，但会影响我的后续判断。"
 			if used:
-				prompt = "你今天已经向我进行过有效追问。可以继续问，但不会再次改变我的决策。"
+				prompt = "你今天已经向我进行过有效追问。原文不会自动公开；可以继续问，但不会再次改变我的决策。"
 			dialog_box.call("show_private_prompt", npc_name, prompt)
 		"VOTE":
 			dialog_box.call("show_notice", npc_name, "现在是投票阶段，请在控制面板完成投票。")
@@ -630,6 +1520,7 @@ func _request_current_npc_sheriff_speech(character_id: int, npc_name: String) ->
 		"game_id": _current_wolf_game_id,
 		"character_id": character_id,
 	}
+	body = _prepare_idempotent_body("sheriff_speech", "npc_sheriff_speech", body)
 	var headers = ["Content-Type: application/json"]
 	var error = sheriff_speech_request.request(WOLF_SHERIFF_NPC_SPEECH_URL, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
 	if error != OK:
@@ -652,6 +1543,7 @@ func _request_current_npc_meeting_speech(character_id: int, npc_name: String) ->
 		"game_id": _current_wolf_game_id,
 		"character_id": character_id
 	}
+	body = _prepare_idempotent_body("npc_speech", "npc_day_speech", body)
 	var headers = ["Content-Type: application/json"]
 	var error = npc_speech_request.request(WOLF_NPC_SPEECH_URL, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
 	if error != OK:
@@ -696,6 +1588,7 @@ func _submit_private_chat(message: String) -> void:
 		"npc_character_id": _current_npc_character_id,
 		"question": message
 	}
+	body = _prepare_idempotent_body("private_chat", "private_chat", body)
 	var headers = ["Content-Type: application/json"]
 	var error = private_chat_request.request(WOLF_PRIVATE_CHAT_URL, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
 	if error != OK:
@@ -754,6 +1647,7 @@ func _on_start_game_button_pressed() -> void:
 	if _is_starting_wolf_game:
 		return
 
+	_reset_idempotency_commands()
 	_is_starting_wolf_game = true
 	_reset_game_summary()
 	wolf_menu_summary_label.text = "正在开始..."
@@ -784,6 +1678,7 @@ func _on_start_game_button_pressed() -> void:
 		"npc_count": 11,
 		"player_role": str(_get_selected_option_metadata(player_role_option, "random")),
 		"enable_llm": llm_enabled_toggle.button_pressed,
+		"enable_llm_validation": _llm_validation_requested(),
 		"enable_rag": true
 	}
 	var headers = ["Content-Type: application/json"]
@@ -846,6 +1741,7 @@ func _on_submit_night_action_button_pressed() -> void:
 		"action_type": action_type,
 		"target_id": target_id
 	}
+	body = _prepare_idempotent_body("night_action", "night_action", body)
 	var headers = ["Content-Type: application/json"]
 	var error = night_action_request.request(WOLF_NIGHT_ACTION_URL, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
 	if error != OK:
@@ -887,6 +1783,7 @@ func _submit_hunter_shot(target_id: Variant) -> void:
 		"character_id": _current_player_character_id,
 		"target_id": target_id
 	}
+	body = _prepare_idempotent_body("hunter_shot", "hunter_shot", body)
 	var headers = ["Content-Type: application/json"]
 	var error = hunter_shot_request.request(
 		WOLF_HUNTER_SHOT_URL,
@@ -913,6 +1810,7 @@ func _on_resolve_night_button_pressed() -> void:
 	wolf_status_label.text = "后端状态：正在结算夜晚..."
 
 	var body = {"game_id": _current_wolf_game_id}
+	body = _prepare_idempotent_body("night_resolve", "night_resolve", body)
 	var headers = ["Content-Type: application/json"]
 	var error = night_resolve_request.request(WOLF_NIGHT_RESOLVE_URL, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
 	if error != OK:
@@ -922,7 +1820,13 @@ func _on_resolve_night_button_pressed() -> void:
 
 
 func _on_submit_speech_button_pressed() -> void:
-	if _is_submitting_player_speech or _current_wolf_game_id.is_empty() or _current_player_character_id <= 0:
+	if (
+		_is_previewing_player_speech
+		or _is_submitting_player_speech
+		or speech_preview_panel.visible
+		or _current_wolf_game_id.is_empty()
+		or _current_player_character_id <= 0
+	):
 		return
 
 	if not _is_day_speech_phase():
@@ -943,10 +1847,6 @@ func _on_submit_speech_button_pressed() -> void:
 		if badge_flow.is_empty():
 			return
 
-	_is_submitting_player_speech = true
-	_set_day_speech_buttons_disabled(true)
-	wolf_status_label.text = "后端状态：正在提交玩家发言..."
-
 	var body = {
 		"game_id": _current_wolf_game_id,
 		"character_id": _current_player_character_id,
@@ -959,19 +1859,188 @@ func _on_submit_speech_button_pressed() -> void:
 		var temporary_target = _get_selected_option_metadata(temporary_nomination_option, 0)
 		if int(temporary_target) > 0:
 			body["temporary_nomination_target_id"] = int(temporary_target)
-	_pending_player_speech_text = speech
-	_finish_gameplay_text_submission(player_speech_input)
-	var headers = ["Content-Type: application/json"]
-	var error = player_speech_request.request(WOLF_PLAYER_SPEECH_URL, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
-	if error != OK:
-		_is_submitting_player_speech = false
-		_restore_failed_gameplay_text(player_speech_input, _pending_player_speech_text)
-		_update_day_speech_controls_from_current_state()
-		wolf_status_label.text = "后端状态：提交发言失败"
+	_request_player_speech_preview("day", body)
 
 
 func _on_player_speech_input_submitted(_speech: String) -> void:
 	_on_submit_speech_button_pressed()
+
+
+func _request_player_speech_preview(kind: String, submission_body: Dictionary) -> void:
+	if _is_previewing_player_speech or player_speech_preview_request.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
+		return
+	_is_previewing_player_speech = true
+	_pending_speech_preview_kind = kind
+	_pending_speech_preview_body = submission_body.duplicate(true)
+	_pending_speech_preview_fingerprint = ""
+	_pending_speech_submission_confirmed = false
+	_speech_preview_focus_return = _current_focus_control()
+	speech_preview_panel.visible = false
+	speech_preview_panel.remove_from_group("dialog_open")
+	var preview_body := submission_body.duplicate(true)
+	preview_body["speech_kind"] = kind
+	preview_body.erase("preview_fingerprint")
+	_update_day_speech_controls_from_current_state()
+	_update_sheriff_controls_from_current_state()
+	_update_badge_flow_enabled_state()
+	wolf_status_label.text = "后端状态：正在解析发言预览..."
+	var headers = ["Content-Type: application/json"]
+	var error = player_speech_preview_request.request(
+		WOLF_PLAYER_SPEECH_PREVIEW_URL,
+		headers,
+		HTTPClient.METHOD_POST,
+		JSON.stringify(preview_body)
+	)
+	if error != OK:
+		_is_previewing_player_speech = false
+		_clear_speech_preview()
+		wolf_status_label.text = "后端状态：读取发言预览失败"
+
+
+func _on_speech_preview_edit_button_pressed() -> void:
+	var kind := _pending_speech_preview_kind
+	_pending_speech_submission_confirmed = false
+	_clear_speech_preview(true, false)
+	if kind == "sheriff":
+		sheriff_speech_input.grab_focus()
+	else:
+		player_speech_input.grab_focus()
+	wolf_status_label.text = "后端状态：请修改发言后重新预览"
+
+
+func _on_speech_preview_confirm_button_pressed() -> void:
+	if (
+		_pending_speech_preview_body.is_empty()
+		or _pending_speech_preview_fingerprint.is_empty()
+		or speech_preview_confirm_button.disabled
+	):
+		return
+	var kind := _pending_speech_preview_kind
+	var body := _pending_speech_preview_body.duplicate(true)
+	body["preview_fingerprint"] = _pending_speech_preview_fingerprint
+	_pending_speech_submission_confirmed = true
+	_close_speech_preview_focus(false)
+	speech_preview_confirm_button.disabled = true
+	var headers = ["Content-Type: application/json"]
+	if kind == "day":
+		body = _prepare_idempotent_body("player_speech", "player_day_speech", body)
+		_is_submitting_player_speech = true
+		_pending_player_speech_text = str(body.get("speech", ""))
+		_finish_gameplay_text_submission(player_speech_input)
+		_set_day_speech_buttons_disabled(true)
+		wolf_status_label.text = "后端状态：正在提交已确认的玩家发言..."
+		var day_error = player_speech_request.request(
+			WOLF_PLAYER_SPEECH_URL,
+			headers,
+			HTTPClient.METHOD_POST,
+			JSON.stringify(body)
+		)
+		if day_error != OK:
+			_is_submitting_player_speech = false
+			_restore_failed_gameplay_text(
+				player_speech_input,
+				_pending_player_speech_text
+			)
+			_restore_confirmed_speech_preview()
+			_update_day_speech_controls_from_current_state()
+			wolf_status_label.text = "后端状态：提交发言失败"
+		return
+	if kind == "sheriff":
+		body = _prepare_idempotent_body("sheriff_speech", "player_sheriff_speech", body)
+		_is_sheriff_speech_requesting = true
+		_pending_sheriff_speech_text = str(body.get("speech", ""))
+		_finish_gameplay_text_submission(sheriff_speech_input)
+		_update_sheriff_controls_from_current_state()
+		_update_badge_flow_enabled_state()
+		wolf_status_label.text = "后端状态：正在提交已确认的警上发言..."
+		var sheriff_error = sheriff_speech_request.request(
+			WOLF_SHERIFF_PLAYER_SPEECH_URL,
+			headers,
+			HTTPClient.METHOD_POST,
+			JSON.stringify(body)
+		)
+		if sheriff_error != OK:
+			_is_sheriff_speech_requesting = false
+			_restore_failed_gameplay_text(
+				sheriff_speech_input,
+				_pending_sheriff_speech_text
+			)
+			_restore_confirmed_speech_preview()
+			_update_sheriff_controls_from_current_state()
+			_update_badge_flow_enabled_state()
+			wolf_status_label.text = "后端状态：提交警上发言失败"
+
+
+func _clear_speech_preview(
+	update_controls: bool = true,
+	restore_focus: bool = true,
+) -> void:
+	_close_speech_preview_focus(restore_focus)
+	speech_preview_confirm_button.disabled = true
+	speech_preview_summary.text = "等待 Python 解析。"
+	_pending_speech_preview_kind = ""
+	_pending_speech_preview_body = {}
+	_pending_speech_preview_fingerprint = ""
+	_pending_speech_submission_confirmed = false
+	if update_controls:
+		_update_day_speech_controls_from_current_state()
+		_update_sheriff_controls_from_current_state()
+		_update_badge_flow_enabled_state()
+
+
+func _restore_confirmed_speech_preview() -> void:
+	if (
+		not _pending_speech_submission_confirmed
+		or _pending_speech_preview_body.is_empty()
+		or _pending_speech_preview_fingerprint.is_empty()
+	):
+		return
+	speech_preview_confirm_button.disabled = false
+	if _speech_preview_focus_return == null:
+		_speech_preview_focus_return = (
+			sheriff_speech_input
+			if _pending_speech_preview_kind == "sheriff"
+			else player_speech_input
+		)
+	_show_speech_preview_focus(speech_preview_confirm_button)
+	_update_day_speech_controls_from_current_state()
+	_update_sheriff_controls_from_current_state()
+	_update_badge_flow_enabled_state()
+
+
+func _show_speech_preview_focus(preferred: Control) -> void:
+	if not _wolf_menu_expanded:
+		_set_wolf_menu_expanded(true)
+	speech_preview_panel.visible = true
+	if not speech_preview_panel.is_in_group("dialog_open"):
+		speech_preview_panel.add_to_group("dialog_open")
+	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
+	call_deferred("_focus_control_if_available", preferred)
+
+
+func _close_speech_preview_focus(restore_focus: bool) -> void:
+	var return_focus := _speech_preview_focus_return
+	var had_focus_context := speech_preview_panel.visible or return_focus != null
+	var fallback: Control = (
+		sheriff_speech_input
+		if _pending_speech_preview_kind == "sheriff"
+		else player_speech_input
+	)
+	_speech_preview_focus_return = null
+	speech_preview_panel.visible = false
+	speech_preview_panel.remove_from_group("dialog_open")
+	speech_preview_edit_button.release_focus()
+	speech_preview_confirm_button.release_focus()
+	if not had_focus_context:
+		return
+	if restore_focus:
+		call_deferred(
+			"_restore_focus_after_close",
+			return_focus,
+			fallback
+		)
+	else:
+		call_deferred("_repair_focus_after_modal_close")
 
 
 func _on_end_free_activity_button_pressed() -> void:
@@ -987,6 +2056,7 @@ func _on_end_free_activity_button_pressed() -> void:
 	wolf_status_label.text = "后端状态：正在结束自由活动..."
 
 	var body = {"game_id": _current_wolf_game_id}
+	body = _prepare_idempotent_body("end_free_activity", "end_free_activity", body)
 	var headers = ["Content-Type: application/json"]
 	var error = end_free_activity_request.request(WOLF_END_FREE_ACTIVITY_URL, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
 	if error != OK:
@@ -1016,18 +2086,22 @@ func _submit_sheriff_action(withdraw_choice: Variant = null) -> void:
 		"character_id": _current_player_character_id,
 	}
 	var url := ""
+	var operation := ""
 	_pending_sheriff_action = _current_wolf_phase
 	match _current_wolf_phase:
 		"SHERIFF_SIGNUP":
 			url = WOLF_SHERIFF_SIGNUP_URL
+			operation = "sheriff_signup"
 			body["run_for_sheriff"] = bool(_get_selected_option_metadata(sheriff_option, false))
 		"SHERIFF_WITHDRAWAL":
 			if withdraw_choice == null:
 				return
 			url = WOLF_SHERIFF_WITHDRAW_URL
+			operation = "sheriff_withdrawal"
 			body["withdraw"] = bool(withdraw_choice)
 		"SHERIFF_VOTE", "SHERIFF_RUNOFF_VOTE":
 			url = WOLF_SHERIFF_VOTE_URL
+			operation = "sheriff_vote"
 			body["target_id"] = (
 				_get_selected_option_metadata(sheriff_option, null)
 				if bool(_current_sheriff_data.get("player_can_vote", false))
@@ -1035,17 +2109,21 @@ func _submit_sheriff_action(withdraw_choice: Variant = null) -> void:
 			)
 		"MEETING_ORDER":
 			url = WOLF_SHERIFF_MEETING_ORDER_URL
+			operation = "sheriff_meeting_order"
 			body["side"] = str(_get_selected_option_metadata(sheriff_option, "left"))
 		"SHERIFF_NOMINATION":
 			url = WOLF_SHERIFF_NOMINATE_URL
+			operation = "sheriff_nomination"
 			body["target_id"] = int(_get_selected_option_metadata(sheriff_option, 0))
 		"BADGE_TRANSFER":
 			url = WOLF_SHERIFF_TRANSFER_URL
+			operation = "sheriff_badge_transfer"
 			var transfer_target = _get_selected_option_metadata(sheriff_option, null)
 			body["target_id"] = transfer_target if transfer_target != 0 else null
 		_:
 			return
 
+	body = _prepare_idempotent_body("sheriff_action", operation, body)
 	_is_sheriff_action_requesting = true
 	_update_sheriff_controls_from_current_state()
 	wolf_status_label.text = "后端状态：正在提交警长操作..."
@@ -1058,7 +2136,12 @@ func _submit_sheriff_action(withdraw_choice: Variant = null) -> void:
 
 
 func _on_sheriff_speech_button_pressed() -> void:
-	if _is_sheriff_speech_requesting or _current_wolf_game_id.is_empty():
+	if (
+		_is_previewing_player_speech
+		or _is_sheriff_speech_requesting
+		or speech_preview_panel.visible
+		or _current_wolf_game_id.is_empty()
+	):
 		return
 	if _current_wolf_phase not in ["SHERIFF_SPEECH", "SHERIFF_RUNOFF_SPEECH"]:
 		return
@@ -1080,8 +2163,6 @@ func _on_sheriff_speech_button_pressed() -> void:
 		if badge_flow.is_empty():
 			return
 
-	_is_sheriff_speech_requesting = true
-	_update_sheriff_controls_from_current_state()
 	var body = {
 		"game_id": _current_wolf_game_id,
 		"character_id": _current_player_character_id,
@@ -1089,15 +2170,7 @@ func _on_sheriff_speech_button_pressed() -> void:
 	}
 	if not badge_flow.is_empty():
 		body["badge_flow"] = badge_flow
-	_pending_sheriff_speech_text = speech
-	_finish_gameplay_text_submission(sheriff_speech_input)
-	var headers = ["Content-Type: application/json"]
-	var error = sheriff_speech_request.request(WOLF_SHERIFF_PLAYER_SPEECH_URL, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
-	if error != OK:
-		_is_sheriff_speech_requesting = false
-		_restore_failed_gameplay_text(sheriff_speech_input, _pending_sheriff_speech_text)
-		_update_sheriff_controls_from_current_state()
-		wolf_status_label.text = "后端状态：提交警上发言失败"
+	_request_player_speech_preview("sheriff", body)
 
 
 func _on_sheriff_speech_input_submitted(_speech: String) -> void:
@@ -1127,6 +2200,7 @@ func _on_submit_vote_button_pressed() -> void:
 		"target_id": vote_target_option.get_selected_id() if _current_player_alive else null,
 		"reason": vote_reason,
 	}
+	body = _prepare_idempotent_body("combined_vote", "combined_vote", body)
 	_pending_vote_reason_text = vote_reason
 	_finish_gameplay_text_submission(vote_reason_input)
 	var headers = ["Content-Type: application/json"]
@@ -1339,6 +2413,16 @@ func _on_game_state_request_completed(result: int, response_code: int, _headers:
 		return
 
 	_render_wolf_game(json.data)
+	if onboarding_overlay.visible and _onboarding_manual_mode:
+		var current_manual_step := _find_onboarding_step(_onboarding_current_step_id)
+		if not current_manual_step.is_empty():
+			_render_onboarding_step(current_manual_step)
+		var private_info: Variant = json.data.get("player_private_info", null)
+		_onboarding_full_state_pending_after_manual = (
+			typeof(private_info) == TYPE_DICTIONARY
+			and not str(private_info.get("role", "")).is_empty()
+		)
+	_evaluate_automatic_onboarding(json.data)
 
 
 func _on_night_action_request_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
@@ -1349,6 +2433,7 @@ func _on_night_action_request_completed(result: int, response_code: int, _header
 		wolf_status_label.text = "后端状态：提交夜晚行动失败"
 		return
 
+	_complete_idempotent_command("night_action")
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
 	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
@@ -1365,6 +2450,7 @@ func _on_night_resolve_request_completed(result: int, response_code: int, _heade
 		wolf_status_label.text = "后端状态：结算夜晚失败"
 		return
 
+	_complete_idempotent_command("night_resolve")
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
 	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
@@ -1384,6 +2470,7 @@ func _on_hunter_shot_request_completed(result: int, response_code: int, _headers
 		_update_hunter_controls(_latest_wolf_game_data)
 		return
 
+	_complete_idempotent_command("hunter_shot")
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
 	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
@@ -1393,15 +2480,62 @@ func _on_hunter_shot_request_completed(result: int, response_code: int, _headers
 	_request_wolf_game_state()
 
 
+func _on_player_speech_preview_request_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	_is_previewing_player_speech = false
+	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
+		_clear_speech_preview()
+		wolf_status_label.text = "后端状态：" + _get_http_error_message(
+			body,
+			"读取发言预览失败"
+		)
+		return
+
+	var json = JSON.new()
+	var parse_error = json.parse(body.get_string_from_utf8())
+	if parse_error != OK or typeof(json.data) != TYPE_DICTIONARY:
+		_clear_speech_preview()
+		wolf_status_label.text = "后端状态：发言预览格式无效"
+		return
+
+	var accepted := bool(json.data.get("accepted", false))
+	_pending_speech_preview_fingerprint = (
+		str(json.data.get("preview_fingerprint", ""))
+		if accepted
+		else ""
+	)
+	speech_preview_summary.text = _format_player_speech_preview(json.data)
+	speech_preview_confirm_button.disabled = (
+		not accepted
+		or _pending_speech_preview_fingerprint.is_empty()
+	)
+	_show_speech_preview_focus(
+		speech_preview_confirm_button
+		if not speech_preview_confirm_button.disabled
+		else speech_preview_edit_button
+	)
+	_update_day_speech_controls_from_current_state()
+	_update_sheriff_controls_from_current_state()
+	_update_badge_flow_enabled_state()
+	wolf_status_label.text = (
+		"后端状态：请确认 Python 的发言理解"
+		if accepted
+		else "后端状态：当前发言未通过校验，请返回修改"
+	)
+	wolf_scroll_container.ensure_control_visible(speech_preview_panel)
+
+
 func _on_player_speech_request_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
 	_is_submitting_player_speech = false
 	_update_day_speech_controls_from_current_state()
 
 	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
 		_restore_failed_gameplay_text(player_speech_input, _pending_player_speech_text)
+		_restore_confirmed_speech_preview()
 		wolf_status_label.text = "后端状态：提交发言失败"
 		return
 
+	_complete_idempotent_command("player_speech")
+	_clear_speech_preview(false, false)
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
 	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
@@ -1425,6 +2559,7 @@ func _on_npc_speech_request_completed(result: int, response_code: int, _headers:
 			dialog_box.call("show_notice", _current_npc_name, _get_http_error_message(body, "当前不能生成这名 NPC 的发言。"))
 		return
 
+	_complete_idempotent_command("npc_speech")
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
 	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
@@ -1465,6 +2600,7 @@ func _on_end_free_activity_request_completed(result: int, response_code: int, _h
 		wolf_status_label.text = "后端状态：结束自由活动失败"
 		return
 
+	_complete_idempotent_command("end_free_activity")
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
 	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
@@ -1478,11 +2614,13 @@ func _on_end_free_activity_request_completed(result: int, response_code: int, _h
 func _on_private_chat_request_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
 	_is_private_chat_requesting = false
 
-	if not dialog_box.call("is_open"):
+	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
+		if dialog_box.call("is_open"):
+			dialog_box.call("show_private_prompt", _current_npc_name, _get_http_error_message(body, "私密追问失败，请稍后重试。"))
 		return
 
-	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
-		dialog_box.call("show_private_prompt", _current_npc_name, _get_http_error_message(body, "私密追问失败，请稍后重试。"))
+	_complete_idempotent_command("private_chat")
+	if not dialog_box.call("is_open"):
 		return
 
 	var json = JSON.new()
@@ -1536,6 +2674,7 @@ func _on_sheriff_action_request_completed(result: int, response_code: int, _head
 		wolf_status_label.text = "后端状态：" + _get_http_error_message(body, "警长操作失败")
 		return
 
+	_complete_idempotent_command("sheriff_action")
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
 	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
@@ -1554,11 +2693,15 @@ func _on_sheriff_speech_request_completed(result: int, response_code: int, _head
 	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
 		if not _pending_sheriff_speech_text.is_empty():
 			_restore_failed_gameplay_text(sheriff_speech_input, _pending_sheriff_speech_text)
+		_restore_confirmed_speech_preview()
 		wolf_status_label.text = "后端状态：" + _get_http_error_message(body, "警上发言失败")
 		if dialog_box.call("is_open"):
 			dialog_box.call("show_notice", _current_npc_name, _get_http_error_message(body, "警上发言失败，请稍后重试。"))
 		return
 
+	_complete_idempotent_command("sheriff_speech")
+	if _pending_speech_preview_kind == "sheriff":
+		_clear_speech_preview(false, false)
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
 	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
@@ -1594,6 +2737,7 @@ func _on_combined_vote_request_completed(result: int, response_code: int, _heade
 		wolf_status_label.text = "后端状态：" + _get_http_error_message(body, "同时投票失败")
 		return
 
+	_complete_idempotent_command("combined_vote")
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
 	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
@@ -1641,6 +2785,8 @@ func _is_busy() -> bool:
 		or _is_submitting_night_action
 		or _is_resolving_night
 		or _is_submitting_hunter_shot
+		or _is_previewing_player_speech
+		or speech_preview_panel.visible
 		or _is_submitting_player_speech
 		or _is_generating_npc_speeches
 		or _is_ending_free_activity
@@ -1692,12 +2838,20 @@ func _render_wolf_game(game_data: Dictionary) -> void:
 	var message = game_data.get("message", "游戏已开始。")
 	var characters = game_data.get("characters", [])
 	var public_logs = game_data.get("public_logs", [])
-	var llm_enabled := bool(game_data.get("llm_enabled", false))
+	var llm_enabled: bool = bool(game_data.get("llm_enabled", false))
+	var llm_validation_enabled: bool = bool(
+		game_data.get("llm_validation_enabled", false)
+	)
 
 	_current_wolf_game_id = str(game_id)
 	_current_wolf_phase = str(phase)
 	_current_wolf_day = int(day)
 	if phase_changed:
+		if _is_previewing_player_speech:
+			player_speech_preview_request.cancel_request()
+		_is_previewing_player_speech = false
+		if not _pending_speech_submission_confirmed:
+			_clear_speech_preview(false, false)
 		_update_world_time(_current_wolf_phase)
 	_update_player_private_state(game_data)
 	_update_player_identity_display(game_data)
@@ -1712,9 +2866,19 @@ func _render_wolf_game(game_data: Dictionary) -> void:
 		_preserve_wolf_game_info_once = false
 	else:
 		var private_note := _format_player_private_state_note(game_data.get("player_private_info", {}))
-		var llm_label := "LLM：已启用" if llm_enabled else "LLM：规则模板"
+		var llm_label: String = "LLM：规则模板"
+		if llm_enabled:
+			llm_label = (
+				"LLM：已启用 · 校验开启（最多5轮）"
+				if llm_validation_enabled
+				else "LLM：已启用 · 原文直出（0次校验）"
+			)
 		wolf_game_info_label.text = "游戏 " + str(game_id) + " | 第 " + str(day) + " 天 | " + str(phase) + " | " + llm_label + "\n" + str(message) + private_note
-	public_log_label.text = _format_public_logs(public_logs)
+	public_log_label.text = _format_public_evidence_timeline(
+		game_data.get("public_evidence_timeline", {}),
+		game_data.get("public_evidence_analysis", {}),
+		public_logs
+	)
 	_clear_character_grid()
 
 	if typeof(characters) != TYPE_ARRAY:
@@ -1934,7 +3098,7 @@ func _update_player_identity_display(game_data: Dictionary) -> void:
 					and str(character.get("role_visible_to_player", "")) == "werewolf"
 				):
 					teammate_parts.append(str(character.get("id", "?")) + "号 " + str(character.get("name", "未知")))
-	wolf_teammates_label.text = "狼队友：" + ("、".join(teammate_parts) if not teammate_parts.is_empty() else "等待状态同步")
+	wolf_teammates_label.text = "仅你可见 · 狼队友：" + ("、".join(teammate_parts) if not teammate_parts.is_empty() else "等待状态同步")
 
 
 func _update_player_action_history(game_data: Dictionary) -> void:
@@ -2031,6 +3195,7 @@ func _update_contextual_panel_visibility() -> void:
 	vote_reason_input.visible = vote_visible
 	vote_action_row.visible = vote_visible
 	vote_result_label.visible = vote_visible or vote_result_label.text != "票型：尚未公布"
+	call_deferred("_repair_focus_in_top_scope")
 
 
 func _update_night_controls(game_data: Dictionary) -> void:
@@ -2215,7 +3380,12 @@ func _update_sheriff_controls(game_data: Dictionary) -> void:
 	sheriff_continue_button.disabled = true
 	sheriff_withdraw_button.disabled = true
 
-	var busy := _is_sheriff_action_requesting or _is_sheriff_speech_requesting
+	var busy := (
+		_is_sheriff_action_requesting
+		or _is_sheriff_speech_requesting
+		or _is_previewing_player_speech
+		or speech_preview_panel.visible
+	)
 	var characters = game_data.get("characters", [])
 	match _current_wolf_phase:
 		"SHERIFF_SIGNUP":
@@ -2699,7 +3869,12 @@ func _update_badge_flow_collapsed_state() -> void:
 
 
 func _update_badge_flow_enabled_state() -> void:
-	var busy := _is_sheriff_speech_requesting or _is_submitting_player_speech
+	var busy := (
+		_is_sheriff_speech_requesting
+		or _is_submitting_player_speech
+		or _is_previewing_player_speech
+		or speech_preview_panel.visible
+	)
 	var can_edit := (
 		badge_flow_panel.visible
 		and _is_player_badge_flow_speech_turn()
@@ -2777,7 +3952,7 @@ func _update_day_speech_controls() -> void:
 		player_speech_input.editable = false
 		submit_speech_button.disabled = true
 		end_free_activity_button.disabled = _is_ending_free_activity
-		day_speech_label.text = "会后自由活动：走近存活 NPC 按 E 私密追问"
+		day_speech_label.text = "会后自由活动：走近存活 NPC 按 E 私密追问；原文不会自动公开"
 		return
 
 	if _current_wolf_phase != "DAY_MEETING":
@@ -2853,7 +4028,13 @@ func _is_day_speech_phase() -> bool:
 
 
 func _is_day_speech_requesting() -> bool:
-	return _is_submitting_player_speech or _is_generating_npc_speeches or _is_ending_free_activity
+	return (
+		_is_previewing_player_speech
+		or speech_preview_panel.visible
+		or _is_submitting_player_speech
+		or _is_generating_npc_speeches
+		or _is_ending_free_activity
+	)
 
 
 func _update_vote_controls(game_data: Dictionary) -> void:
@@ -3039,6 +4220,52 @@ func _format_player_speech_result(speech_data: Dictionary) -> String:
 	return _join_lines(lines)
 
 
+func _format_player_speech_preview(preview_data: Dictionary) -> String:
+	var accepted := bool(preview_data.get("accepted", false))
+	var lines: Array[String] = [
+		"解析结果：" + ("可以提交" if accepted else "不能提交")
+	]
+	var errors = preview_data.get("errors", [])
+	if typeof(errors) == TYPE_ARRAY:
+		for error in errors:
+			lines.append("拒绝原因：" + str(error))
+
+	var canonical_speech := str(preview_data.get("canonical_speech", ""))
+	if not canonical_speech.is_empty():
+		lines.append("将公开的规范文本：" + canonical_speech)
+
+	var public_facts = preview_data.get("public_facts_to_write", [])
+	if typeof(public_facts) == TYPE_ARRAY and not public_facts.is_empty():
+		lines.append("会写入的公开事实：")
+		for item in public_facts:
+			if typeof(item) == TYPE_DICTIONARY:
+				lines.append("• " + str(item.get("summary", "")))
+	else:
+		lines.append("会写入的公开事实：无")
+
+	var strategic_signals = preview_data.get(
+		"strategic_signals_to_apply",
+		[]
+	)
+	if (
+		typeof(strategic_signals) == TYPE_ARRAY
+		and not strategic_signals.is_empty()
+	):
+		lines.append("会影响本局理解的策略信号：")
+		for item in strategic_signals:
+			if typeof(item) == TYPE_DICTIONARY:
+				lines.append("• " + str(item.get("summary", "")))
+	else:
+		lines.append("策略信号：无")
+
+	var text_only_notes = preview_data.get("text_only_notes", [])
+	if typeof(text_only_notes) == TYPE_ARRAY and not text_only_notes.is_empty():
+		lines.append("仅文本表达：")
+		for note in text_only_notes:
+			lines.append("• " + str(note))
+	return _join_lines(lines)
+
+
 func _format_speech_tone(tone: String) -> String:
 	match tone:
 		"suspicious":
@@ -3202,6 +4429,160 @@ func _format_public_logs(public_logs: Variant) -> String:
 	return output
 
 
+func _public_evidence_marker(category: String) -> String:
+	match category:
+		"confirmed_action":
+			return "●"
+		"commitment", "public_commitment":
+			return "◆"
+		_:
+			return "◇"
+
+
+func _public_commitment_status_marker(status: String) -> String:
+	match status:
+		"active":
+			return "○"
+		"superseded":
+			return "↻"
+		"fulfilled":
+			return "✓"
+		"invalidated":
+			return "—"
+		"undetermined":
+			return "?"
+		"contradicted":
+			return "!"
+		_:
+			return "?"
+
+
+func _public_commitment_status_label(status: String) -> String:
+	match status:
+		"active":
+			return "进行中"
+		"superseded":
+			return "已被公开修订替代"
+		"fulfilled":
+			return "已有一致的公开后续"
+		"invalidated":
+			return "公开条件已失效"
+		"undetermined":
+			return "公开信息不足"
+		"contradicted":
+			return "后续记录不一致 · 待核对"
+		_:
+			return "未知状态"
+
+
+func _format_public_evidence_analysis(analysis: Variant) -> Array[String]:
+	var lines: Array[String] = []
+	if (
+		typeof(analysis) != TYPE_DICTIONARY
+		or str(analysis.get("schema_version", "")) != "public_evidence_analysis.v1"
+	):
+		return lines
+
+	lines.append("公开承诺状态与矛盾候选：")
+	var disclaimer := str(analysis.get("disclaimer", "")).strip_edges()
+	if disclaimer.is_empty():
+		disclaimer = "仅依据公开记录，不引入隐藏身份或赛后真相。"
+	lines.append("说明：" + disclaimer)
+	lines.append("! 矛盾候选仅供核对，不代表说谎或阵营判断。")
+
+	var commitments = analysis.get("commitments", [])
+	var has_commitments: bool = (
+		typeof(commitments) == TYPE_ARRAY and not commitments.is_empty()
+	)
+	if has_commitments:
+		lines.append("承诺状态：")
+		for commitment in commitments:
+			if typeof(commitment) != TYPE_DICTIONARY:
+				continue
+			var display_text := str(commitment.get("display_text", "")).strip_edges()
+			if display_text.is_empty():
+				continue
+			var sequence := int(commitment.get("sequence", 0))
+			var day := int(commitment.get("day", _current_wolf_day))
+			var effective_night_day := int(commitment.get("effective_night_day", day))
+			var status := str(commitment.get("status", "undetermined"))
+			var marker := _public_commitment_status_marker(status)
+			var status_label := _public_commitment_status_label(status)
+			lines.append(
+				"C#" + str(sequence) + " " + marker + " " + status_label
+				+ " · 第" + str(day) + "天公开 / 第" + str(effective_night_day) + "夜生效"
+				+ " · " + display_text
+			)
+
+	var candidates = analysis.get("contradiction_candidates", [])
+	var has_candidates: bool = (
+		typeof(candidates) == TYPE_ARRAY and not candidates.is_empty()
+	)
+	if has_candidates:
+		lines.append("矛盾候选（待核对）：")
+		for candidate in candidates:
+			if typeof(candidate) != TYPE_DICTIONARY:
+				continue
+			var display_text := str(candidate.get("display_text", "")).strip_edges()
+			if display_text.is_empty():
+				continue
+			var sequence := int(candidate.get("sequence", 0))
+			var day := int(candidate.get("day", _current_wolf_day))
+			lines.append(
+				"X#" + str(sequence) + " ! 待核对 · 第" + str(day) + "天 · " + display_text
+			)
+
+	if not has_commitments and not has_candidates:
+		lines.append("暂无公开承诺状态或矛盾候选。")
+	return lines
+
+
+func _format_public_evidence_timeline(
+	timeline: Variant,
+	analysis: Variant,
+	public_logs: Variant
+) -> String:
+	if (
+		typeof(timeline) != TYPE_DICTIONARY
+		or str(timeline.get("schema_version", "")) != "public_evidence_timeline.v1"
+	):
+		return _format_public_logs(public_logs)
+
+	var projected_sequence := int(timeline.get("projected_event_sequence", 0))
+	var lines: Array[String] = [
+		"公开证据时间线 · 规则事件 #" + str(projected_sequence),
+		"◇ 公开说法（真假未确认） · ◆ 公开承诺（未验真） · ● 已确认公开动作",
+	]
+	var items = timeline.get("items", [])
+	if typeof(items) == TYPE_ARRAY:
+		for item in items:
+			if typeof(item) != TYPE_DICTIONARY:
+				continue
+			var display_text := str(item.get("display_text", "")).strip_edges()
+			if display_text.is_empty():
+				continue
+			var sequence := int(item.get("sequence", lines.size() - 1))
+			var day := int(item.get("day", _current_wolf_day))
+			var marker := _public_evidence_marker(str(item.get("category", "claim")))
+			lines.append(
+				"#" + str(sequence) + " " + marker + " 第" + str(day) + "天 · " + display_text
+			)
+	if lines.size() == 2:
+		lines.append("暂无结构化公开证据。")
+
+	var analysis_lines := _format_public_evidence_analysis(analysis)
+	if not analysis_lines.is_empty():
+		lines.append("")
+		for analysis_line in analysis_lines:
+			lines.append(analysis_line)
+
+	var recent_logs := _format_public_logs(public_logs)
+	if recent_logs != "公开日志：暂无":
+		lines.append("")
+		lines.append(recent_logs)
+	return "\n".join(lines)
+
+
 func _join_lines(lines: Array[String]) -> String:
 	var output := ""
 	for line_index in range(lines.size()):
@@ -3235,35 +4616,55 @@ func _reset_game_summary() -> void:
 		game_summary_request.cancel_request()
 	_is_loading_game_summary = false
 	_summary_requested_game_id = ""
+	_game_summary_pending_after_onboarding = false
 	_game_summary_data.clear()
 	review_game_button.disabled = true
 	_hide_game_summary()
 	_clear_control_children(game_summary_character_list)
 	game_summary_timeline_label.text = "暂无时间线。"
+	game_summary_review_label.text = "仅在游戏结束后生成解释复盘。"
 
 
 func _show_game_summary() -> void:
 	if _game_summary_data.is_empty():
 		return
+	if onboarding_overlay.visible:
+		_game_summary_pending_after_onboarding = (
+			not _onboarding_manual_mode
+			and _onboarding_status == "active"
+		)
+		return
+	if not game_summary_overlay.visible:
+		_summary_focus_return = _current_focus_control()
 	if dialog_box.call("is_open"):
-		dialog_box.call("hide_dialog")
+		dialog_box.call("hide_dialog", false)
 	if game_setup_overlay.visible:
-		_hide_game_setup()
+		_hide_game_setup(false)
 	if _intel_panel_open:
-		_set_intel_panel_open(false)
+		_set_intel_panel_open(false, false)
 	if _wolf_menu_expanded:
 		_set_wolf_menu_expanded(false)
 	game_summary_overlay.visible = true
 	game_summary_overlay.add_to_group("dialog_open")
 	game_summary_tabs.current_tab = 0
-	game_summary_close_button.grab_focus()
+	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
+	call_deferred("_focus_control_if_available", game_summary_close_button)
 
 
 func _hide_game_summary() -> void:
+	if not game_summary_overlay.visible:
+		return
+	var return_focus := _summary_focus_return
+	_summary_focus_return = null
 	game_summary_overlay.visible = false
 	game_summary_overlay.remove_from_group("dialog_open")
 	game_summary_close_button.release_focus()
 	_release_movement_actions()
+	call_deferred(
+		"_restore_focus_after_close",
+		return_focus,
+		review_game_button
+	)
 
 
 func _render_game_summary(summary: Dictionary) -> void:
@@ -3293,6 +4694,145 @@ func _render_game_summary(summary: Dictionary) -> void:
 	game_summary_timeline_label.text = (
 		"暂无行动记录。" if timeline_lines.is_empty() else "\n\n".join(timeline_lines)
 	)
+	game_summary_review_label.text = _format_post_game_explainable_review(
+		summary.get("explainable_review", {})
+	)
+
+
+func _format_post_game_explainable_review(review: Variant) -> String:
+	if (
+		typeof(review) != TYPE_DICTIONARY
+		or str(review.get("schema_version", "")) != "post_game_explainable_review.v1"
+	):
+		return "本局没有可用的解释复盘。"
+
+	var lines: Array[String] = [
+		"【赛后真值已解锁】以下身份与阵营仅用于复盘，不代表角色当时可见。",
+		str(review.get("disclaimer", "")),
+	]
+	var counts = review.get("assessment_counts", {})
+	if typeof(counts) == TYPE_DICTIONARY:
+		lines.append(
+			"共 " + str(review.get("review_count", 0)) + " 条决定"
+			+ " · 判断正确 " + str(counts.get("accurate", 0))
+			+ " · 判断错误 " + str(counts.get("mistaken", 0))
+			+ " · 狼人策略 " + str(counts.get("strategic", 0))
+			+ " · 中性/不可评分 "
+			+ str(int(counts.get("neutral", 0)) + int(counts.get("unscored", 0)))
+		)
+
+	var items = review.get("items", [])
+	if typeof(items) != TYPE_ARRAY or items.is_empty():
+		lines.append("\n本局没有保存可解释的发言、投票或技能决定。")
+		return "\n".join(lines)
+
+	for item in items:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var assessment := str(item.get("assessment", "unscored"))
+		var error_category := str(item.get("error_category", "not_applicable"))
+		lines.append("")
+		lines.append(
+			"#" + str(item.get("sequence", "?"))
+			+ " · 第" + str(item.get("day", "?")) + "天"
+			+ " · " + _post_game_decision_kind_label(
+				str(item.get("decision_kind", ""))
+			)
+			+ " · " + str(item.get("actor_id", "?")) + "号"
+			+ str(item.get("actor_name", "未知"))
+		)
+		lines.append("选择：" + str(item.get("decision_summary", "未记录")))
+
+		var prior_evidence = item.get("prior_public_evidence", [])
+		lines.append("当时可核对（仅更早日期的公开证据）：")
+		if typeof(prior_evidence) == TYPE_ARRAY and not prior_evidence.is_empty():
+			for reference in prior_evidence:
+				if typeof(reference) == TYPE_DICTIONARY:
+					lines.append(
+						"  - 第" + str(reference.get("day", "?")) + "天："
+						+ str(reference.get("display_text", ""))
+					)
+		else:
+			lines.append("  - 没有匹配到更早日期的相关公开证据。")
+
+		var recorded_basis = item.get("recorded_basis", [])
+		lines.append("提交时保存的依据：")
+		if typeof(recorded_basis) == TYPE_ARRAY and not recorded_basis.is_empty():
+			for basis in recorded_basis:
+				lines.append("  - " + str(basis))
+		else:
+			lines.append("  - 未保存结构化依据。")
+
+		lines.append(
+			"赛后评价：" + _post_game_assessment_label(assessment)
+			+ " / " + _post_game_error_category_label(error_category)
+		)
+		lines.append(str(item.get("truth_summary", "赛后真值缺失。")))
+		lines.append("解释：" + str(item.get("explanation", "未生成解释。")))
+
+		var later_evidence = item.get("later_public_evidence", [])
+		lines.append("后来可核对（仅更晚日期的公开证据）：")
+		if typeof(later_evidence) == TYPE_ARRAY and not later_evidence.is_empty():
+			for reference in later_evidence:
+				if typeof(reference) == TYPE_DICTIONARY:
+					lines.append(
+						"  - 第" + str(reference.get("day", "?")) + "天："
+						+ str(reference.get("display_text", ""))
+					)
+		else:
+			lines.append("  - 没有匹配到更晚日期的相关公开记录。")
+
+	return "\n".join(lines)
+
+
+func _post_game_decision_kind_label(kind: String) -> String:
+	match kind:
+		"public_speech":
+			return "公开发言"
+		"exile_vote":
+			return "放逐投票"
+		"night_action":
+			return "夜间技能"
+		"hunter_shot":
+			return "猎人开枪"
+		_:
+			return "其他决定"
+
+
+func _post_game_assessment_label(assessment: String) -> String:
+	match assessment:
+		"accurate":
+			return "方向正确"
+		"mistaken":
+			return "判断错误"
+		"strategic":
+			return "狼人阵营策略"
+		"neutral":
+			return "中性结果"
+		"unscored":
+			return "依据不足，无法评分"
+		_:
+			return "无法评分"
+
+
+func _post_game_error_category_label(category: String) -> String:
+	match category:
+		"none":
+			return "无错误"
+		"deceived":
+			return "受到欺骗"
+		"insufficient_evidence":
+			return "证据不足"
+		"continuity_break":
+			return "连续性断裂"
+		"skill_misuse":
+			return "角色技能误用"
+		"deterministic_variance":
+			return "确定性概率扰动"
+		"not_applicable":
+			return "不适用"
+		_:
+			return "未分类"
 
 
 func _format_summary_llm_failures(failures: Array) -> String:
@@ -3433,8 +4973,7 @@ func _release_movement_actions() -> void:
 func _finish_gameplay_text_submission(input: LineEdit) -> void:
 	input.clear()
 	input.release_focus()
-	_release_wolf_panel_focus()
-	call_deferred("_release_wolf_panel_focus")
+	_release_focus_to_world()
 	_release_movement_actions()
 
 
@@ -3451,28 +4990,309 @@ func _lock_player_movement_until_release() -> void:
 		player.call("lock_movement_until_release")
 
 
-func _configure_wolf_panel_focus() -> void:
-	for ui_root in [phase_hud, wolf_panel, intel_panel, game_setup_overlay]:
+func _configure_ui_focus_navigation() -> void:
+	var ui_roots: Array[Control] = [
+		phase_hud,
+		identity_panel,
+		wolf_panel,
+		intel_panel,
+		game_setup_overlay,
+		game_summary_overlay,
+		onboarding_overlay,
+		dialog_box,
+	]
+	for ui_root in ui_roots:
 		for node in ui_root.find_children("*", "BaseButton", true, false):
 			if node is Control:
-				node.focus_mode = Control.FOCUS_NONE
-	player_action_history_text.focus_mode = Control.FOCUS_NONE
+				node.focus_mode = Control.FOCUS_ALL
+		for node in ui_root.find_children("*", "ScrollContainer", true, false):
+			if node is Control:
+				node.focus_mode = Control.FOCUS_ALL
+	var tab_containers: Array[TabContainer] = [intel_tabs, game_summary_tabs]
+	for tab_container in tab_containers:
+		var tab_bar: TabBar = tab_container.get_tab_bar()
+		tab_bar.focus_mode = Control.FOCUS_ALL
+	player_action_history_text.focus_mode = Control.FOCUS_ALL
+
+	for ui_root in ui_roots:
+		for node in ui_root.find_children("*", "Control", true, false):
+			if node is Control and node.focus_mode != Control.FOCUS_NONE:
+				var focus_callback := _on_ui_control_focus_entered.bind(node)
+				if not node.focus_entered.is_connected(focus_callback):
+					node.focus_entered.connect(focus_callback)
+				var blur_callback := _on_ui_control_focus_exited.bind(node)
+				if not node.focus_exited.is_connected(blur_callback):
+					node.focus_exited.connect(blur_callback)
+
+
+func _on_ui_control_focus_entered(control: Control) -> void:
+	if control is ScrollContainer:
+		_set_scroll_focus_outline(control, true)
+	if _control_is_in_visible_modal(control):
+		_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
+	elif _control_is_editable_text(control):
+		_set_ui_focus_scope(UI_FOCUS_SCOPE_TEXT_ENTRY)
+	else:
+		_set_ui_focus_scope(UI_FOCUS_SCOPE_PANEL)
+	_ensure_focused_control_visible(control)
+
+
+func _on_ui_control_focus_exited(control: Control) -> void:
+	if control is ScrollContainer:
+		_set_scroll_focus_outline(control, false)
+	call_deferred("_repair_focus_after_modal_close")
+
+
+func _set_scroll_focus_outline(scroll: ScrollContainer, focused: bool) -> void:
+	if not focused:
+		scroll.remove_theme_stylebox_override("panel")
+		return
+	var outline := StyleBoxFlat.new()
+	outline.draw_center = false
+	outline.border_width_left = 3
+	outline.border_width_top = 3
+	outline.border_width_right = 3
+	outline.border_width_bottom = 3
+	outline.border_color = Color(1.0, 0.78, 0.24, 1.0)
+	outline.corner_radius_top_left = 7
+	outline.corner_radius_top_right = 7
+	outline.corner_radius_bottom_right = 7
+	outline.corner_radius_bottom_left = 7
+	scroll.add_theme_stylebox_override("panel", outline)
+
+
+func _set_ui_focus_scope(scope: String) -> void:
+	_ui_focus_scope = scope
+	if player.has_method("set_ui_navigation_locked"):
+		player.call("set_ui_navigation_locked", scope != UI_FOCUS_SCOPE_WORLD)
+
+
+func _current_focus_control() -> Control:
+	var focus_owner := get_viewport().gui_get_focus_owner()
+	return focus_owner if focus_owner is Control else null
+
+
+func _control_is_editable_text(control: Control) -> bool:
+	if control is LineEdit:
+		return control.editable
+	if control is TextEdit:
+		return control.editable
+	return false
+
+
+func _current_focus_is_editable_text() -> bool:
+	var focus_owner := _current_focus_control()
+	return focus_owner != null and _control_is_editable_text(focus_owner)
+
+
+func _control_is_in_visible_modal(control: Control) -> bool:
+	for modal_root in [
+		onboarding_overlay,
+		game_summary_overlay,
+		game_setup_overlay,
+		speech_preview_panel,
+		dialog_box,
+	]:
+		var modal_control := modal_root as Control
+		if (
+			modal_control != null
+			and modal_control.is_visible_in_tree()
+			and (control == modal_control or modal_control.is_ancestor_of(control))
+		):
+			return true
+	return false
+
+
+func _is_wasd_key_event(event: InputEvent) -> bool:
+	if not event is InputEventKey or not event.pressed or event.echo:
+		return false
+	var key_event := event as InputEventKey
+	return key_event.physical_keycode in [KEY_W, KEY_A, KEY_S, KEY_D]
+
+
+func _handle_modal_focus_direction(event: InputEvent, scope: Control) -> bool:
+	var focus_owner := _current_focus_control()
+	if focus_owner is TextEdit:
+		return false
+	if focus_owner is LineEdit:
+		if event.is_action_pressed("ui_left") or event.is_action_pressed("ui_right"):
+			return false
+	if focus_owner is OptionButton:
+		if event.is_action_pressed("ui_up") or event.is_action_pressed("ui_down"):
+			return false
+	if focus_owner is ScrollContainer:
+		if event.is_action_pressed("ui_up"):
+			focus_owner.scroll_vertical = maxi(0, focus_owner.scroll_vertical - 48)
+			return true
+		if event.is_action_pressed("ui_down"):
+			focus_owner.scroll_vertical += 48
+			return true
+	if focus_owner is TabBar:
+		if event.is_action_pressed("ui_left") or event.is_action_pressed("ui_right"):
+			return false
+	if event.is_action_pressed("ui_left") or event.is_action_pressed("ui_up"):
+		_move_focus_in_scope(scope, -1)
+		return true
+	if event.is_action_pressed("ui_right") or event.is_action_pressed("ui_down"):
+		_move_focus_in_scope(scope, 1)
+		return true
+	return false
+
+
+func _move_focus_in_active_panel(direction: int) -> void:
+	_move_focus_in_roots(
+		[phase_hud, identity_panel, wolf_panel, intel_panel],
+		direction
+	)
+
+
+func _move_focus_in_scope(scope: Control, direction: int) -> void:
+	_move_focus_in_roots([scope], direction)
+
+
+func _move_focus_in_roots(roots: Array, direction: int) -> void:
+	var focusable := _focusable_controls_in_roots(roots)
+	if focusable.is_empty():
+		return
+	var focus_owner := _current_focus_control()
+	var current_index := focusable.find(focus_owner)
+	if current_index < 0:
+		current_index = 0 if direction >= 0 else focusable.size() - 1
+	else:
+		current_index = posmod(current_index + direction, focusable.size())
+	focusable[current_index].grab_focus()
+
+
+func _focusable_controls_in_roots(roots: Array) -> Array[Control]:
+	var focusable: Array[Control] = []
+	for root in roots:
+		var control_root := root as Control
+		if control_root == null or not control_root.is_visible_in_tree():
+			continue
+		if _is_focus_candidate(control_root):
+			focusable.append(control_root)
+		for node in control_root.find_children("*", "Control", true, false):
+			if node is Control and _is_focus_candidate(node):
+				focusable.append(node)
+	return focusable
+
+
+func _is_focus_candidate(control: Control) -> bool:
+	if not control.is_visible_in_tree() or control.focus_mode == Control.FOCUS_NONE:
+		return false
+	if control is BaseButton and control.disabled:
+		return false
+	if control is LineEdit and not control.editable:
+		return false
+	return true
+
+
+func _focus_control_if_available(control: Control) -> void:
+	if control != null and is_instance_valid(control) and _is_focus_candidate(control):
+		control.grab_focus()
+		return
+	_repair_focus_in_top_scope()
+
+
+func _restore_focus_after_close(
+	preferred: Control,
+	fallback: Control,
+) -> void:
+	for candidate in [preferred, fallback]:
+		if (
+			candidate != null
+			and is_instance_valid(candidate)
+			and _is_focus_candidate(candidate)
+		):
+			candidate.grab_focus()
+			return
+	_release_focus_to_world()
+
+
+func _on_dialog_closed() -> void:
+	call_deferred("_repair_focus_after_modal_close")
+
+
+func _repair_focus_after_modal_close() -> void:
+	if (
+		onboarding_overlay.visible
+		or game_summary_overlay.visible
+		or game_setup_overlay.visible
+		or speech_preview_panel.is_visible_in_tree()
+		or dialog_box.call("is_open")
+	):
+		_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
+		_repair_focus_in_top_scope()
+		return
+	var focus_owner := _current_focus_control()
+	if focus_owner != null and _is_focus_candidate(focus_owner):
+		_on_ui_control_focus_entered(focus_owner)
+		return
+	_release_focus_to_world()
+
+
+func _repair_focus_in_top_scope() -> void:
+	var scope: Control
+	if onboarding_overlay.visible:
+		scope = onboarding_overlay
+	elif game_summary_overlay.visible:
+		scope = game_summary_overlay
+	elif game_setup_overlay.visible:
+		scope = game_setup_overlay
+	elif speech_preview_panel.is_visible_in_tree():
+		scope = speech_preview_panel
+	elif dialog_box.call("is_open"):
+		scope = dialog_box
+	else:
+		if _ui_focus_scope == UI_FOCUS_SCOPE_WORLD:
+			return
+		var panel_focusable := _focusable_controls_in_roots(
+			[phase_hud, identity_panel, wolf_panel, intel_panel]
+		)
+		if panel_focusable.is_empty():
+			_release_focus_to_world()
+		else:
+			panel_focusable[0].grab_focus()
+		return
+	var focus_owner := _current_focus_control()
+	if (
+		focus_owner != null
+		and (focus_owner == scope or scope.is_ancestor_of(focus_owner))
+		and _is_focus_candidate(focus_owner)
+	):
+		return
+	var focusable := _focusable_controls_in_roots([scope])
+	if not focusable.is_empty():
+		focusable[0].grab_focus()
+
+
+func _ensure_focused_control_visible(control: Control) -> void:
+	var ancestor := control.get_parent()
+	while ancestor != null:
+		if ancestor is ScrollContainer:
+			ancestor.ensure_control_visible(control)
+		ancestor = ancestor.get_parent()
+
+
+func _release_focus_to_world() -> void:
+	var focus_owner := _current_focus_control()
+	if focus_owner != null:
+		focus_owner.release_focus()
+	get_viewport().gui_release_focus()
+	_set_ui_focus_scope(UI_FOCUS_SCOPE_WORLD)
 
 
 func _release_wolf_panel_focus() -> void:
 	var focus_owner := get_viewport().gui_get_focus_owner()
 	if focus_owner == null:
 		return
-	for ui_root in [phase_hud, wolf_panel, intel_panel, game_setup_overlay]:
-		if focus_owner == ui_root or ui_root.is_ancestor_of(focus_owner):
-			focus_owner.release_focus()
-			get_viewport().gui_release_focus()
-			return
+	if focus_owner == wolf_panel or wolf_panel.is_ancestor_of(focus_owner):
+		_release_focus_to_world()
 
 
 func _build_character_card(character: Dictionary) -> Control:
 	var card := PanelContainer.new()
-	card.custom_minimum_size = Vector2(168, 205)
+	card.custom_minimum_size = Vector2(_character_card_min_width, 205.0)
 	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
 	var style := StyleBoxFlat.new()

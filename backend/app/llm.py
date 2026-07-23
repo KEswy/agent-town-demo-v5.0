@@ -10,11 +10,18 @@ from typing import Callable, Optional
 import httpx
 from dotenv import load_dotenv
 
+from .llm_fingerprinting import (
+    build_llm_config_fingerprint,
+    build_prompt_fingerprint,
+    sanitize_llm_endpoint,
+)
 from .llm_observability import (
     LLM_OBSERVABILITY_RECORDER,
     build_request_observation,
     classify_request_fallback,
     extract_token_usage,
+    normalize_llm_task,
+    normalize_safe_identifier,
 )
 
 
@@ -99,7 +106,11 @@ class LLMClient:
             "provider": self.settings.provider,
             "model": self.settings.model,
             "configured": self.settings.is_configured(),
-            "base_url": self.settings.base_url,
+            # Keep the stable response field for the existing UI, but expose
+            # only the endpoint identity.  URL userinfo, query values, and
+            # fragments may contain credentials and must not cross the API.
+            "base_url": sanitize_llm_endpoint(self.settings.base_url),
+            "config_fingerprint": build_llm_config_fingerprint(self.settings),
         }
 
     def generate_json_text(
@@ -151,6 +162,13 @@ class LLMClient:
         started_at = time.perf_counter()
         task = context.get("task")
         operation = "json_text" if validator is not None else "json_object"
+        normalized_task = normalize_llm_task(task)
+        prompt_fingerprint = _best_effort_prompt_fingerprint(
+            system_prompt,
+            task=normalized_task,
+            operation=operation,
+        )
+        config_fingerprint = _best_effort_config_fingerprint(self.settings)
         if not self.settings.enabled:
             reason = "LLM is disabled"
             self._record_request_observation(
@@ -160,6 +178,8 @@ class LLMClient:
                 attempt_count=0,
                 started_at=started_at,
                 fallback_reason=reason,
+                prompt_fingerprint=prompt_fingerprint,
+                config_fingerprint=config_fingerprint,
             )
             return self._json_fallback(fallback_object, reason)
         if self.settings.provider == "mock":
@@ -171,6 +191,8 @@ class LLMClient:
                 attempt_count=0,
                 started_at=started_at,
                 fallback_reason=reason,
+                prompt_fingerprint=prompt_fingerprint,
+                config_fingerprint=config_fingerprint,
             )
             return self._json_fallback(
                 fallback_object,
@@ -185,6 +207,8 @@ class LLMClient:
                 attempt_count=0,
                 started_at=started_at,
                 fallback_reason=reason,
+                prompt_fingerprint=prompt_fingerprint,
+                config_fingerprint=config_fingerprint,
             )
             return self._json_fallback(
                 fallback_object,
@@ -202,13 +226,47 @@ class LLMClient:
         observed_prompt_tokens: Optional[int] = None
         observed_completion_tokens: Optional[int] = None
         observed_total_tokens: Optional[int] = None
+        usage_reported_attempt_count = 0
+        usage_unreported_attempt_count = 0
+        usage_complete_attempt_count = 0
+        observed_billing_models: set[str] = set()
+        provider_model_observed = False
         for attempt in range(attempts):
             attempts_made = attempt + 1
+            usage_accounted = False
             try:
                 response_data = self._request_chat_completion(system_prompt, context)
                 prompt_tokens, completion_tokens, total_tokens = (
                     extract_token_usage(response_data)
                 )
+                usage_accounted = True
+                if any(
+                    value is not None
+                    for value in (prompt_tokens, completion_tokens, total_tokens)
+                ):
+                    usage_reported_attempt_count += 1
+                else:
+                    usage_unreported_attempt_count += 1
+                if all(
+                    value is not None
+                    for value in (prompt_tokens, completion_tokens, total_tokens)
+                ):
+                    usage_complete_attempt_count += 1
+                response_model = response_data.get("model")
+                normalized_response_model = normalize_safe_identifier(
+                    response_model,
+                    "",
+                )
+                if normalized_response_model:
+                    observed_billing_models.add(normalized_response_model)
+                    provider_model_observed = True
+                else:
+                    observed_billing_models.add(
+                        normalize_safe_identifier(
+                            self.settings.model,
+                            "unknown",
+                        )
+                    )
                 if prompt_tokens is not None:
                     observed_prompt_tokens = (
                         (observed_prompt_tokens or 0) + prompt_tokens
@@ -237,6 +295,22 @@ class LLMClient:
                     prompt_tokens=observed_prompt_tokens,
                     completion_tokens=observed_completion_tokens,
                     total_tokens=observed_total_tokens,
+                    prompt_fingerprint=prompt_fingerprint,
+                    config_fingerprint=config_fingerprint,
+                    usage_reported_attempt_count=(
+                        usage_reported_attempt_count
+                    ),
+                    usage_unreported_attempt_count=(
+                        usage_unreported_attempt_count
+                    ),
+                    usage_complete_attempt_count=(
+                        usage_complete_attempt_count
+                    ),
+                    **_billing_model_observation_fields(
+                        self.settings.model,
+                        observed_billing_models,
+                        provider_model_observed,
+                    ),
                 )
                 return LLMJsonGeneration(
                     data=parsed,
@@ -252,6 +326,8 @@ class LLMClient:
                 TypeError,
                 ValueError,
             ) as exc:
+                if not usage_accounted:
+                    usage_unreported_attempt_count += 1
                 last_error = f"{type(exc).__name__}: {exc}"
                 if attempt + 1 >= attempts or not _is_retryable_error(exc):
                     break
@@ -270,6 +346,16 @@ class LLMClient:
             prompt_tokens=observed_prompt_tokens,
             completion_tokens=observed_completion_tokens,
             total_tokens=observed_total_tokens,
+            prompt_fingerprint=prompt_fingerprint,
+            config_fingerprint=config_fingerprint,
+            usage_reported_attempt_count=usage_reported_attempt_count,
+            usage_unreported_attempt_count=usage_unreported_attempt_count,
+            usage_complete_attempt_count=usage_complete_attempt_count,
+            **_billing_model_observation_fields(
+                self.settings.model,
+                observed_billing_models,
+                provider_model_observed,
+            ),
         )
         return self._json_fallback(
             fallback_object,
@@ -289,10 +375,35 @@ class LLMClient:
         prompt_tokens: Optional[int] = None,
         completion_tokens: Optional[int] = None,
         total_tokens: Optional[int] = None,
+        prompt_fingerprint: Optional[str] = None,
+        config_fingerprint: Optional[str] = None,
+        usage_reported_attempt_count: int = 0,
+        usage_unreported_attempt_count: Optional[int] = None,
+        usage_complete_attempt_count: Optional[int] = None,
+        billing_model: Optional[str] = None,
+        billing_model_source: str = "configured",
     ) -> None:
         if self._event_sink is None:
             return
         try:
+            unreported_attempts = (
+                attempt_count - usage_reported_attempt_count
+                if usage_unreported_attempt_count is None
+                else usage_unreported_attempt_count
+            )
+            token_usage_status = _token_usage_status(
+                attempt_count,
+                usage_reported_attempt_count,
+                unreported_attempts,
+                (
+                    usage_reported_attempt_count
+                    if usage_complete_attempt_count is None
+                    else usage_complete_attempt_count
+                ),
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+            )
             event = build_request_observation(
                 task=task,
                 operation=operation,
@@ -310,6 +421,21 @@ class LLMClient:
                     if outcome == "fallback"
                     else ""
                 ),
+                prompt_fingerprint=prompt_fingerprint,
+                config_fingerprint=config_fingerprint,
+                token_usage_status=token_usage_status,
+                usage_reported_attempt_count=usage_reported_attempt_count,
+                usage_unreported_attempt_count=unreported_attempts,
+                billing_model=(
+                    normalize_safe_identifier(
+                        self.settings.model,
+                        "unknown",
+                    )
+                    if billing_model is None
+                    and billing_model_source == "configured"
+                    else billing_model
+                ),
+                billing_model_source=billing_model_source,
             )
             self._event_sink(event)
         except Exception:
@@ -366,6 +492,85 @@ class LLMClient:
             fallback_reason=reason,
             raw_response_text=raw_response_text,
         )
+
+
+def _token_usage_status(
+    attempt_count: int,
+    usage_reported_attempt_count: int,
+    usage_unreported_attempt_count: int,
+    usage_complete_attempt_count: int,
+    prompt_tokens: Optional[int],
+    completion_tokens: Optional[int],
+    total_tokens: Optional[int],
+) -> str:
+    if attempt_count == 0:
+        return "not_applicable"
+    complete_split = all(
+        value is not None
+        for value in (prompt_tokens, completion_tokens, total_tokens)
+    )
+    if (
+        complete_split
+        and usage_complete_attempt_count == attempt_count
+        and usage_reported_attempt_count == attempt_count
+        and usage_unreported_attempt_count == 0
+    ):
+        return "complete"
+    if usage_reported_attempt_count > 0:
+        return "partial"
+    return "missing"
+
+
+def _best_effort_prompt_fingerprint(
+    system_prompt: object,
+    *,
+    task: str,
+    operation: str,
+) -> Optional[str]:
+    try:
+        return build_prompt_fingerprint(
+            system_prompt,  # type: ignore[arg-type]
+            task=task,
+            operation=operation,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _best_effort_config_fingerprint(settings: object) -> Optional[str]:
+    try:
+        return build_llm_config_fingerprint(settings)
+    except (TypeError, ValueError):
+        return None
+
+
+def _billing_model_observation_fields(
+    configured_model: str,
+    observed_models: set[str],
+    provider_model_observed: bool,
+) -> dict[str, object]:
+    safe_configured_model = normalize_safe_identifier(
+        configured_model,
+        "unknown",
+    )
+    if len(observed_models) > 1:
+        return {
+            "billing_model": None,
+            "billing_model_source": "mixed",
+        }
+    if observed_models:
+        return {
+            "billing_model": next(iter(observed_models)),
+            "billing_model_source": (
+                "provider_response"
+                if provider_model_observed
+                else "configured"
+            ),
+        }
+    return {
+        "billing_model": safe_configured_model,
+        "billing_model_source": "configured",
+    }
 
 
 def _extract_response_content(response_data: dict[str, object]) -> str:

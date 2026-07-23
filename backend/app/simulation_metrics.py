@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import math
 from collections import Counter, defaultdict
+from itertools import combinations
 from typing import Iterable, Optional
 
 from . import main as rules
 
 
-METRICS_SCHEMA_VERSION = "agent_town_metrics.v4"
+METRICS_SCHEMA_VERSION = "agent_town_metrics.v5"
+PLAYER_PERFORMANCE_SCHEMA_VERSION = "player_performance.v1"
 CROSS_DAY_EXILE_CHAIN_SCHEMA_VERSION = "cross_day_exile_chain.v1"
 VOTE_TRANSITION_COUNT_KEYS = (
     "correct_to_correct_count",
@@ -174,6 +176,10 @@ def build_game_metrics(game_state: rules.WolfGameState) -> dict[str, object]:
             game_state,
             characters,
         ),
+        "player_performance": _build_player_performance_metrics(
+            game_state,
+            characters,
+        ),
     }
     _validate_game_metric_conservation(metrics)
     return metrics
@@ -197,6 +203,7 @@ def aggregate_batch_metrics(
     )
     by_day_totals: dict[int, dict[str, object]] = {}
     by_player_role: dict[str, dict[str, object]] = {}
+    player_performance_totals = _new_player_performance_counter()
     fake_totals = {
         "designated_games": 0,
         "publicly_claimed_games": 0,
@@ -305,6 +312,10 @@ def aggregate_batch_metrics(
             else:
                 next_exile_after_first_wolf_camps[str(next_camp)] += 1
         _add_player_role_game(by_player_role, game)
+        _add_player_performance_counts(
+            player_performance_totals,
+            metrics["player_performance"],
+        )
 
     aggregate = {
         "schema_version": METRICS_SCHEMA_VERSION,
@@ -435,6 +446,9 @@ def aggregate_batch_metrics(
             ),
         },
         "by_player_role": _finalize_player_role_groups(by_player_role),
+        "player_performance": _finalize_player_performance_counts(
+            player_performance_totals,
+        ),
         "by_voter_role": {
             role: _finalize_alignment_counts(by_voter_role_totals[role])
             for role in sorted(by_voter_role_totals)
@@ -460,6 +474,173 @@ def aggregate_batch_metrics(
     }
     _validate_batch_metric_conservation(aggregate)
     return aggregate
+
+
+def aggregate_player_benchmark_metrics(
+    game_results: list[dict[str, object]],
+    *,
+    strategy_order: list[str],
+) -> dict[str, object]:
+    """Aggregate role-paired player strategies without hiding raw counts."""
+
+    if not game_results:
+        raise ValueError("player benchmark metrics require completed games")
+    if len(strategy_order) < 2 or len(set(strategy_order)) != len(
+        strategy_order
+    ):
+        raise ValueError("player benchmark strategies must be unique")
+
+    by_strategy: dict[str, dict[str, object]] = {}
+    by_strategy_and_role: dict[str, dict[str, dict[str, object]]] = {}
+    cohorts: dict[tuple[int, str], dict[str, dict[str, object]]] = {}
+    for game in game_results:
+        descriptor = game.get("player_strategy")
+        if not isinstance(descriptor, dict):
+            raise ValueError("benchmark game is missing player strategy metadata")
+        strategy = str(descriptor.get("tier", ""))
+        if strategy not in strategy_order:
+            raise ValueError("benchmark game uses an undeclared strategy")
+        performance = _require_game_metrics(game)["player_performance"]
+        role = str(performance["player_role"])
+        _add_player_benchmark_group(
+            by_strategy.setdefault(strategy, _new_player_benchmark_group()),
+            game,
+            performance,
+        )
+        role_groups = by_strategy_and_role.setdefault(strategy, {})
+        _add_player_benchmark_group(
+            role_groups.setdefault(role, _new_player_benchmark_group()),
+            game,
+            performance,
+        )
+        cohort = cohorts.setdefault((int(game["seed"]), role), {})
+        if strategy in cohort:
+            raise ValueError("benchmark cohort contains a duplicate strategy")
+        cohort[strategy] = game
+
+    expected_strategies = set(strategy_order)
+    for cohort_key, cohort in cohorts.items():
+        if set(cohort) != expected_strategies:
+            raise ValueError(
+                f"benchmark cohort {cohort_key} is not strategy-complete"
+            )
+
+    paired_outcomes: dict[str, dict[str, object]] = {}
+    for strategy_a, strategy_b in combinations(strategy_order, 2):
+        a_only_win_count = 0
+        b_only_win_count = 0
+        same_win_count = 0
+        same_loss_count = 0
+        for cohort in cohorts.values():
+            a_performance = _require_game_metrics(
+                cohort[strategy_a]
+            )["player_performance"]
+            b_performance = _require_game_metrics(
+                cohort[strategy_b]
+            )["player_performance"]
+            a_won = bool(a_performance["player_won"])
+            b_won = bool(b_performance["player_won"])
+            if a_won and b_won:
+                same_win_count += 1
+            elif not a_won and not b_won:
+                same_loss_count += 1
+            elif a_won:
+                a_only_win_count += 1
+            else:
+                b_only_win_count += 1
+        cohort_count = len(cohorts)
+        paired_outcomes[f"{strategy_b}_minus_{strategy_a}"] = {
+            "strategy_a": strategy_a,
+            "strategy_b": strategy_b,
+            "cohort_count": cohort_count,
+            "a_only_win_count": a_only_win_count,
+            "b_only_win_count": b_only_win_count,
+            "same_win_count": same_win_count,
+            "same_loss_count": same_loss_count,
+            "player_win_rate_delta_b_minus_a": _round_metric(
+                (b_only_win_count - a_only_win_count) / cohort_count
+            ),
+        }
+
+    return {
+        "schema_version": METRICS_SCHEMA_VERSION,
+        "player_performance_schema_version": (
+            PLAYER_PERFORMANCE_SCHEMA_VERSION
+        ),
+        "game_count": len(game_results),
+        "cohort_count": len(cohorts),
+        "strategy_count": len(strategy_order),
+        "by_strategy": {
+            strategy: _finalize_player_benchmark_group(by_strategy[strategy])
+            for strategy in strategy_order
+        },
+        "by_strategy_and_role": {
+            strategy: {
+                role: _finalize_player_benchmark_group(
+                    by_strategy_and_role[strategy][role]
+                )
+                for role in sorted(by_strategy_and_role[strategy])
+            }
+            for strategy in strategy_order
+        },
+        "paired_outcomes": paired_outcomes,
+    }
+
+
+def _new_player_benchmark_group() -> dict[str, object]:
+    return {
+        "game_count": 0,
+        "total_days": 0,
+        "winner_counts": Counter(),
+        "performance": _new_player_performance_counter(),
+    }
+
+
+def _add_player_benchmark_group(
+    group: dict[str, object],
+    game: dict[str, object],
+    performance: dict[str, object],
+) -> None:
+    group["game_count"] = int(group["game_count"]) + 1
+    group["total_days"] = int(group["total_days"]) + int(
+        game["total_days"]
+    )
+    winner_counts = group["winner_counts"]
+    if not isinstance(winner_counts, Counter):
+        raise ValueError("benchmark winner counter is invalid")
+    winner_counts[str(game["winner"])] += 1
+    performance_counter = group["performance"]
+    if not isinstance(performance_counter, Counter):
+        raise ValueError("benchmark performance counter is invalid")
+    _add_player_performance_counts(performance_counter, performance)
+
+
+def _finalize_player_benchmark_group(
+    group: dict[str, object],
+) -> dict[str, object]:
+    game_count = int(group["game_count"])
+    if game_count <= 0:
+        raise ValueError("benchmark group must contain completed games")
+    winner_counts = group["winner_counts"]
+    performance = group["performance"]
+    if not isinstance(winner_counts, Counter) or not isinstance(
+        performance,
+        Counter,
+    ):
+        raise ValueError("benchmark group counters are invalid")
+    return {
+        "game_count": game_count,
+        "winner_counts": {
+            "good": winner_counts.get("good", 0),
+            "werewolf": winner_counts.get("werewolf", 0),
+        },
+        "average_total_days": _round_metric(
+            int(group["total_days"]) / game_count
+        ),
+        "player_performance": _finalize_player_performance_counts(
+            performance
+        ),
+    }
 
 
 def _build_seer_claim_balance_metrics(
@@ -1088,6 +1269,342 @@ def _finalize_player_role_groups(
     return finalized
 
 
+_PLAYER_PERFORMANCE_COUNT_FIELDS = (
+    "game_count",
+    "player_win_count",
+    "exile_ballot_count",
+    "exile_wolf_target_count",
+    "exile_good_target_count",
+    "sheriff_ballot_count",
+    "sheriff_wolf_target_count",
+    "sheriff_good_target_count",
+    "night_action_count",
+    "seer_check_count",
+    "seer_unique_check_target_count",
+    "seer_repeat_check_count",
+    "seer_wolf_hit_count",
+    "witch_save_count",
+    "witch_poison_count",
+    "witch_poison_wolf_count",
+    "witch_poison_good_count",
+    "guard_protect_count",
+    "guard_intercept_count",
+    "hunter_shot_count",
+    "hunter_wolf_hit_count",
+    "werewolf_kill_choice_count",
+    "werewolf_special_role_target_count",
+    "public_target_speech_count",
+    "npc_follow_eligible_ballot_count",
+    "npc_follow_ballot_count",
+)
+
+
+def _build_player_performance_metrics(
+    game_state: rules.WolfGameState,
+    characters: dict[int, rules.CharacterState],
+) -> dict[str, object]:
+    player = characters[game_state.player_character_id]
+    exile_ballots = [
+        vote
+        for vote in game_state.votes
+        if vote.voter_id == player.id
+    ]
+    sheriff_ballots = [
+        event
+        for event in game_state.sheriff_events
+        if event.event_type == "sheriff_vote"
+        and event.actor_id == player.id
+        and event.target_id is not None
+    ]
+    night_actions = [
+        action
+        for action in game_state.night_actions
+        if action.actor_id == player.id
+    ]
+    seer_checks = [
+        action
+        for action in night_actions
+        if action.action_type == "seer_check"
+        and action.target_id is not None
+    ]
+    witch_saves = [
+        action
+        for action in night_actions
+        if action.action_type == "witch_save"
+        and action.target_id is not None
+    ]
+    witch_poisons = [
+        action
+        for action in night_actions
+        if action.action_type == "witch_poison"
+        and action.target_id is not None
+    ]
+    guard_actions = [
+        action
+        for action in night_actions
+        if action.action_type == "guard_protect"
+        and action.target_id is not None
+    ]
+    guard_intercepts = 0
+    guard_target_by_day = {
+        action.day: int(action.target_id)
+        for action in guard_actions
+        if action.target_id is not None
+    }
+    for resolution in game_state.night_resolutions:
+        guard_target_id = guard_target_by_day.get(resolution.day)
+        if (
+            guard_target_id is not None
+            and resolution.attacked_target_id == guard_target_id
+            and guard_target_id in resolution.protected_ids
+        ):
+            guard_intercepts += 1
+
+    hunter_shots = [
+        shot
+        for shot in game_state.hunter_shots
+        if shot.hunter_id == player.id and shot.target_id is not None
+    ]
+    wolf_kill_choices = [
+        action
+        for action in night_actions
+        if action.action_type == "werewolf_kill"
+        and action.target_id is not None
+    ]
+
+    public_target_speech_count = 0
+    npc_follow_eligible_ballot_count = 0
+    npc_follow_ballot_count = 0
+    latest_player_target_by_day: dict[int, int] = {}
+    for speech in game_state.speeches:
+        if speech.character_id != player.id or speech.phase != "DAY_MEETING":
+            continue
+        parsed = rules.parse_player_speech(
+            game_state,
+            speech.speech,
+            speaker_id=player.id,
+        )
+        if parsed.vote_intent_target_id is None:
+            continue
+        latest_player_target_by_day[speech.day] = int(
+            parsed.vote_intent_target_id
+        )
+    public_target_speech_count = len(latest_player_target_by_day)
+    for vote in game_state.votes:
+        if vote.voter_id == player.id:
+            continue
+        target_id = latest_player_target_by_day.get(vote.day)
+        if target_id is None:
+            continue
+        npc_follow_eligible_ballot_count += 1
+        if vote.target_id == target_id:
+            npc_follow_ballot_count += 1
+
+    seer_target_ids = [
+        int(action.target_id)
+        for action in seer_checks
+        if action.target_id is not None
+    ]
+    metrics = {
+        "schema_version": PLAYER_PERFORMANCE_SCHEMA_VERSION,
+        "post_game_only": True,
+        "player_role": player.role,
+        "player_camp": player.camp,
+        "player_won": game_state.winner == player.camp,
+        "game_count": 1,
+        "player_win_count": int(game_state.winner == player.camp),
+        "exile_ballot_count": len(exile_ballots),
+        "exile_wolf_target_count": sum(
+            characters[vote.target_id].camp == "werewolf"
+            for vote in exile_ballots
+        ),
+        "exile_good_target_count": sum(
+            characters[vote.target_id].camp == "good"
+            for vote in exile_ballots
+        ),
+        "sheriff_ballot_count": len(sheriff_ballots),
+        "sheriff_wolf_target_count": sum(
+            characters[int(event.target_id)].camp == "werewolf"
+            for event in sheriff_ballots
+            if event.target_id is not None
+        ),
+        "sheriff_good_target_count": sum(
+            characters[int(event.target_id)].camp == "good"
+            for event in sheriff_ballots
+            if event.target_id is not None
+        ),
+        "night_action_count": len(
+            [
+                action
+                for action in night_actions
+                if action.action_type != "none"
+            ]
+        ),
+        "seer_check_count": len(seer_checks),
+        "seer_unique_check_target_count": len(set(seer_target_ids)),
+        "seer_repeat_check_count": (
+            len(seer_target_ids) - len(set(seer_target_ids))
+        ),
+        "seer_wolf_hit_count": sum(
+            characters[target_id].camp == "werewolf"
+            for target_id in seer_target_ids
+        ),
+        "witch_save_count": len(witch_saves),
+        "witch_poison_count": len(witch_poisons),
+        "witch_poison_wolf_count": sum(
+            characters[int(action.target_id)].camp == "werewolf"
+            for action in witch_poisons
+            if action.target_id is not None
+        ),
+        "witch_poison_good_count": sum(
+            characters[int(action.target_id)].camp == "good"
+            for action in witch_poisons
+            if action.target_id is not None
+        ),
+        "guard_protect_count": len(guard_actions),
+        "guard_intercept_count": guard_intercepts,
+        "hunter_shot_count": len(hunter_shots),
+        "hunter_wolf_hit_count": sum(
+            characters[int(shot.target_id)].camp == "werewolf"
+            for shot in hunter_shots
+            if shot.target_id is not None
+        ),
+        "werewolf_kill_choice_count": len(wolf_kill_choices),
+        "werewolf_special_role_target_count": sum(
+            characters[int(action.target_id)].role
+            in {"seer", "witch", "hunter", "guard"}
+            for action in wolf_kill_choices
+            if action.target_id is not None
+        ),
+        "public_target_speech_count": public_target_speech_count,
+        "npc_follow_eligible_ballot_count": (
+            npc_follow_eligible_ballot_count
+        ),
+        "npc_follow_ballot_count": npc_follow_ballot_count,
+    }
+    metrics.update(_player_performance_rates(metrics))
+    _validate_player_performance_conservation(metrics)
+    return metrics
+
+
+def _new_player_performance_counter() -> Counter[str]:
+    return Counter()
+
+
+def _add_player_performance_counts(
+    total: Counter[str],
+    performance: dict[str, object],
+) -> None:
+    if performance.get("schema_version") != PLAYER_PERFORMANCE_SCHEMA_VERSION:
+        raise ValueError("player performance schema is incompatible")
+    for field in _PLAYER_PERFORMANCE_COUNT_FIELDS:
+        total[field] += int(performance[field])
+
+
+def _finalize_player_performance_counts(
+    total: Counter[str],
+) -> dict[str, object]:
+    finalized = {
+        "schema_version": PLAYER_PERFORMANCE_SCHEMA_VERSION,
+        "post_game_only": True,
+        **{
+            field: int(total[field])
+            for field in _PLAYER_PERFORMANCE_COUNT_FIELDS
+        },
+    }
+    finalized.update(_player_performance_rates(finalized))
+    _validate_player_performance_conservation(finalized)
+    return finalized
+
+
+def _player_performance_rates(
+    counts: dict[str, object],
+) -> dict[str, Optional[float]]:
+    return {
+        "player_win_rate": _rate(
+            int(counts["player_win_count"]),
+            int(counts["game_count"]),
+        ),
+        "exile_wolf_target_rate": _rate(
+            int(counts["exile_wolf_target_count"]),
+            int(counts["exile_ballot_count"]),
+        ),
+        "sheriff_good_target_rate": _rate(
+            int(counts["sheriff_good_target_count"]),
+            int(counts["sheriff_ballot_count"]),
+        ),
+        "seer_wolf_hit_rate": _rate(
+            int(counts["seer_wolf_hit_count"]),
+            int(counts["seer_check_count"]),
+        ),
+        "witch_poison_wolf_rate": _rate(
+            int(counts["witch_poison_wolf_count"]),
+            int(counts["witch_poison_count"]),
+        ),
+        "guard_intercept_rate": _rate(
+            int(counts["guard_intercept_count"]),
+            int(counts["guard_protect_count"]),
+        ),
+        "hunter_wolf_hit_rate": _rate(
+            int(counts["hunter_wolf_hit_count"]),
+            int(counts["hunter_shot_count"]),
+        ),
+        "werewolf_special_role_target_rate": _rate(
+            int(counts["werewolf_special_role_target_count"]),
+            int(counts["werewolf_kill_choice_count"]),
+        ),
+        "npc_follow_rate": _rate(
+            int(counts["npc_follow_ballot_count"]),
+            int(counts["npc_follow_eligible_ballot_count"]),
+        ),
+    }
+
+
+def _validate_player_performance_conservation(
+    performance: dict[str, object],
+) -> None:
+    if int(performance["player_win_count"]) > int(
+        performance["game_count"]
+    ):
+        raise ValueError("player wins exceed completed games")
+    if int(performance["exile_ballot_count"]) != (
+        int(performance["exile_wolf_target_count"])
+        + int(performance["exile_good_target_count"])
+    ):
+        raise ValueError("player exile targets do not conserve ballots")
+    if int(performance["sheriff_ballot_count"]) != (
+        int(performance["sheriff_wolf_target_count"])
+        + int(performance["sheriff_good_target_count"])
+    ):
+        raise ValueError("player sheriff targets do not conserve ballots")
+    if int(performance["seer_check_count"]) != (
+        int(performance["seer_unique_check_target_count"])
+        + int(performance["seer_repeat_check_count"])
+    ):
+        raise ValueError("player seer checks do not conserve targets")
+    if int(performance["witch_poison_count"]) != (
+        int(performance["witch_poison_wolf_count"])
+        + int(performance["witch_poison_good_count"])
+    ):
+        raise ValueError("player witch poison targets do not conserve actions")
+    if int(performance["guard_intercept_count"]) > int(
+        performance["guard_protect_count"]
+    ):
+        raise ValueError("player guard intercepts exceed protections")
+    if int(performance["hunter_wolf_hit_count"]) > int(
+        performance["hunter_shot_count"]
+    ):
+        raise ValueError("player hunter hits exceed shots")
+    if int(performance["werewolf_special_role_target_count"]) > int(
+        performance["werewolf_kill_choice_count"]
+    ):
+        raise ValueError("player wolf special-role targets exceed kill choices")
+    if int(performance["npc_follow_ballot_count"]) > int(
+        performance["npc_follow_eligible_ballot_count"]
+    ):
+        raise ValueError("NPC follows exceed eligible ballots")
+
+
 def _add_fake_seer_counts(
     total: dict[str, int],
     fake_metrics: dict[str, object],
@@ -1236,6 +1753,9 @@ def _validate_game_metric_conservation(metrics: dict[str, object]) -> None:
     _validate_vote_transition_conservation(
         exile_chain["after_first_wolf_exile_good_npc_vote_transitions"]
     )
+    _validate_player_performance_conservation(
+        metrics["player_performance"]
+    )
 
 
 def _validate_batch_metric_conservation(metrics: dict[str, object]) -> None:
@@ -1310,6 +1830,10 @@ def _validate_batch_metric_conservation(metrics: dict[str, object]) -> None:
     _validate_vote_transition_conservation(
         exile_chain["after_first_wolf_exile_good_npc_vote_transitions"]
     )
+    player_performance = metrics["player_performance"]
+    if int(player_performance["game_count"]) != int(metrics["game_count"]):
+        raise ValueError("batch player performance does not cover every game")
+    _validate_player_performance_conservation(player_performance)
 
 
 def _validate_vote_transition_conservation(
@@ -1336,7 +1860,9 @@ def _validate_vote_transition_conservation(
 __all__ = [
     "CROSS_DAY_EXILE_CHAIN_SCHEMA_VERSION",
     "METRICS_SCHEMA_VERSION",
+    "PLAYER_PERFORMANCE_SCHEMA_VERSION",
     "aggregate_batch_metrics",
+    "aggregate_player_benchmark_metrics",
     "build_game_metrics",
     "summarize_ballot_distribution",
 ]

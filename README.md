@@ -1,10 +1,404 @@
-# Agent Town Demo V3
+# Agent Town Demo V4
 
 一个用于学习游戏开发的 Godot 4 + Python FastAPI AI NPC 原型。
 
 后端、DeepSeek LLM、Godot 和自检命令统一记录在 [`COMMANDS.md`](COMMANDS.md)。
 
 项目当前把两条玩法合并到同一个 Demo 中：玩家可以在扩建后的 2D 小镇里移动、随时和坏坏、然然两名常驻居民聊天，也可以通过控制面板进行一局 1 名玩家 + 11 名 NPC 的十二人狼人杀。
+
+## V4.8-A 开局 LLM 输出校验开关
+
+狼人杀开局设置现在把“启用 AI NPC 表达”和“启用 LLM 输出校验”分开。开局请求新增
+`enable_llm_validation`，默认 `true`，因此旧客户端继续使用最多 5 轮语义校验与纠错。
+设为 `false` 时只请求 1 份模型文本，语义校验与纠错均为 0 次，提取出的 `text` 会直接
+显示；网络、配置、JSON 或 `text` 提取失败时仍使用 Python 规则文本。开局和完整状态
+响应使用 `llm_validation_enabled` 返回本局实际生效的模式。
+
+关闭输出校验后，原文可能出现错误、矛盾、越界或虚构信息，这是玩家主动选择的体验
+模式。Python 会先确定合法的结构化策略，并且不会把未校验原文重新解析成权威声明、
+公开立场、怀疑值、技能建议或规则动作；身份、合法行动、投票、警徽、出局和胜负仍只
+由 Python 结算。原文仍会作为玩家实际看到的台词进入公开日志或私聊记录，因此可能真实
+影响玩家判断，但不能直接改写规则状态。原文直出路径只发起 1 次适配器请求，不执行
+第 2 次网络重试或语义纠错。
+
+选择会随 `game_created.command.start_request.enable_llm_validation` 封印在事件链中；实现不向
+`WolfGameState` 增加字段，旧事件缺少该键时按开启处理，所以旧存档的快照和规则状态
+摘要不会因本功能漂移。实际启用 LLM 的局即使关闭输出校验仍只支持事件审计，不会被
+误标为确定性重放。坏坏、然然等常驻居民使用的普通 `/chat` 不属于某一局狼人杀，
+不受 `enable_llm_validation` 影响。
+
+## V4.7-C CI 与封版交付
+
+V4.7-C 的交付机制已经完成，但项目尚未封版。新增的
+`.github/workflows/ci.yml` 在 Ubuntu 24.04 与 macOS 15 上使用 Python 3.12，分别运行
+离线核心检查和固定 Godot 4.7.1 的 headless 检查：
+
+- `offline-core` 从空环境安装 `backend/requirements.txt`、执行 `pip check` 和
+  `scripts/smoke_check.py --profile core`，覆盖 Python 编译、规则、仿真、存档、幂等、
+  文档和静态 Godot 契约。
+- `godot-headless` 执行 `scripts/smoke_check.py --profile godot`，覆盖资源导入、中文
+  字体、昼夜脚本和主场景加载。默认无参数仍是兼容的完整 smoke。
+- 测试阶段固定关闭真实 LLM 和向量模型下载，不读取 secret、不启动 FastAPI、Godot
+  编辑器或常驻游戏进程；依赖和 Godot 安装阶段仍需要正常访问软件源。
+- Godot 4.7 的七个 `.gd.uid` 进入源码交付，`.godot/` import cache 继续忽略；
+  `.gitattributes` 固定文本 LF，降低 Linux/macOS fresh clone 差异。
+
+完整治理、双平台、隐私、手工三尺寸、许可证选择和未来封版命令见
+[`V4 封版清单`](docs/V4_RELEASE_CHECKLIST.md)。公开开发仓库
+[`KEswy/agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0) 已创建，
+本地仅以 `v4-origin` 指向它；当前提交仍是开发快照，尚未创建 `v4.0.0` 正式封版标签，
+也没有向三个历史 remote 推送。根目录目前没有项目 `LICENSE`，因此源码公开可读不代表
+获得再分发许可。
+
+## V4.7-B 响应式布局与整局键盘导航
+
+Godot 客户端现在同时发布 `agent_town_responsive_layout.v1` 和
+`agent_town_focus_navigation.v1`。本轮只调整显示与输入边界，不改变 Python 返回的身份、
+知识权限、合法行动、投票、警徽、出局或胜负：
+
+- 布局按物理窗口而不是拉伸后的逻辑画布选择 `compact / default / wide`：宽度小于
+  `1200` 为 compact，`1200–1439` 为 default，宽度至少 `1440` 且高度至少 `820` 为
+  wide。项目最小、默认和宽屏验收尺寸分别是 `1100×650`、`1280×720`、`1600×900`。
+- 三档“当前行动”宽度为 `420 / 440 / 480px`，“情报”宽度为
+  `520 / 600 / 736px`，角色卡为 `2 / 3 / 4` 列；HUD、身份卡、设置窗口、复盘边距、
+  行动面板高度和历史记录高度也由同一 profile 调整，并按可用逻辑高度限幅。
+- 焦点分为 `WORLD`、`PANEL`、`TEXT_ENTRY`、`MODAL`。Tab / Shift+Tab 在当前范围
+  循环，方向键在按钮间移动或滚动正文，Enter / Space 激活控件，Esc 关闭当前面板或
+  弹窗；非文本状态按 WASD 或点击世界会立即回到角色移动。
+- 设置、首局引导、发言提交前预览、NPC 对话和赛后复盘都会锁住世界输入、限制焦点
+  不离开弹窗，并在关闭后还给打开它的控件；原控件已隐藏或禁用时使用安全入口，仍
+  不可用时才回到世界。发言预览和 NPC 对话也会阻止鼠标穿透到底层 UI。
+- 默认 UI 字号提升到 `14px`，显式字号不低于 `12px`；浅色、深色和对话控件都有
+  高对比金色焦点框。情报、关键公开信息、引导、复盘和 NPC 回复滚动区均可用键盘
+  到达，玩家行动记录保持只读但可聚焦滚动。
+- Godot 4.7 会把部分从 `Variant` 或集合返回值推断类型的警告升级为脚本加载失败；
+  `main.gd` 的引导阶段判断、待显示步骤和分页栏现已使用显式类型。这样主脚本不会因
+  这三处推断失败而整体失效，避免出现“独立玩家脚本仍能 WASD，但按钮和 E 交互全部
+  无响应”的假性输入故障。
+
+本轮不新增 HTTP、Pydantic、规则、事件、存档、重放或 LLM 字段，也不承诺手机布局。
+V4.7-C 已在其后补齐 CI、封版清单与跨平台源码交付边界。
+
+## V4.7-A 首局分阶段引导
+
+Godot 现在提供客户端专属的 `agent_town_onboarding.v1`，不新增后端规则状态，也不
+改变任何对局接口：
+
+- 自动引导只在完整 `GET /api/game/{game_id}/state` 成功后评估；开局 POST 的精简
+  响应不会触发。轮询刷新使用每局 `seen_step_ids` 去重，不会反复弹出同一步。
+- 七个白名单步骤按真实流程出现：`identity_and_scope`、`night_skill`、
+  `sheriff_flow`、`public_speech`、`private_chat`、`exile_vote` 和
+  `post_game_review`。只有轮到玩家发言、玩家仍可投票等条件满足时才显示对应提示。
+- 六种身份说明只根据 Python 已经合法投影给玩家本人的身份选择文案；身份、狼队友、
+  验人、刀口、药品、守护和行动历史均标记为“仅你可见”。公开声明明确标记为
+  “全场公开但未验真”，私聊原文不会自动公开，但会影响该 NPC 后续判断。
+- 引导弹窗加入现有 `dialog_open` 安全区，打开时玩家停止移动。支持 Tab / Shift+Tab
+  循环焦点、Enter / Space 确认、方向键翻页、Esc 暂时关闭；顶部 `?` 或 F1 可随时
+  手动重开全部步骤。
+- `user://agent_town_onboarding.cfg` 只保存
+  `schema_version=agent_town_onboarding.v1` 和 `automatic_guide_completed` 布尔值，不保存
+  game id、身份、队友、验人、聊天或
+  其他对局事实。完成或跳过后仍可按 F1 手动查看。
+
+本阶段没有新增 HTTP 请求、LLM 调用、Python 规则、事件、存档或幂等字段。全局
+响应式布局与整局键盘导航已由 V4.7-B 完成，CI 和封版清单已由 V4.7-C 补齐。
+
+## V4.6-B 指纹、LLM 成本与只读配对 A/B
+
+离线仿真和脱敏 LLM 观测现在共享一套可复现、不可反查原文的实验身份：
+
+- `experiment_fingerprint.v1` 只输出组件 SHA-256，不输出 Prompt、知识库正文、endpoint
+  凭据或 API Key。`configuration_fingerprint` 覆盖完整配置，
+  `effective_fingerprint` 只覆盖当前执行模式真正生效的组件。
+- 规则模板仿真的 rules/roles、NPC profiles、tuning、输出 schema 和玩家 policy 为
+  active；Prompt catalog、知识库、LLM 请求配置和 RAG 为 inactive。这样完整配置漂移
+  仍可追踪，但未启用的 LLM/Prompt 变化不会被冒充成规则玩法变化。
+- 真实 LLM 请求在 `LLMClient` 边界对本次最终 system prompt 和安全配置计算摘要，
+  写入 `llm_observation.v2`；不保存 prompt 本身。`llm_observability_summary.v2`
+  兼容读取历史 v1，并拆分 adapter retry 与 semantic retry，报告 token usage 状态、
+  provider attempt 覆盖率和 prompt/config 指纹覆盖率。成功请求必须至少有一次 provider
+  attempt，retry 数严格等于 `attempt_count - 1`；公开 LLM 状态只返回移除 URL 用户信息、
+  query 和 fragment 后的 endpoint identity，避免配置 URL 中的凭据泄漏。
+- `llm_price_catalog.v1` 与 `llm_cost_summary.v1` 使用版本化本地价格口径，并封印
+  price catalog 指纹。默认 `deepseek-v4-flash` 条目明确为 `unknown`，不是官方报价、
+  也不是零成本；只要任一可计费请求的模型、usage 或价格未知，总成本就是 `null`，
+  已知部分仍单独保留。
+- `agent_town_artifact_ab.v1` 只比较两组已经生成并通过完整性校验的 v17 规则仿真
+  artifact。它严格按固定 `seed + actual player role` 配对，并要求同布局、策略、规则、
+  schema 和 trace 口径；五项 V4.6-A 指标先汇总原始分子/分母再比较。报告固定
+  `comparison_mode=rule_only_artifacts_no_llm`、`llm_evaluated=false`、
+  `prompt_effect_evaluated=false`，不会把规则模板差异说成真实
+  Prompt 或模型效果。
+
+仿真已升级为 `agent_town_simulation.v17` /
+`agent_town_simulation_batch.v17`，CLI 会打印 `[EXPERIMENT]`。冻结的
+`gameplay_digest_projection_version=agent_town_simulation.v14` 与
+`agent_town_metrics.v5` 不变。A/B 比较器本身不切换代码或配置；应分别在两个配置或
+代码快照生成固定 `--player-role` artifact，再用
+`scripts/compare_simulation_artifacts.py` 做只读比较。具体命令见
+[`COMMANDS.md`](COMMANDS.md)。
+
+## V4.6-A NPC 表达质量离线基线
+
+无 HTTP 仿真现在会在终局生成严格的 `npc_speech_quality.v1`，批量聚合为
+`npc_speech_quality_batch.v1`。底层还固定
+`npc_speech_normalization.v1`、`npc_speech_quality_observation.v1`、
+`npc_speech_actor_quality.v1` 和 `npc_speech_actor_quality_batch.v1`，便于后续版本
+对比时明确口径。
+
+- 统计固定 `scope=npc_public_speeches_only`、
+  `truth_scope=public_only_no_role_truth`：只评价已经公开的 NPC 发言及其结构化公开
+  依据。玩家发言只作为此前公开信息参与增量比较，不读取其他席位真实
+  `role/camp`、私有 belief 或赛后阵营标签。
+- 文本先按 NFKC、大小写和标点归一化；模板比较进一步去掉公开姓名、座位号和数字。
+  `npc_speech_quality` 子报告只保存 SHA-256、字符数和结构化信息原子，不保存原始
+  发言正文；仿真其他既有赛后审计字段不属于该 truth scope。
+- 指标同时保留逐字重复、去目标模板重复、跨角色模板重复，以及阈值
+  `near_duplicate_threshold=0.82` 的字符 trigram Jaccard 近重复。原始 count、pair
+  分母和 rate 同时输出，避免只看百分比误判小样本。
+- 信息增量只从随该条发言保存的 position/plan 中提取目标、立场、追问、验证点、
+  暂票、claim option 和女巫建议；证据引用独立统计 RAG 标题和 signal/plan/立场引用，
+  不从自由文本猜事实，也不把终局按天聚合的 `public_claims` 回填到更早发言。
+- 人设代理统计配置口头禅/彩蛋命中，并以跨角色模板平均相似度的补数给出
+  `persona_differentiation_score`。它只是可复现的表面差异代理，不等同于真人盲评。
+- 批量报告先累加原始计数与相似度 sum 再计算加权比率，并保留按 NPC 聚合；CLI 会
+  打印 `[SPEECH-QUALITY]` 摘要。
+
+V4.6-A 当时把仿真升级为 `agent_town_simulation.v16` /
+`agent_town_simulation_batch.v16`；V4.6-B 当前为 v17。冻结的
+`gameplay_digest_projection_version=agent_town_simulation.v14` 和
+`agent_town_metrics.v5` 保持不变。该层只在终局离线诊断，不请求 LLM、不改变
+FastAPI/Godot 实时接口、规则决策、存档或重放。V4.6-B 已把 NPC 人设等完整配置
+纳入实验指纹，跨时间比较应先核对相同的配置或明确作为两个实验 arm。
+
+## V4.5-A 可解释赛后决策复盘
+
+终局 `GET /api/game/{game_id}/summary` 新增严格的
+`post_game_explainable_review.v1`，每条决定为 `post_game_decision_review.v1`，引用
+跨日公开记录时使用 `post_game_evidence_reference.v1`。只有 Python 已把阶段封印为
+`GAME_OVER` 并确定 winner 后才会生成；进行中的 `/state`、NPC 知识和公开证据接口
+不含这份赛后真值。
+
+- 解释覆盖公开发言、放逐投票、夜间技能和猎人开枪，展示“当时保存了哪些依据、
+  做了什么选择、赛后真实身份是什么、后来有哪些跨日公开记录可核对”。
+- 每条有稳定 `review_id`，固定 `post_game_truth_unlocked=true`；根级
+  `truth_scope=post_game_truth_unlocked`，并保存完整评价和错误分类计数。
+- `knowledge_scope=recorded_basis_plus_prior_day_public_evidence`：只把更早日期的公开
+  证据称为当时可见；同日只有随决定保存的 RAG、signal、立场卡和连续性理由可作为
+  依据。旧集合没有逐条同日事件序号时会明确写出限制，不推测隐藏思维链。
+- 错误严格区分 `deceived / insufficient_evidence / continuity_break /
+  skill_misuse / deterministic_variance`。只有实际保存了狼人失实验人信号才归为
+  受骗；狼人决定按阵营策略单列，不用好人识狼标准评分。
+- Godot 全屏复盘新增“解释复盘（赛后）”页，先显示赛后真值警告，再分开展示当时
+  依据、评价、真实身份、解释和后来证据。
+
+投影只读且确定，不写回 `WolfGameState`，不会改变规则摘要、存档、幂等结果、重放
+或任何实时决定。V4.6-A 已在独立的离线仿真层建立表达质量基线。
+
+## V4.4-B 承诺生命周期与中立矛盾候选
+
+进行中的 `GET /api/game/{game_id}/state` 在 V4.4-A 时间线旁新增只读的
+`public_evidence_analysis.v1`。它只比较同一局已经公开的说法、修订和规则动作，
+根级 `truth_scope=public_only_no_post_game_truth`；不会读取真实身份、阵营、夜间
+责任人、声明内部来源、胜负或赛后真值。
+
+- 每个警徽流版本生成一条 `public_commitment_state.v1`，用稳定
+  `commitment_id` 关联原始 `source_evidence_id`，并保留替代或解决它的公开证据
+  ID。生命周期状态为 `active / superseded / fulfilled / invalidated /
+  undetermined / contradicted`。
+- 生命周期只检查警徽流的首段验人目标与公开移徽/撕徽分支。到期前正常修订记为
+  `superseded`；承诺人、目标或公开分支不可用记为 `invalidated`；缺少可观察到的
+  公开后续记为 `undetermined`，都不会自动生成矛盾结论。
+- `public_contradiction_candidate.v1` 只生成四类待人工核对项：身份声明变化、同一
+  目标验人结果变化、实际公开验人目标与警徽流首段目标不同，以及警徽动作落在
+  已公布分支之外。每项保存前后两个 evidence ID，固定
+  `review_status=needs_review`、`judgment=none`；合理修订和暂时/最终归票变化不算
+  矛盾候选。
+- `fulfilled` 只表示公开后续与公开计划相符，`contradicted` 只表示两条公开记录
+  表面不一致；两者都不证明声明为真或角色属于任何阵营。
+- NPC 合法知识直接引用同一批 commitment/candidate ID。Godot 公开记录页分开展示
+  承诺状态和矛盾候选，并明确提示“需核对，不代表阵营判断”。
+- 分析绑定与时间线相同的 `projected_event_sequence`，重复生成结果相同且不写回
+  `WolfGameState`，因此不改变规则摘要、存档、幂等结果或确定性重放。
+
+V4.5-A 已在游戏结束后把保存的决定、公开证据和明确标注的赛后真值组合成解释；
+V4.4-B 的进行中接口仍保持无真值边界。
+
+## V4.4-A 统一公开证据时间线
+
+进行中的 `GET /api/game/{game_id}/state` 现在返回
+`public_evidence_timeline.v1`；其中每条记录为 `public_evidence_item.v1`。它把原先分散
+在身份/技能声明、验人说法、警徽流、警长报名与退水、警长票、暂时/最终归票、
+警徽动作、猎人动作、已公布放逐票和出局结果中的公开信息合并为一个只读投影。
+
+- `claim / commitment / confirmed_action` 分别显示为 `◇ / ◆ / ●`。声明和承诺的
+  `verification` 永远是 `unverified`；`confirmed` 只确认公开动作已经发生，不确认
+  声明者身份、验人说法或警徽流推断为真。
+- 每项有只由公开结构生成的稳定 `evidence_id` 和连续 `sequence`；整条时间线以
+  `projected_event_sequence` 绑定当前规则事件游标。旧公开记录没有逐项事件来源时，
+  API 不伪造 provenance。
+- 尚未结算的玩家/NPC 放逐票不会进入时间线；公布后才生成 `exile_ballot`。
+  狼刀与毒药统一显示为“夜间出局（公开结果不区分原因）”，不返回隐藏原因、
+  行动者或声明内部来源。
+- NPC 的合法公开知识与 Godot 的关键信息/公开记录面板消费同一批证据 ID。Godot
+  仍在时间线下方保留最近公开播报，方便查看阶段提示。
+- 时间线由现有事件封印后的规则状态即时生成，不写回 `WolfGameState`，不改变
+  `rule_state_digest`、存档 schema、幂等结果或确定性重放。
+
+V4.4-B 已在这份稳定公共基线上增加承诺生命周期和中立矛盾候选，同时继续禁止
+自动判狼或把赛后身份真值混入进行中接口。
+
+## V4.3-B 幂等命令与重复结算保护
+
+狼人杀 20 个开局后规则写入口现在都接受可选 `idempotency_key`。契约版本为
+`game_command_idempotency.v1`：key 在同一 `game_id` 内唯一，必须是 8–160 位，
+首位为 ASCII 字母或数字，其余可用字母、数字、点、下划线、冒号或连字符。第一次带 key 的请求会把规则事件、
+`game_command_result.v1` 结果台账和完整状态放入同一次原子存档提交。
+
+- 同一局中，同 key、同端点、同 payload 会直接返回第一次提交的响应 payload，
+  不重新检查已推进的阶段、不追加事件，也不重写存档。
+- 同 key 被不同端点或不同 payload 复用时返回 HTTP 409，状态、事件和磁盘零变化。
+- 结果台账绑定请求摘要、响应摘要、响应模型、事件序号/类型/摘要和原响应；恢复时
+  逐项校验。台账、事件或响应任一被改，即使重算完整快照摘要也会拒绝恢复。
+- 如果原子替换前失败，内存事件和结果台账一起回滚；如果存档已经提交但响应丢失，
+  后端重启恢复后仍会在阶段校验前命中原结果，因此夜间结算、猎人、警长、投票、
+  发言和私聊不会产生第二次效果。
+- 如果丢失的是结束对局的最后响应，终局归档仍不会进入活动缓存；带原 key 的重试
+  会只读校验该归档并返回原结果，不重新激活终局或改写文件。
+- Godot 会为每条待处理逻辑命令生成 key；网络错误或非 2xx 响应后保留，同 payload
+  重试继续复用，收到 2xx 才清理。payload 改变或开始新局时使用新 key。
+
+未携带 key 的 V4.2 客户端继续可用，但没有响应丢失后的 exactly-once 效果保证。
+`POST /api/game/start`、玩家发言 preview、GET、显式 save/restore 不在本契约范围；
+事件 `command_id` 也不是外部幂等 key。当前保证仍以单进程、单 worker 和未损坏的
+私有存档为边界；Godot 待处理 key 只保存在本次客户端进程内。
+
+## V4.3-A 原子存档与恢复
+
+真实 FastAPI 服务生命周期中的狼人杀对局现在会把完整私有状态保存到
+`backend/data/games/`；可用 `AGENT_TOWN_GAME_SAVE_DIR` 覆盖目录。开局及每个
+成功的规则命令都生成严格的 `game_save.v1`：除完整 `WolfGameState` 外，还封印
+最后事件序号/摘要、规则状态摘要、完整快照摘要，以及开局时冻结的
+`recovery_config_fingerprint.v1`。指纹不含 API Key；进行中对局恢复时必须与当前
+规则、NPC 人设、知识、调参及安全的 LLM 配置一致。
+
+- 存档先写同目录、从创建起即为 `0600` 的临时文件，经 flush/fsync 后用
+  `os.replace` 原子替换；目录权限为 `0700`。替换前失败会保留旧文件，并把本次
+  内存规则命令精确回滚到命令前快照。
+- 服务启动按一个批次校验全部存档。任何进行中存档损坏、事件链不一致、快照被改、
+  game ID 不一致或配置漂移都会拒绝激活持久化，不会只恢复一部分后继续运行。
+- 校验通过的未完成局自动回到活动缓存。终局归档启动时跳过，但仍可手动恢复，且
+  配置升级不会阻塞终局归档扫描。
+- `POST /api/game/{game_id}/save` 建立显式检查点，
+  `POST /api/game/{game_id}/restore` 手动恢复，
+  `GET /api/game/recovery-status` 返回最近一次启动扫描报告；对应响应为
+  `game_save_response.v1`、`game_restore.v1` 和 `game_recovery.v1`。
+- 完整存档含 seed、隐藏身份、夜间行动、合法私聊等敏感事实，不是公开事件接口，
+  不应提交或发布。离线 simulation、隔离 replay 和直接导入规则模块不会自动落盘。
+- 当前文件锁和活动缓存只支持单进程、单 worker。存在可恢复的未完成局时，配置热
+  重载会以 409 拒绝，避免活动局指纹与实际配置分叉。
+- V4.3-A 到 V4.3-B 之间生成、且唯一差异是缺少默认空 `command_results` 的早期
+  存档可安全读取，但前提是原始快照摘要正确且事件中从未出现幂等 key。读取不会
+  改盘，下一次正常保存才升级字段；其他 schema/摘要差异继续 fail closed。
+
+V4.3-B 已在这份原子快照上增加客户端幂等 key 与持久结果台账。恢复指纹仍只服务
+于存档兼容性；V4.6-B 的实验、Prompt/config 和价格表指纹是独立契约，不替代恢复
+校验，也不改变进行中存档的兼容性判断。
+
+## V4.2 单一追加事件日志与确定性重放
+
+狼人杀规则写入口现在共享 `game_rule_event.v1` 追加事件链：开局、夜间行动与
+结算、猎人开枪、警长流程、公开发言、私聊、投票、警徽移交和终局都按稳定序号
+记录命令。每个事件包含命令 ID、`agent_town_rules.v4.2` 规则版本、
+`public / player_private / system_private` 可见范围、前后阶段、前后规则状态
+SHA-256 和上一事件摘要；修改任一已封印事件或绕过命令链修改状态都会使链校验失败。
+
+- `GET /api/game/{game_id}/events` 仅在终局后导出
+  `game_rule_event_log.v1`，避免进行中泄露 seed、夜间行动或私聊。
+- `POST /api/game/{game_id}/replay` 从 `game_created` 的开局请求与内部 seed
+  建立隔离的临时内存局，逐条调用同一 Python 规则入口，并逐事件比较状态摘要。
+- `game_rule_replay.v1` 最后同时核对 winner、警长票、放逐票、出局、警徽流和
+  完整规则状态摘要；重放临时局不会覆盖原局。
+- 规则模板局（`enable_llm=false`、`enable_rag=false`）支持执行式确定性重放。
+  启用 LLM 或 RAG 的局仍写入完整审计链，但本阶段明确返回“不支持确定性重放”，
+  不会重新调用模型后声称逐字一致。
+- 执行式重放还要求相同代码和 NPC 配置；V4.3-A 已增加窄范围的恢复配置指纹，
+  V4.6-B 另为离线实验补齐完整配置与 active-only 指纹；两者用途不同。
+- V4.2 当时把无 HTTP 仿真升级为 `agent_town_simulation.v15` /
+  `agent_town_simulation_batch.v15`；V4.6-A 为 v16，V4.6-B 当前为 v17。每局总是验证重放；单局默认保留完整事件，
+  批量默认只保留事件摘要与重放报告，可用 `--include-event-logs` 显式保留事件数组。
+- `gameplay_digest_projection_version=agent_town_simulation.v14` 继续对同一玩法字段
+  计算兼容摘要；新的事件/重放元数据只进入 `result_digest`。
+
+`public_logs`、`sheriff_events`、行动和投票列表仍是现有 UI/规则投影，但其每次
+成功变化都被同一命令事件及状态摘要封印。磁盘存档和进程重启恢复已由 V4.3-A
+完成；V4.3-B 进一步把外部幂等 key、事件和原响应绑定为同一次提交。
+
+## V4.1-B 玩家发言理解与提交前预览
+
+白天和警上自由发言现在共用 Python 的只读预览链路：
+
+- `player_speech_understanding.v1` 把身份声明、验人说法、怀疑/支持、投票意向和
+  女巫建议转换为严格结构；其他措辞不会自动升级为身份、技能或行动事实。
+- `POST /api/player-speech/preview` 返回 `player_speech_preview.v1`，明确区分
+  “会写入的公开事实”“会应用的策略信号”“仅文本表达”和拒绝原因。
+- 预览会规范化警长暂归票和警徽流，但不写入发言、声明、怀疑值、警徽流或阶段进度。
+- 接受的预览带 64 位 SHA-256 指纹。Godot 确认提交时携带指纹，后端仍在锁内
+  重新解析；文字或对局状态变化会以 409 拒绝旧预览。
+- Godot 同时支持白天与警上发言的“确认提交 / 返回修改”；未通过的预览不能确认。
+- 解析器按逗号拆分验人子句，避免“查验 3 号是狼人，我怀疑 4 号”把 4 号误登记为验人。
+
+预览契约不返回其他角色真实 `role/camp`；只交换不可见 NPC 身份时，理解结果、
+规则效果和预览指纹保持一致。
+
+## V4.1-A 三档玩家策略与身份配对基准
+
+V4 从 V3.0 封版标签 `v3.0.0`、提交
+`7a44dd598a62739e450bebe56198a6fe1f505ebd` 开始。当前开发只使用
+`v4-development`，开发快照只允许推送到专用 `v4-origin`；任何 V4 代码都不得推送到
+`origin`、`v2-origin` 或 `v3-origin`。完整计划见
+[`docs/V4_ROADMAP.md`](docs/V4_ROADMAP.md)，V3 路线表
+继续作为历史实施记录保留在
+[`docs/V3_ROADMAP.md`](docs/V3_ROADMAP.md)。
+
+V4.1-A 只扩展无 HTTP 离线仿真，不修改实时 FastAPI 对局 schema 或 Godot：
+
+- `backend/app/player_strategy.py` 定义 `beginner / standard / expert` 三档；
+  `standard` 继续使用 V3 的 `legal_public_baseline.v1`。
+- 三档只消费 `player_strategy_context.v1`。公开角色投影不含其他席位真实
+  `role/camp`；狼人队友、本人验人、本人女巫刀口和技能资源只进入对应合法私有区。
+- V4.1-A 当时把单局/批量升级为 `agent_town_simulation.v14` /
+  `agent_town_simulation_batch.v14`；V4.2 为 v15，V4.6-A 为 v16，V4.6-B 当前为
+  v17。指标保持
+  `agent_town_metrics.v5`，
+  并增加 `player_decision_trace.v1` 与纯赛后的 `player_performance.v1`。
+- `agent_town_player_benchmark.v1` 按相同 `seed + player_role` 配对三档策略；
+  六种固定身份均覆盖，并要求三档拥有相同 `initial_layout_digest`。
+- 正式矩阵覆盖到“同一 NPC 狼同时收到狼队友互踩查杀与真预言家查杀”的
+  合法双验人状态；规则兜底保留狼队既有互踩主叙事，并以次目标和公开信号回应另一声明。
+- smoke 使用 `2 × 6 × 3 = 36` 局；正式最小基准建议
+  `56 × 6 × 3 = 1008` 局。首版报告配对胜负差，不把
+  “expert 胜率必须高于 beginner”设成硬门槛。
+
+运行一个轻量配对样本：
+
+```bash
+backend/.venv/bin/python scripts/simulate_games.py \
+  --seed 20260719 \
+  --games 2 \
+  --benchmark-player-strategies \
+  --output /tmp/agent-town-v4-player-benchmark.json
+```
+
+该命令固定关闭 LLM/RAG，不启动 FastAPI 或 Godot；配对模式也默认关闭
+belief、stance 和 vote-calibration 大体积明细。单策略批量可使用
+`--player-strategy beginner|standard|expert`。
+
+`20260719–20260774` 的正式 1008 局基准已通过：三档各 336 局，玩家获胜数为
+`beginner 88 / standard 106 / expert 107`；配对胜率差为
+`standard-beginner +5.4%`、`expert-beginner +5.7%`、
+`expert-standard +0.3%`。336 个 cohort 的布局摘要均一致，报告摘要为
+`577e0860e3129cf66f3006f0bda025dbd88594813e64b23310b185938a9bdb13`。
 
 ## V2.0 封版信息
 
@@ -16,6 +410,7 @@
 | 技术边界 | Godot 4 负责 2D 交互；Python 负责规则事实；RAG/LLM 负责 NPC 决策辅助与角色化表达 |
 | 运行方式 | 后端和 Godot 均由开发者手动启动，本项目不会自动拉起服务 |
 | V3 规划 | [`docs/V3_ROADMAP.md`](docs/V3_ROADMAP.md) |
+| V4 规划 | [`docs/V4_ROADMAP.md`](docs/V4_ROADMAP.md) |
 
 V2.0 基线提交为 `6af73f54844b4e1471c6d9fb582431a7ee892592`。它已覆盖十二人规则状态机、警长与警徽流、结构化普通白天发言、合法视角校验、NPC 智能参数、RAG、分层 UI、昼夜场景，以及坏坏和然然两名非参赛常驻居民。
 
@@ -27,7 +422,7 @@ V2.0 基线提交为 `6af73f54844b4e1471c6d9fb582431a7ee892592`。它已覆盖�
 - Python 规则发言把重复的立场卡、当前判断、追问、暂票和改票条件压成短句；RAG 只口头引用证据标题，不再逐字复述整张公开立场卡。警徽流与女巫建议也改为更短的规范句，但目标、分支和建议事实仍由 Python 固定。
 - 公开 LLM 改写从最多 170 字收紧到 120 字，并由校验器硬性拒绝超长候选；结构化发言的角色化开场最多 10 字。规则正文较长时不再额外叠加口头禅或彩蛋。
 
-固定 20 局规则样本共 555 条 NPC 发言，平均长度由 `158.2` 降至 `93.4` 字，P95 由 `225` 降至 `128` 字，最长由 `293` 降至 `196` 字。最长样本同时包含警徽流和女巫建议，因此不对事实句做破坏性截断。同口径 100 seeds 为好人 `37`、狼人 `63`，平均 `3.45` 天，与 V3.2-A 的 `38/62` 接近但不宣称表达改动完全不影响后续公开说服力。simulation schema 继续使用 v13。
+固定 20 局规则样本共 555 条 NPC 发言，平均长度由 `158.2` 降至 `93.4` 字，P95 由 `225` 降至 `128` 字，最长由 `293` 降至 `196` 字。最长样本同时包含警徽流和女巫建议，因此不对事实句做破坏性截断。同口径 100 seeds 为好人 `37`、狼人 `63`，平均 `3.45` 天，与 V3.2-A 的 `38/62` 接近但不宣称表达改动完全不影响后续公开说服力。V3.2-B 封版 simulation schema 使用 v13。
 
 ## V3.2-A 智能警徽流 M16-A
 
@@ -58,7 +453,7 @@ V3.1-A 的 100 局规则基线全部合法结束，但只得到好人 6 胜、�
 M02-A 已在可复现模拟上增加独立的赛后指标层：
 
 - `backend/app/simulation_metrics.py` 只接受已经进入 `GAME_OVER` 的状态；真实身份只用于评价已经发生的选择，不会进入实时 API、NPC 上下文或玩家决策。
-- 每局和批量报告当前使用 `agent_town_metrics.v4`；M02-A 当时为 metrics v1 / simulation v2，M03-A/B 为 simulation v3/v4，M04-A/B 为 v5/v6，M15-A/B 为 v7/v8，V3.1-L/M/N/O 为 v9/v10/v11/v12，V3.2-A 为 v13，并完整保留旧指标。
+- 每局和批量报告当前使用 `agent_town_metrics.v5`；M02-A 当时为 metrics v1 / simulation v2，M03-A/B 为 simulation v3/v4，M04-A/B 为 v5/v6，M15-A/B 为 v7/v8，V3.1-L/M/N/O 为 v9/v10/v11/v12，V3.2-A 为 v13，V4.1-A 为 simulation v14 / metrics v5，并完整保留旧指标。
 - 指标覆盖阵营胜率、平均局长、警长票熵、逐日放逐票熵、好人正确投狼率/误投好人率、假预言家好人警长票支持率与公开查杀跟票率。
 - 报告按模拟玩家身份、投票者角色和游戏天数聚合；所有比率保留原始分子/分母，无适用样本使用 `null`，不伪装成 0%。
 - 票熵按每张未加权选票计算，归一化口径为 `H / log2(选票数)`；它衡量选择是否集中，不把警长的 1.5 票重复视作多个玩家。
@@ -128,7 +523,7 @@ M04-B 让普通非警长 `DAY_MEETING` 成为第一个读取 `stance_summary.v1`
 - 当前发言计划升级为 `public_speech_plan.v3`。除了 v2 的目标、立场、证据、问题、验证和暂定票外，必须给出 `continuity_reason`：`stance_aligned / new_public_evidence / deterministic_variance / authorized_claim / mandatory_rule_response / unscored`。
 - 偏离主导 stance 只能引用本次已选中的新增公开 signal，或命中由内部 seed、`decision_variance` 和 `plan_consistency` 共同决定的可复现个体扰动。合法声明单列为 `authorized_claim`；收到必须回应的公开验人或既有狼队故事线单列为 `mandatory_rule_response`。
 - 规则兜底会主动对齐 stance；LLM 仍可在合法目标、公开证据、声明包和战术白名单内选择策略。私有 belief evidence ID 只进入策略上下文，不会写入公开计划、台词或进行中 API。
-- M04-B 当时把模拟升级为 v6；M15-A/B 为 v7/v8，V3.1-L/M/N/O 为 v9/v10/v11/v12，当前 V3.2-A 已升级到 `agent_town_simulation.v13` / `agent_town_simulation_batch.v13`，并继续保留 `speech_continuity_metrics.v1`。该统计不包含私有 belief 内容；M04-A 的警长票和放逐票 stance 对照继续保留。
+- M04-B 当时把模拟升级为 v6；M15-A/B 为 v7/v8，V3.1-L/M/N/O 为 v9/v10/v11/v12，V3.2-A 当时升级到 `agent_town_simulation.v13` / `agent_town_simulation_batch.v13`，并继续保留 `speech_continuity_metrics.v1`。该统计不包含私有 belief 内容；M04-A 的警长票和放逐票 stance 对照继续保留。
 
 同一组 `20260719–20260818` 共 100 个 seed 产生 2,163 次受控普通发言：1,831 次 `stance_aligned`、141 次 `authorized_claim`、139 次 `mandatory_rule_response`、52 次 `unscored`。规则模拟关闭 LLM，所以 `new_public_evidence / deterministic_variance` 均为 0；这两个分支由合成正反样本覆盖。公开发言未解释变化由 M04-A 基线的 112 次降为 3 次，全部决策的未解释率由 4.78% 降为 1.68%。但好人胜率同时由 6% 降至 2%，好人误投率由 60.95% 升至 64.46%；连续性改善不等于判断质量改善，M15 仍需独立做投票概率校准。
 
@@ -156,17 +551,33 @@ M06-B 在 M06-A 的“无权视角必须不变”之外，补上角色私有事�
 
 至此 M06-A/B 分别锁住不应变化和依法应变化的两侧边界。后续新增私有状态或策略入口时，必须先把对应 projection 和授权规则加入矩阵。
 
-## V3.1-I 脱敏 LLM 可观测性 M09-A
+## V3.1-I / V4.6-B 脱敏 LLM 可观测性 M09-A/B
 
-M09-A 为真实 LLM 请求和既有语义校验增加本地、只追加、可离线汇总的诊断层，不改变 NPC 策略、规则回退或任何游戏状态：
+M09-A 建立的本地、只追加诊断层由 V4.6-B 升级为严格的
+`llm_observation.v2` 与 `llm_observability_summary.v2`，仍不改变 NPC 策略、
+规则回退或任何游戏状态：
 
-- `backend/app/llm_observability.py` 定义严格的 `llm_observation.v1`。每次适配器调用只记录 task、操作类型、provider/model、成功或回退、尝试/重试次数、总延迟、provider 可选 token 用量和分类后的回退原因。
-- 结构化策略经过拒绝后恢复或最终回退时，会另记一条 semantic-validation 事件；事件只保存 `schema_invalid / hidden_information / continuity` 等类别计数，不保存原始输出和具体拒绝文本。
-- 观测事件写入 `backend/data/llm_observability.jsonl`。其字段采用精确 allowlist，不包含 API Key、system prompt、上下文、玩家问题、模型回复、规则 fallback、game/character ID 或原始校验内容。
-- `scripts/summarize_llm_observability.py` 输出 `llm_observability_summary.v1`，汇总请求成功率、语义恢复/回退数、平均尝试、重试、平均/P95/最大延迟、token 总量、主要失败类别，并按 task 和 provider/model 分组。
-- provider 没有返回 `usage` 时 token 样本保持为空，不进行猜测。M09-A 也不写死云端价格；版本化价格与估算成本留给 M09-B。
+- 每次 adapter request 记录 task、操作类型、provider/configured model、成功或回退、
+  provider attempt、adapter retry、延迟、token usage 状态和分类后的回退原因。
+  结构化候选校验另记 validation event；它的 semantic attempt/retry 独立统计，不能
+  当成额外云端重试或重复计费。
+- `LLMClient` 对本次最终 system prompt 与安全 LLM 配置计算 64 位 SHA-256。日志只
+  保存 `prompt_fingerprint / config_fingerprint`；API Key、prompt、上下文、玩家问题、
+  模型回复、fallback 文本、game/character ID 和原始拒绝内容都不进入 allowlist。
+- v2 明确保存 `complete / partial / missing / not_applicable` usage 状态、已报告和未
+  报告 usage 的 attempt 数，以及 provider 返回的 billing model 来源；汇总仍兼容
+  读取历史 v1，不改写旧 JSONL。
+- `backend/config/llm_pricing.json` 使用严格的 `llm_price_catalog.v1`；汇总嵌入
+  `llm_cost_summary.v1` 和价格表指纹。只有 model、有效时间窗、完整 usage 和价格
+  均已知的请求才进入完整总成本；任一可计费请求未知时
+  `total_cost_usd_micros=null`，`known_cost_usd_micros` 仍保留可证明部分。
+- 默认 `deepseek-v4-flash` 条目状态是 `unknown`。这不是官方价格，也不表示免费；
+  需要成本值时应先维护有来源、有效时间窗和独立版本号的本地价格表，并在汇总命令
+  用 `--price-catalog` 显式选择。
 
-已有 `llm_validation_failures.jsonl` 继续承担受限的原始语义审计，两份日志用途和敏感等级不同。日常指标只能读取新的脱敏文件；观测写入失败时直接跳过，绝不能影响 Python 规则结果或既有确定性回退。
+已有 `llm_validation_failures.jsonl` 继续承担受限的原始语义审计，敏感等级高于脱敏
+统计文件，不能作为日常指标源。观测或成本汇总失败时跳过/返回未知，绝不能影响
+Python 规则结果、LLM 返回或既有确定性 fallback。
 
 ## V3.1-J 投票概率 shadow M15-A
 
@@ -246,13 +657,13 @@ V3.1-O 针对 V3.1-N 暴露的跨日断裂修改三个 Python 策略入口，规
 
 ### 小镇交互
 
-- WASD 或方向键移动玩家。
+- 世界没有 UI 焦点时可用 WASD 或方向键移动玩家；Tab 进入界面后，方向键改为导航或滚动。
 - `Camera2D` 跟随玩家。
 - 走近 NPC 后按 `E` 交互。
 - 对话框打开时暂停移动，`Esc` 可以关闭。
 - 警上发言、白天发言和投票理由支持按 `Enter` 提交；提交后会清空输入框并强制释放文本焦点。
 - 移动保护只等待“提交瞬间仍处于按下状态”的 WASD/方向键松开；提交后新按下的移动键会立即生效，不会再把正常移动误判为输入残留。
-- 控制面板按钮、下拉菜单和开关不保留键盘焦点；收起面板时还会再次清除焦点，因此未编辑文本时 WASD/方向键始终控制角色。
+- 控制面板按钮、下拉菜单、开关、分页和滚动区均可获得可见键盘焦点；WASD 或点击世界会在非文本状态主动退出面板焦点，编辑文字和模态窗口时不会误移动角色。
 - NPC 对话框内置 Noto Sans SC 中文字体，避免个别字符显示为带叉方框，并保证换机器后的字形一致。
 - 对话文本进入 UI 前会清理 Unicode 替换字符 `U+FFFD`。
 - 字体文件来自 Google Fonts，使用 `game/assets/fonts/OFL.txt` 中的 SIL Open Font License。
@@ -260,20 +671,20 @@ V3.1-O 针对 V3.1-N 暴露的跨日断裂修改三个 Python 策略入口，规
 - 两名居民在全局 DeepSeek 配置可用时会结合当前昼夜/游戏阶段使用角色化生成；禁用、未配置、超时、格式异常或轻量安全校验失败时自动使用各自的自然规则回复，聊天不会卡住。
 - 普通聊天按 `player_id + NPC 名称` 隔离并持久化；完整历史保存到 `memory.json`，最近 8 轮同一居民对话进入 LLM 上下文。
 - Guide、Archivist 和 11 名参赛 NPC 的普通 `/chat` 继续使用原有确定性回复；狼人杀对局内发言与私聊仍遵守各自的规则接口。
-- 狼人杀普通白天 NPC 发言和私聊可以按局启用云端 LLM；普通白天发言先由 LLM 在规则白名单和 `public_speech_continuity.v1` 内生成 `public_speech_plan.v3` 决策，再由独立表达调用写成角色台词，其他已接入场景继续只做角色化改写。未配置、超时或输出不安全时自动使用规则计划与模板。
+- 狼人杀普通白天 NPC 发言和私聊可以按局启用云端 LLM；输出校验开启时，普通白天发言先由 LLM 在规则白名单和 `public_speech_continuity.v1` 内生成 `public_speech_plan.v3` 决策，再由独立表达调用写成角色台词。输出校验关闭时改用 Python 合法计划和一次原文表达。未配置、超时、响应解析失败，或开启校验后输出不安全时自动使用规则计划与模板。
 
 ### 窗口与控制菜单
 
-- 默认窗口尺寸为 `1280×720`，可以自由缩放，最小尺寸为 `1100×650`。
+- 默认窗口尺寸为 `1280×720`，可以自由缩放，最小尺寸为 `1100×650`；`1600×900` 作为宽屏验收尺寸。
 - 狼人杀界面改为黄色与浅蓝色的分层布局，不再把开局设置、身份、操作、角色卡和日志塞进同一个滚动面板。
 - 所有浅色面板、按钮、输入框、下拉框和分页标题统一使用黑色文字；交互控件同时使用浅色底，避免默认浅色文字或深色控件底造成低对比度。
 - 顶部常驻阶段 HUD 显示当前阶段摘要，并集中提供刷新、赛后复盘、情报抽屉和新局设置入口。
-- 开局设置使用独立模态窗口，可填写玩家名、选择测试身份和决定本局是否启用 LLM；也可以先关闭窗口探索小镇。
+- 开局设置使用独立模态窗口，可填写玩家名、选择测试身份，并分别决定本局是否启用 LLM 与 LLM 输出校验；也可以先关闭窗口探索小镇。
 - 左上角身份卡只在对局中出现；狼人会在身份下方直接看到三名狼队友的号码和名字。身份卡下方新增“关键公开信息”折叠区，汇总已经在桌面公开的神职起跳、验人说法、女巫用药说法、守卫成功说法和猎人公开开枪；第一条信息出现时自动展开，之后可手动收起。
 - 折叠区用 `◇` 标记未经确认的公开说法、用 `●` 标记规则已经向全场确认的公开动作。诸如“某人称验了谁”“某人声称救了谁”只表示这句话公开说过，不表示内容真实。
-- 右侧“当前行动”面板只保留本阶段需要查看和提交的操作，宽度为 `440px`，展开高度约为窗口的 `62%`，并限制在 `320–520px` 之间。
+- 右侧“当前行动”面板只保留本阶段需要查看和提交的操作；compact / default / wide 三档宽度为 `420 / 440 / 480px`，展开高度按各档比例计算并限制在 `320–520px`。
 - 点击“当前行动”标题栏右侧箭头可以展开或收起；内容过长时支持鼠标滚轮和触控板上下滚动，标题栏保持固定。
-- “情报”使用独立的 `600px` 右侧抽屉，分为“场上角色”“公开记录”“我的记录”三页；12 张角色卡改为三列布局。
+- “情报”使用独立右侧抽屉，三档宽度为 `520 / 600 / 736px`，分为“场上角色”“公开记录”“我的记录”三页；12 张角色卡随窗口切换为 `2 / 3 / 4` 列。
 - “我的记录”按本局时间累计显示夜间技能及结果、警上操作、完整公开发言、私聊问题和投票目标/理由，新开一局自动清空。
 - 身份技能、猎人开枪、警长、会议和投票控件按当前身份与阶段动态出现，不再常驻显示无关操作栏。
 - 阶段 HUD、行动面板、情报抽屉、开局设置和复盘统一使用项目内置 Noto Sans SC，避免“杀”等中文字符依赖系统字体。
@@ -358,22 +769,24 @@ V3.1-O 针对 V3.1-N 暴露的跨日断裂修改三个 Python 策略入口，规
 - 自由活动私聊支持输入触发彩蛋：`GOAT`、`Siu`、`少管我`、`林殊`、`林克`、`圣巢`、`Shaw`、`灰太狼`、`青草蛋糕`、`霹雳火`、`多玛姆` 分别对应 11 名 NPC。
 - 对梅长苏说出“林殊”会触发一次私密真实身份透露；该信息只写入玩家行动记录，不进入公开日志、不展示在公开角色卡，也不消耗当天的有效追问机会。
 - 口头禅按场景低频触发，同一句不会在连续正式发言或私聊中反复出现。
-- 普通非警长 `DAY_MEETING` 使用“决策层 → 表达层”两段流程：第一段只生成无台词的 `public_speech_plan.v3`，并消费 `public_speech_continuity.v1`；第二段只生成不含游戏事实的短语气前缀，Python 再把已校验计划渲染成完整正文。警上、警长发言、私聊及其他现有路径仍只做角色化改写。
+- 以下两段流程、严格 schema 和内容拒绝描述均适用于“输出校验开启”；关闭校验时由 Python 先选合法计划，再生成 1 份最终原文并直接显示。
+- 输出校验开启时，普通非警长 `DAY_MEETING` 使用“决策层 → 表达层”两段流程：第一段只生成无台词的 `public_speech_plan.v3`，并消费 `public_speech_continuity.v1`；第二段只生成不含游戏事实的短语气前缀，Python 再把已校验计划渲染成完整正文。警上、警长发言、私聊及其他现有路径仍只做角色化改写。
 - `public_speech_plan.v3` 保留 v2 的主/次目标、立场、置信度、动作信号解读、追问、验证条件、暂定票型、战术和三类 ID，并新增结构化连续性原因及最多三个新增公开 signal ID。当天计划仍会随发言保存，后续投票把暂定票作为有权重的依据。
 - 决策层字段全部直接位于扁平 JSON 根级。后端仍可升级旧 `public_speech.v1` 和 `public_speech_plan.v2`，也只会安全展开键恰好为 `schema_version + fields` 的 v2/v3 包装；任何额外顶层或内层字段继续由严格 schema 拒绝。
 - 身份、验人结果、技能信息和可选范围始终由规则引擎提供，LLM 不能创建或直接写入游戏事实。
 - 公开动作信号覆盖上警、不上警、退水、继续竞选、警长票、警长结果、警徽移交、公开验人说法、上一天放逐票、已公布出局和低信息量发言。`seer_check_claim` 只说明谁公开给谁发过金水或查杀，明确标注真假未确认，不包含后台声明来源、真实角色或阵营；夜间出局也只提供已公布的安全摘要。
 - 若公开验人当天直接指向当前 NPC，决策上下文会加入 `response_requirements`，要求计划选择对应信号并把声明者纳入目标；规则回退和 LLM 计划使用相同校验，避免好内容生成后又在表达阶段丢掉关键回应。
-- 普通发言必须选择具体目标，并至少引用一项公开动作、公开 RAG 证据或合法声明；短句“没信息，过”会被拒绝并要求改成明确判断、追问或后续验证点。LLM 可以判断错、被欺骗或错误解读公开动作的动机，但不能改写动作、身份、查验、技能、出局和胜负事实。
-- “低信息量发言”是规则引擎根据公开文本生成的保守评价，不等于狼人身份，也不会自行增加怀疑值；实际状态变化仍只消费已校验计划中的结构化意图与目标。
+- 输出校验开启时，普通发言必须选择具体目标，并至少引用一项公开动作、公开 RAG 证据或合法声明；短句“没信息，过”会被拒绝并要求改成明确判断、追问或后续验证点。LLM 可以判断错、被欺骗或错误解读公开动作的动机，但不能改写动作、身份、查验、技能、出局和胜负事实。
+- “低信息量发言”是保守评价，不等于狼人身份，也不会自行增加怀疑值；输出校验开启时可以分析已校验文本，关闭时只读取 Python 结构化计划、声明和立场卡，不读取原文。
 - 普通白天的结构化意图直接驱动 NPC 状态更新；表达层不再依赖“怀疑 / 回应 / 不足以定性”等固定关键词判定意图，因此自然同义表达不会触发无意义重试。反问、否定、假设和转述中的阵营用词也不会被误认为直接身份声明。
-- 公开桌面上的“4号就是狼”“我是好人”属于可能正确、也可能错误或撒谎的阵营观点，不会拿角色表里的真实身份判定是否合法。“如果他是狼，那3号可能是狼队友”、双狼猜测、引用、反问、否定，以及普通“我的队友”也允许自然表达；只有未经规则授权的第一人称明确狼队自曝，例如“我是狼”“3号是我的狼队友”“我们狼队”，继续硬拒绝。
-- 结构化目标和已选动作信号是表达必须保留的下限，不再是排他的措辞上限：LLM 可以用其他公开座位作对照，也可以准确复述规则状态中已经存在的公开动作与公开声明；不存在的动作、身份、查验和技能事实仍会被拒绝。
+- 输出校验开启时，公开桌面上的“4号就是狼”“我是好人”属于可能正确、也可能错误或撒谎的阵营观点，不会拿角色表里的真实身份判定是否合法。“如果他是狼，那3号可能是狼队友”、双狼猜测、引用、反问、否定，以及普通“我的队友”也允许自然表达；只有未经规则授权的第一人称明确狼队自曝，例如“我是狼”“3号是我的狼队友”“我们狼队”，继续硬拒绝。
+- 输出校验开启时，结构化目标和已选动作信号是表达必须保留的下限，不再是排他的措辞上限：LLM 可以用其他公开座位作对照，也可以准确复述规则状态中已经存在的公开动作与公开声明；不存在的动作、身份、查验和技能事实仍会被拒绝。
 - “我拿的是村民牌”“4号起跳预言家，验了7号”“7号，查杀”等常见省略说法会按语义归一；同一句转述会延续明确的预言家主语，并列引用他人的阵营判断不会被算成当前 NPC 的直接断言。
-- 使用 LLM 润色时，后端按“声明者 → 目标 → 结果”校验验人归属；“5号给8号金水”只会把8号识别为目标，引用他人的公开验人不会变成当前角色新增验人。
+- 输出校验开启时，后端按“声明者 → 目标 → 结果”校验验人归属；“5号给8号金水”只会把8号识别为目标，引用他人的公开验人不会变成当前角色新增验人。
 - “我是预言家 / 我起跳预言家 / 我验了4号”“好人 / 金水”等自然等价表达都可通过，不再要求复述模板原句。
-- 真正篡改验人结果、改变目标、凭空增加查验或技能行动、断言未公开神职、未经授权自曝本人或明确狼队名单时，后端最多纠正五轮；全部失败后自动使用规则文本并保留审计记录，游戏流程不会卡住。
-- 梅长苏彩蛋使用独立校验授权：LLM 必须保留规则引擎给出的真实自我身份，遗漏、改错或扩展为其他角色身份时仍会被拒绝。
+- 输出校验开启时，真正篡改验人结果、改变目标、凭空增加查验或技能行动、断言未公开神职、未经授权自曝本人或明确狼队名单都会被拒绝，最多纠正 5 轮后回退规则文本。
+- 输出校验关闭时不会执行上述文本校验：模型原文可能错误或越界并会直接显示，但 Python 只消费预先确定的合法计划和规则文本，不会把原文解析成权威目标、声明、怀疑值或技能建议。
+- 输出校验开启时，梅长苏彩蛋使用独立校验授权：LLM 必须保留规则引擎给出的真实自我身份，遗漏、改错或扩展为其他角色身份时仍会被拒绝；关闭校验后彩蛋文本同样按原文直出，真实彩蛋状态仍由 Python 记录。
 
 ### 本轮 NPC 决策里程碑（已完成）
 
@@ -419,8 +832,10 @@ V3.1-O 针对 V3.1-N 暴露的跨日断裂修改三个 Python 策略入口，规
 - 对局进入 `GAME_OVER` 后自动打开全屏复盘，关闭后可从控制菜单点击“查看本局复盘”重新打开。
 - 角色复盘会公开全部 12 人的身份、阵营、胜负、生存结果和个人行动，行动详情默认折叠。
 - 对局时间线按天数和阶段展示夜晚技能、查验结果、女巫用药、猎人开枪、实际挡刀、公开身份声明、公开发言、完整私聊、投票理由和出局结果。
+- “解释复盘（赛后）”按决定展示当时保存的依据、更早/更晚日期的公开证据、赛后
+  身份真值和错误类别；它明确不是角色当时可见的隐藏信息或完整思维链。
 - 私密信息仅在游戏结束后公开；进行中的游戏请求复盘接口会被后端拒绝。
-- LLM 五轮校验全部失败时，对话框提供“LLM校验失败查看”；进行中的对局只显示失败原因并隐藏原始返回，服务端 JSONL 与赛后复盘保留完整原文用于审计。
+- 输出校验开启且候选达到 5 轮上限仍失败时，对话框提供“LLM校验失败查看”；进行中的对局只显示失败原因并隐藏原始返回，服务端 JSONL 与赛后复盘保留完整原文用于审计。输出校验关闭时校验次数为 0，不生成校验失败记录。
 
 ### 公开决策 RAG
 
@@ -511,6 +926,13 @@ backend/.venv/bin/python scripts/smoke_check.py
 
 自检内容包括：
 
+- V4.3-A/B 的 `0700/0600` 原子存档、旧文件保护、命令事务回滚、快照/事件链/
+  配置完整性、同 key 并发单次提交、payload/端点冲突、持久化失败回滚、阶段推进后
+  原响应恢复、结果台账篡改拒绝、启动批次 fail closed，以及 simulation/replay
+  零落盘。
+- V4.4-A/B 的公开证据与分析 schema、稳定/连续 ID、承诺六态转换、正常修订和
+  公开条件失效不误报、四类中立矛盾候选、NPC/UI 同源消费、只读确定性、未公布
+  票型隔离及隐藏身份/内部来源/夜死原因不变性。
 - 无 HTTP 批量模拟的同 seed 精确重放、合法终局、显式 seed 隔离、内存清理、LLM/RAG 禁用和隐藏身份互换不变性。
 - `agent_town_metrics.v4` 的赛后权限、schema 版本、空样本 `null`、票数/毒药/第二夜选择/假验人组合/跨日选票转移/条件胜负守恒、数值范围、按玩家身份/投票角色/天数完整聚合及跨进程精确重放。
 - `fake_seer_campaign.v2` / `fake_seer_check_mix.v1` 的参选混合、冻结随机流、全局随机隔离、合法验人组合和好人精确身份互换不变性；`good_exile_cross_day.v1` 的争议票收敛、压倒性票禁用、女巫复用及隐藏身份互换不变性。
@@ -543,7 +965,12 @@ backend/.venv/bin/python scripts/smoke_check.py
 - 私聊“我/你/他”的视角转换、跨消息指代和含糊指代次数保护。
 - NPC 公开发言与投票理由的 RAG 证据、检索模式和私密来源隔离。
 - 对话框和完整控制面板的内置中文字体、关键字形覆盖与 `U+FFFD` 替换字符检查。
-- 控制面板非文本控件焦点清理、收起面板后的移动恢复，以及玩家本局行动记录和完整公开发言。
+- `agent_town_responsive_layout.v1` 的物理窗口三档、动态安全区、HUD/设置/复盘限幅、
+  `2 / 3 / 4` 列角色卡、`12px` 字号下限，以及 `1100×650`、`1280×720`、
+  `1600×900` 验收尺寸。
+- `agent_town_focus_navigation.v1` 的 WORLD/PANEL/TEXT_ENTRY/MODAL 范围、整局
+  Tab/方向键导航、滚动区可达、可见焦点框、模态鼠标边界、关闭后焦点回还和 WASD
+  恢复，以及玩家本局行动记录和完整公开发言。
 - 自由活动进入投票，玩家与 NPC 票同时生成、票型汇总和理由公开。
 - 预言家查验、守卫挡刀、女巫药品、同守同救失效、猎人开枪与中毒禁枪。
 - 屠边、狼人控场、猎人开枪优先级、跨轮记忆和投票结算。
@@ -583,26 +1010,39 @@ agent-town-demo/
     .env.example
     app/
       belief.py
+      event_log.py
+      experiment.py
+      game_persistence.py
+      idempotency.py
       invariance.py
       llm.py
+      llm_fingerprinting.py
       llm_observability.py
+      llm_pricing.py
       main.py
       npc_decision.py
       npc_tuning.py
+      player_speech.py
+      player_strategy.py
       rag.py
       simulation.py
       simulation_metrics.py
+      speech_quality.py
       stance.py
       vote_calibration.py
     config/
+      llm_pricing.json
       npc_profiles.json
       knowledge_base.json
       npc_tuning.json
     data/
       memory.json
+      games/                 # 运行时私有完整存档，Git 忽略
     requirements.txt
     README.md
   scripts/
+    check_game_persistence.py
+    compare_simulation_artifacts.py
     simulate_games.py
     summarize_llm_observability.py
     smoke_check.py
@@ -614,11 +1054,18 @@ agent-town-demo/
 ### 狼人杀
 
 - `GET /api/health`：查看狼人杀后端状态。
-- `GET /api/llm/status`：查看 LLM 开关、provider、模型和配置状态，不返回 API Key。
+- `GET /api/llm/status`：查看 LLM 开关、provider、模型、配置状态和安全配置指纹，
+  不返回 API Key。
 - `GET /api/rag/status`：查看当前检索模式、向量模型和初始化状态。
 - `POST /api/game/start`：创建固定 12 人局。
-- `GET /api/game/{game_id}/state`：读取阶段、角色、会议、公开日志和不含真假标记的 `public_intel` 关键公开信息。
-- `GET /api/game/{game_id}/summary`：仅在游戏结束后读取完整身份、行动和时间线复盘。
+- `POST /api/game/{game_id}/save`：原子保存当前完整私有状态。
+- `POST /api/game/{game_id}/restore`：校验并手动恢复磁盘存档。
+- `GET /api/game/recovery-status`：查看最近一次启动恢复扫描结果。
+- `GET /api/game/{game_id}/state`：读取阶段、角色、会议、公开日志、统一公开证据时间线，以及只基于公开记录且不含赛后真值的承诺/矛盾分析。
+- `GET /api/game/{game_id}/summary`：仅在游戏结束后读取完整身份、行动、时间线和
+  `post_game_explainable_review.v1` 决策解释。
+- `GET /api/game/{game_id}/events`：仅在游戏结束后导出完整、带可见范围的规则事件链。
+- `POST /api/game/{game_id}/replay`：仅在游戏结束后执行隔离的规则模板确定性重放。
 - `POST /api/night/action`：提交玩家夜晚行动。
 - `POST /api/night/resolve`：自动补齐 NPC 行动并结算夜晚。
 - `POST /api/hunter/shot`：玩家猎人出局后选择开枪目标或不开枪。
@@ -637,6 +1084,8 @@ agent-town-demo/
 - `POST /api/vote/submit-and-resolve`：提交玩家目标与理由，同时生成全部 NPC 票并结算。
 
 旧的 `POST /api/day/npc-speeches` 和三步投票接口暂时保留兼容，但 Godot 主流程不再使用它们。
+以上开局后规则写接口都接受可选 `idempotency_key`；同一局内相同 key 只能对应
+同一端点和同一 payload。开局、查询、preview、save/restore 和 replay 不在范围内。
 
 ### 小镇 AI NPC
 
@@ -651,11 +1100,14 @@ agent-town-demo/
 ## 记忆边界
 
 - `backend/data/memory.json` 保存普通小镇聊天的长期记忆。
-- 狼人杀身份、查验、守护、怀疑、关系和发言记忆只保存在当前游戏状态中。
-- 狼人杀私密追问保存在当前对局的 `private_conversations`，不进入公开日志。
+- 狼人杀身份、查验、守护、怀疑、关系和发言记忆保存在活动游戏状态与
+  `backend/data/games/*.json` 私有完整存档中。
+- 狼人杀私密追问保存在当前对局的 `private_conversations` 和同一私有存档中，
+  不进入公开日志。
 - NPC 隐藏身份和预言家查验结果不会出现在公共状态里。
 - 完整身份、夜间行动和私聊只会通过游戏结束后的复盘接口公开。
-- 当前游戏重启后不会恢复；持久化对局是后续功能。
+- 真实 FastAPI 服务重启会恢复完整性和配置均通过的未完成局；终局存档启动时跳过，
+  仍可手动恢复。完整存档包含隐藏事实，不得作为公开数据发布。
 
 ## NPC 智能微调
 
@@ -799,6 +1251,7 @@ backend/.venv/bin/python scripts/check_llm_connection.py
 
 工作方式：
 
+- 以下两段调用、结构化 allowlist 和语义拒绝描述适用于“输出校验开启”；关闭校验时跳过 LLM 策略调用，由 Python 选定计划后只请求 1 份最终显示文本。
 - Python 规则引擎为普通白天发言组装版本化上下文：当前阶段、NPC 真实身份与性格、该角色有权知道的事实、近期公开日志、自身私有记忆、RAG 证据、公开动作信号，以及合法目标和公开声明选项。
 - 第一段 LLM 调用只返回扁平的 `public_speech_plan.v3` 策略 JSON，严格禁止 `text` 和 `fields` 包装。除 v2 原有必填字段外，还必须返回 `continuity_reason` 与 `continuity_signal_ids`；所有字段直接位于根级，可空字段也必须显式返回 `null`。后端兼容 v1/v2 计划和键恰好为 `schema_version + fields` 的旧 v2/v3 包装，兼容过程不会放过额外字段。
 - 主次目标用来比较发言对象；`stance` 只能支持、反对或未定；`confidence` 为 `0–100`；`question` 和 `verification` 分别给出具体追问与之后可观察的复核标准；`provisional_vote_target_id` 把发言计划接到当天投票；`tactic` 只能从白名单选择。三类 ID 列表各最多三项，所有目标和 ID 都必须来自本次规则上下文，狼人专属战术只允许狼人使用，针对队友的战术还必须指向规则引擎允许暴露的狼队友。
@@ -809,27 +1262,150 @@ backend/.venv/bin/python scripts/check_llm_connection.py
 - 已校验计划保存在当天发言中。放逐评分会综合怀疑、公开压力、关系、警长归票、公开查杀、计划暂定票与 NPC 参数；计划是有权重的倾向而非锁票，后续证据可以覆盖它，跨天计划不会复用。
 - “狼查杀狼”是硬叙事约束：被队友公开查杀的狼人不能投查杀来源当警长，后续发言和放逐票必须反对来源；若查杀来源成为警长，移交警徽时也不会再选择被它查杀的队友。这个约束优先于一般狼队抱团，避免“被队友查杀却仍投队友当警长”的低级冲突。
 - Python 渲染的正文必须保留已选动作事实并作出具体贡献，不能用“没信息，过”结束这一轮；LLM 语气前缀只负责增加人物口吻，不接触、更不能反向决定身份、技能、立场、票型或胜负。
-- 两段分别最多校验五轮。策略失败时回到原有规则计划；表达失败时保留已校验策略，并使用该策略对应的规则话术。
+- 两段都读取本局 `enable_llm_validation`：默认最多校验并纠正 5 轮；关闭时跳过 LLM 结构化策略选择，由 Python 使用合法规则计划，再请求 1 份最终表达，语义校验与纠错均为 0 次。
 - 警上、警长发言和私聊仍使用 `{"text": "..."}` 安全改写，不在这个小里程碑中扩展策略权限。
 - 私聊中的含糊代词仍由规则决定澄清内容，但澄清措辞也会经过 LLM。
-- 未勾选本局 LLM、provider 未配置，或五轮内容校验都失败时会回退规则文本，游戏流程不中断；网络故障沿用短请求重试，不会连续等待五轮超时。
-- Godot 对话框会显示“LLM（deepseek）”；每个被拒绝的候选原文都会写入 `backend/data/llm_validation_failures.jsonl`。五轮全部失败时，进行中的对局只返回脱敏占位和原因，赛后复盘可以查看完整审计原文。
+- 未勾选本局 LLM、provider 未配置、响应无法解析，或开启校验后 5 轮均失败时会回退规则文本，游戏流程不中断。原文直出模式固定只请求 1 次，不进行网络重试或语义纠错。
+- Godot 对话框会显示“LLM（deepseek）”；仅在输出校验开启时，被拒绝的候选原文才会写入 `backend/data/llm_validation_failures.jsonl`。达到 5 轮上限后，进行中的对局只返回脱敏占位和原因，赛后复盘可以查看完整审计原文。
 - 新写入的校验日志包含 `recorded_at` 和 `validator_version`，便于区分历史版本的旧误判与当前行为。
 - `mock` 不发送网络请求，适合验证开关和回退链路。
 
 保持不变的规则边界：
 
 - Python 规则代码继续决定身份、知识权限、可选目标范围、合法声明事实、夜晚行动、投票结算、出局和胜负；普通白天 LLM 只能在给定范围内选择结构化发言计划，计划中的暂定票只是规则评分的一项输入。
-- LLM 不得伪造查验结果、读取无权限的私密记忆或修改游戏状态。
+- 输出校验开启时，LLM 文本不得伪造查验结果或越过知识权限；输出校验关闭时原文可能出现这类幻觉，但模型仍拿不到额外隐藏上下文，且原文不能修改游戏状态。
 - M2 MacBook Air 继续只运行 Godot、FastAPI 和轻量向量模型，文本生成使用云端 API。
 
-## V3 进度与下一阶段
+## V4 进度与下一阶段
 
-V3.1-A 至 V3.1-I 已建立可复现模拟、核心指标、合法 belief/stance、受控发言、隐藏信息矩阵和脱敏 LLM 汇总；V3.1-J/K 完成投票概率 shadow 与首个受控消费者；V3.1-L/M/N 完成女巫、真假预言家和跨日放逐诊断；V3.1-O 已让公开争议票型驱动普通好人连续归票和女巫怀疑，并把固定 100-seed 好人胜场从 `5` 提升到 `38`。下一步应扩到 1000 seeds 和多组起始 seed 验证稳定区间，再决定是否继续平衡或进入 M09-B。
+V3.1-A 至 V3.2-B 已完成封版；V4.1-A/B 已增加三档合法玩家策略、按身份配对基准、玩家赛后表现指标和无副作用的玩家发言结构化预览。V4.2 已增加单一追加事件链、终局导出和规则模板执行式重放；V4.3-A/B 已完成原子存档、启动恢复、外部幂等 key 和重复结算保护；V4.4-A/B 已完成统一公开证据时间线、承诺生命周期和中立矛盾候选；V4.5-A 已完成终局决定解释和五类错误归因；V4.6-A/B 已完成 NPC 公开发言质量基线、完整/生效配置指纹、脱敏 LLM Prompt/config 指纹、保守成本口径和规则 artifact 配对 A/B；V4.7-A/B 已完成首局分阶段安全引导、物理窗口三档响应式和整局键盘焦点范围；V4.7-C 已完成 Python 3.12 + Godot 4.7.1 的 Linux/macOS CI、分层 smoke、源码交付元数据和 [`封版清单`](docs/V4_RELEASE_CHECKLIST.md)；V4.8-A 已增加开局 `enable_llm_validation` 输出校验选择，支持最多 5 轮校验或生成 1 次、校验 0 次的原文直出，并保持 Python 规则结算和旧存档兼容。公开的 [`V4 开发仓库`](https://github.com/KEswy/agent-town-demo-v4.0) 已建立，但 V4 仍尚未封版，也没有 `v4.0.0` 标签；正式封版必须在人工门禁完成后再次确认。
 
-完整任务、优先级、依赖、工作量和验收口径见独立的 [`V3 改进与开发路线表`](docs/V3_ROADMAP.md)。V2.0 的规则边界在 V3 继续保持：身份、合法行动、投票、出局、警徽与胜负仍由 Python 决定，LLM 只能在合法上下文和结构化契约内进行策略选择与表达。
+V4 完整任务、依赖和验收口径见 [`V4 改进与开发路线表`](docs/V4_ROADMAP.md)；[`V3 改进与开发路线表`](docs/V3_ROADMAP.md) 保留封版历史。身份、合法行动、投票、出局、警徽与胜负仍由 Python 决定；LLM 只接收当前角色可用的上下文，输出校验关闭时显示文本可以越界，但不能成为 Python 规则输入。
 
 ## 开发记录
+
+### 2026-07-23 V4 公开开发快照
+
+- 创建公开仓库 [`KEswy/agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0)，
+  并只用 `v4-origin` 承载 V4 开发快照；`origin`、`v2-origin` 和 `v3-origin` 保持历史
+  只读边界。
+- 本次不创建 `v4.0.0` 标签，不把开发快照描述为正式封版；正式标签仍需完成
+  [`V4 封版清单`](docs/V4_RELEASE_CHECKLIST.md) 的 CI 与人工桌面验收。
+- `3.0总结/` 作为本地历史资料保留，不进入本次源码快照。项目根目录没有
+  `LICENSE`，当前明确为未授予再分发许可。
+
+### 2026-07-23 V4.8-A 开局 LLM 输出校验开关
+
+- `GameStartRequest` 新增默认开启的 `enable_llm_validation`；Godot 开局窗口允许玩家
+  选择默认最多 5 轮校验，或生成 1 次、语义校验与纠错 0 次的原文直出；响应以
+  `llm_validation_enabled` 显示实际模式。
+- 关闭校验时 Python 先确定合法计划，未校验原文只用于显示，不再解析为权威声明、
+  公开立场、怀疑值、技能建议或规则动作；原文可能错误、矛盾或越界。
+- 选择封印在 `game_created.command.start_request.enable_llm_validation`，不增加
+  `WolfGameState` 字段；旧事件缺键默认开启，旧存档无需改写。居民 `/chat` 不受影响。
+
+### 2026-07-22 V4.7-B Godot 4.7 输入恢复修复
+
+- 修复 `main.gd` 三处 Godot 4.7 warning-as-error 类型推断：引导阶段匹配值、待显示
+  引导步骤和 `TabBar` 均改为显式类型。根因是主脚本未加载，不是按钮、鼠标过滤或
+  `interact` 映射失效；`player.gd` 独立加载才造成只有 WASD 可用的症状。
+- core smoke 新增已知安全写法与旧危险写法的双向断言；通用 GDScript 解析仍由
+  `--profile godot` / CI 的 Godot 4.7.1 headless 门禁负责。未修改 Python 规则或接口。
+
+### 2026-07-22 V4.7-C CI 与封版交付
+
+- 新增 Ubuntu 24.04 / macOS 15 双平台 CI，固定 Python 3.12 和 Godot 4.7.1；actions
+  使用完整 commit SHA，checkout 不保留写凭据，workflow 仅有 `contents: read`。
+- smoke 新增 `--profile core` 与 `--profile godot`，默认仍执行完整检查；子检查统一使用
+  启动 smoke 的 Python，Godot 支持 `GODOT_BIN` 并拒绝非 4.7 stable。
+- CI 测试阶段强制使用 mock LLM、禁用向量模型下载并使用临时存档目录；不需要 secret，
+  不启动 FastAPI、Godot 编辑器或常驻进程。
+- 纳管 Godot 4.7 `.gd.uid`，增加 LF 规则，并建立
+  [`docs/V4_RELEASE_CHECKLIST.md`](docs/V4_RELEASE_CHECKLIST.md)。该里程碑完成时仅完成源码
+  交付准备，当时尚未创建 `v4-origin`、`agent-town-demo-v4.0` 或 `v4.0.0`。
+
+### 2026-07-22 V4.7-B 响应式布局与整局键盘导航
+
+- 新增 `agent_town_responsive_layout.v1`，以物理窗口选择 compact / default / wide，
+  并统一驱动 HUD、行动面板、情报抽屉、角色卡列数、设置、复盘和对话框尺寸。
+- 新增 `agent_town_focus_navigation.v1`，用 WORLD/PANEL/TEXT_ENTRY/MODAL 明确
+  世界移动、普通 UI、文本编辑和模态输入边界；关闭设置、引导、预览、对话或复盘后
+  恢复来源焦点，失效时安全回退。
+- 发言预览与 NPC 对话补齐鼠标阻断，所有滚动区可用键盘到达并显示高对比焦点框；
+  默认字号为 14px，显式字号不低于 12px。
+- smoke 静态检查改为验证 `1100×650`、`1280×720`、`1600×900` 三档、动态尺寸、
+  modal 生命周期、只读滚动和玩家 UI 移动锁；没有启动 FastAPI 或 Godot。
+
+### 2026-07-21 V4.7-A 首局分阶段引导
+
+- 新增客户端-only `agent_town_onboarding.v1`，七个步骤只在完整 `/state` 后按阶段、
+  玩家存活与发言轮次触发，并通过每局 seen 集合避免轮询重复弹出。
+- 六身份说明只读取玩家自己的合法身份投影；身份卡、公开证据和私聊分别标记
+  “仅你可见”“全场公开但未验真”和“原文不会自动公开但会影响 NPC”。
+- 增加 `?` / F1 手动重开、弹窗内循环焦点、方向键、Esc 和自适应弹窗尺寸；本地偏好
+  只保存 `schema_version=agent_town_onboarding.v1` 与完成布尔值，不保存任何对局事实。
+- Python API、规则状态、事件、存档、重放和 LLM 均未修改；全局响应式/无障碍后来由
+  V4.7-B 完成，CI 与封版交付后来由 V4.7-C 完成。
+
+### 2026-07-21 V4.6-B 指纹、LLM 成本与只读配对 A/B
+
+- 新增 digest-only `experiment_fingerprint.v1`，同时封印完整配置和当前执行模式的
+  active-only 配置；simulation/batch 升级到 v17，冻结的 v14 玩法摘要不变。
+- LLM 观测升级为 v2，兼容 v1；在 adapter 边界记录 exact prompt/config 摘要、
+  provider attempt usage 覆盖，并把 adapter retry 与 semantic retry 分开。
+- 新增版本化价格表和保守成本汇总。默认模型价格明确未知；未知请求不会被当成零
+  成本，完整总成本保持 `null`，已知部分和原始 token 计数独立保留。
+- 新增只读 `agent_town_artifact_ab.v1` 比较器，严格验证固定身份配对和 artifact
+  完整性，以原始分子/分母比较五项 V4.6-A 指标；固定声明未评估 LLM/Prompt 效果。
+
+### 2026-07-20 V4.6-A NPC 表达质量离线基线
+
+- 新增六个版本化契约和严格报告 schema；终局报告只读取公开 NPC 发言与结构化公开
+  依据，隐藏身份互换不改变结果，序列化报告不保存原始发言。
+- 单局和批量分别统计逐字/模板/跨角色/近重复、信息原子增量、证据引用和人设代理；
+  批量先汇总原始计数再计算加权比率。
+- simulation 升级到 v16，CLI 增加 `[SPEECH-QUALITY]`；冻结的 v14 玩法摘要、metrics
+  v5、实时规则、FastAPI 与 Godot 均保持不变。
+
+### 2026-07-20 V4.5-A 可解释赛后决策复盘
+
+- 新增三份严格 schema，用稳定 ID 串起保存的决定、跨日公开证据与明确标注的赛后
+  真值；进行中状态继续零真值泄漏。
+- 发言、放逐票、夜间技能和猎人开枪统一生成只读解释，自动化锁住五类错误、计数、
+  决定性、OpenAPI 和状态零变更。
+- Godot 新增第三个赛后复盘页；同时只兼容旧存档恰好缺少空幂等台账的一种历史
+  形态，其余存档差异继续拒绝。
+
+### 2026-07-20 V4.4-B 承诺生命周期与中立矛盾候选
+
+- 新增 `public_commitment_state.v1`、`public_contradiction_candidate.v1` 和
+  `public_evidence_analysis.v1`，仅从 V4.4-A 公开 evidence ID 派生关系。
+- 警徽流每个版本独立保留，区分等待、被替代、公开履行、条件失效、无法判断和
+  表面冲突；修订、目标不可用与缺少公开后续不会被自动当作阵营问题。
+- 四类候选始终为 `needs_review / judgment=none`；Godot 和 NPC 共用分析 ID，
+  自动化锁定隐藏信息不变性、只读性、OpenAPI 与 UI 契约。
+
+### 2026-07-20 V4.3-B 幂等命令与重复结算保护
+
+- 新增 `game_command_idempotency.v1` 请求契约和 `game_command_result.v1` 持久
+  结果台账，覆盖全部 20 个开局后规则写入口。
+- 同 key、同端点、同 payload 返回原响应；跨端点或 payload 冲突返回 409。事件、
+  响应和状态在同一次原子写入中提交，重启后可在阶段校验前安全重试。
+- Godot 对网络失败保留 key、2xx 后清理；自动化覆盖并发、响应丢失、写盘失败、
+  账本篡改、旧客户端兼容和带 key 确定性重放。
+- 身份池改为固定角色顺序，消除存档 JSON 对象键排序造成的同 seed 恢复重放漂移；
+  默认角色配置的原有顺序和规则结果保持不变。
+
+### 2026-07-20 V4.3-A 原子存档与恢复
+
+- 新增 `game_save.v1` 私有完整快照、恢复配置指纹、规则/快照/事件链多层摘要，
+  以及 save、restore、recovery-status 接口。
+- 真实 FastAPI lifespan 才启用自动保存；启动恢复按批次 fail closed，跳过终局归档；
+  simulation、replay 和直接规则导入保持零落盘。
+- 同目录 `0600` 临时文件经 fsync 后原子替换；全部规则写入口共享 pre-commit
+  transaction guard，写盘失败保留旧文件并恢复完整内存 checkpoint。
+- 独立自检覆盖损坏/漂移拒绝、恢复后续玩、配置热重载保护、ID 冲突和单 worker
+  边界；V4.3-B 在此原子提交基础上补齐了外部幂等结果台账。
 
 ### 2026-07-19 V3.1-O 公开票型连续追查与平衡修复
 
@@ -878,6 +1454,8 @@ V3.1-A 至 V3.1-I 已建立可复现模拟、核心指标、合法 belief/stance
 - 新增 `llm_observation.v1` 本地 JSONL，逐次记录请求成功/回退、尝试与重试、延迟、可选 token 和稳定失败类别；不改变 LLM 返回或规则 fallback。
 - 语义校验的恢复与最终回退只记录分类计数，不复制原始输出、拒绝原文、私有上下文或游戏标识；严格字段白名单拒绝额外内容。
 - 新增 `llm_observability_summary.v1` 离线命令，支持全局、按 task、按 provider/model 查看成功率、P95 延迟、平均尝试和主要失败原因。
+- 该历史 v1 契约已由 2026-07-21 的 V4.6-B/M09-B 兼容升级为 v2，并补齐指纹、
+  usage 覆盖和版本化成本；旧 JSONL 仍可读取。
 - 自动化用秘密标记验证 API Key、prompt、上下文、回复和 fallback 均不落入观测事件，并覆盖真实语义校验恢复/失败路径、坏行隔离和 CLI 输出。
 
 ### 2026-07-19 V3.1-H 授权私有视角矩阵 M06-B
@@ -996,7 +1574,7 @@ V3.1-A 至 V3.1-I 已建立可复现模拟、核心指标、合法 belief/stance
 ### 2026-07-16 LLM 表达校验误判收敛
 
 - 根据真实 `llm_validation_failures.jsonl` 样本收窄硬拒绝范围：选中目标、声明和动作信号改为必须保留的事实下限，公开座位引用不再因“计划外人物”单独失败，规则状态中已存在但本轮未选中的公开动作也可以被准确复述。
-- 空泛过麦仍会被拒绝，但完整保留身份/查验声明的短发言不会仅因结尾出现“先看”；低信息量信号本身不能替“没信息，过”免责。
+- 输出校验开启时空泛过麦仍会被拒绝，但完整保留身份/查验声明的短发言不会仅因结尾出现“先看”；低信息量信号本身不能替“没信息，过”免责。
 - 补充“拿的是某身份”、查杀/金水省略句、逗号后的预言家主语延续、并列转述和公开声明复述；同时修复“验了目标，并上警”把上警动作错绑给查验目标的问题。
 - 未登记身份、篡改查验、技能行动、狼队泄露和规则状态中不存在的公开动作继续硬拒绝。校验日志新增 UTC 时间与 `semantic-v2` 版本标记，自动化测试覆盖上述正反例。
 
@@ -1013,9 +1591,9 @@ V3.1-A 至 V3.1-I 已建立可复现模拟、核心指标、合法 belief/stance
 - 新增角色隔离的 `npc_decision_context.v1`：每次普通白天发言整理身份、合法知识、公开日志、私有记忆、性格、阶段、合法目标、声明包和证据可见性。
 - 新增 `public_speech.v1` 严格策略输出；第一段只能选择规则生成的意图、目标、声明包和公开证据，第二段只拿公开投影生成角色化话术，私有上下文不会进入表达调用。
 - 后端通过 schema、allowlist、结构化意图/目标、人物/阵营与既有事实校验后才提交；怀疑值更新直接消费结构化策略，不解析 LLM 自由文本来决定规则状态。
-- 非法结构化输出最多纠正五轮，随后使用原有规则方案；进行中审计隐藏原文，服务端日志和赛后复盘保留原文。警上、警长、夜间、投票和私聊策略未在本里程碑扩展。
+- 该阶段对非法结构化输出固定最多纠正五轮，随后使用原有规则方案；V4.8-A 起可关闭输出校验：Python 直接采用合法规则计划，只请求 1 份最终文本并进行 0 次语义校验。进行中审计隐藏开启校验时的失败原文，服务端日志和赛后复盘保留该审计。警上、警长、夜间、投票和私聊策略未在本里程碑扩展。
 - README、后端说明与自动化 smoke 自检同步覆盖 JSON 适配、两段上下文隔离、非法选项、私密信息、公开人物引用、结构化状态更新和规则回退。
-- 表达校验移除固定意图词表硬门槛，并区分直接阵营断言与反问、否定、假设、转述；自然的 `pressure` / `defend` 同义表达不再耗尽五轮重试，真实自曝和隐藏狼队信息仍会被拒绝。
+- 表达校验移除固定意图词表硬门槛，并区分直接阵营断言与反问、否定、假设、转述；自然的 `pressure` / `defend` 同义表达不再耗尽当时固定的五轮重试。V4.8-A 输出校验开启时真实自曝和隐藏狼队信息仍会被拒绝，关闭时则作为未经校验原文直接显示。
 
 ### 2026-07-16 大面板与关键词彩蛋
 
@@ -1050,7 +1628,7 @@ V3.1-A 至 V3.1-I 已建立可复现模拟、核心指标、合法 belief/stance
 
 - 第一夜出局改为警长竞选结束后统一公布，女巫解药、守卫、毒药和狼刀结果不会在警上阶段提前泄露。
 - 全部出局增加合法来源审计，修复退水角色重新获得警长票的问题，并覆盖警长猎人先开枪再移交警徽的顺序。
-- DeepSeek 内容校验扩展为最多五轮，保存原始回答与失败原因；当时调试构建曾允许游戏内查看完整记录，2026-07-16 的结构化决策更新已改为进行中脱敏、赛后查看原文。
+- DeepSeek 内容校验在该阶段扩展为固定最多五轮，保存原始回答与失败原因；V4.8-A 后可在开局关闭输出校验，改为生成 1 次、校验 0 次并直出原文。当时调试构建曾允许游戏内查看完整记录，2026-07-16 的结构化决策更新已改为进行中脱敏、赛后查看开启校验时的失败原文。
 - 玩家和 NPC 增加彩色/灰色警察徽章与 PK 标记，控制面板增加醒目的候选人与发言顺序概览。
 - 所有游戏文本提交统一清空输入、释放焦点，并且只等待提交瞬间仍按着的移动键松开；修复输入残留自动移动，也修复回车提交后新按下的 WASD 被误锁。
 - README、后端说明、命令文档和自动化冒烟测试已同步。

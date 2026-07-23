@@ -18,6 +18,10 @@ from app.llm_observability import (  # noqa: E402
     LLM_OBSERVABILITY_LOG_FILE,
     summarize_observation_file,
 )
+from app.llm_pricing import (  # noqa: E402
+    DEFAULT_LLM_PRICE_CATALOG_PATH,
+    load_price_catalog,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +40,15 @@ def parse_args() -> argparse.Namespace:
         help="Optional JSON output path; stdout is always printed.",
     )
     parser.add_argument(
+        "--price-catalog",
+        type=Path,
+        default=DEFAULT_LLM_PRICE_CATALOG_PATH,
+        help=(
+            "Versioned LLM price catalog; unknown or missing prices remain "
+            "unknown instead of being treated as zero."
+        ),
+    )
+    parser.add_argument(
         "--compact",
         action="store_true",
         help="Print compact JSON instead of indented JSON.",
@@ -45,7 +58,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    summary = summarize_observation_file(args.input)
+    summary = summarize_observation_file(
+        args.input,
+        price_catalog=load_price_catalog(args.price_catalog),
+    )
     serialized = json.dumps(
         summary,
         ensure_ascii=False,

@@ -10,6 +10,7 @@ extends CharacterBody2D
 
 var _camera_tween: Tween
 var _movement_release_lock := false
+var _ui_navigation_locked := false
 
 
 func _ready() -> void:
@@ -24,7 +25,11 @@ func _physics_process(_delta: float) -> void:
 			_movement_release_lock = false
 		return
 
-	if not get_tree().get_nodes_in_group("dialog_open").is_empty() or _has_text_input_focus():
+	if (
+		not get_tree().get_nodes_in_group("dialog_open").is_empty()
+		or _ui_navigation_locked
+		or _has_text_input_focus()
+	):
 		velocity = Vector2.ZERO
 		move_and_slide()
 		return
@@ -49,6 +54,12 @@ func lock_movement_until_release() -> void:
 	for action in ["move_left", "move_right", "move_up", "move_down"]:
 		if InputMap.has_action(action):
 			Input.action_release(action)
+
+
+func set_ui_navigation_locked(locked: bool) -> void:
+	_ui_navigation_locked = locked
+	if locked:
+		velocity = Vector2.ZERO
 
 
 func _is_any_movement_key_physically_pressed() -> bool:

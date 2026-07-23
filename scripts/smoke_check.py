@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -15,8 +18,14 @@ BACKEND_DIR = ROOT_DIR / "backend"
 GAME_DIR = ROOT_DIR / "game"
 ROOT_README_FILE = ROOT_DIR / "README.md"
 BACKEND_README_FILE = BACKEND_DIR / "README.md"
+BACKEND_ENV_EXAMPLE_FILE = BACKEND_DIR / ".env.example"
 COMMANDS_FILE = ROOT_DIR / "COMMANDS.md"
 V3_ROADMAP_FILE = ROOT_DIR / "docs" / "V3_ROADMAP.md"
+V4_ROADMAP_FILE = ROOT_DIR / "docs" / "V4_ROADMAP.md"
+V4_RELEASE_CHECKLIST_FILE = ROOT_DIR / "docs" / "V4_RELEASE_CHECKLIST.md"
+CI_WORKFLOW_FILE = ROOT_DIR / ".github" / "workflows" / "ci.yml"
+GITIGNORE_FILE = ROOT_DIR / ".gitignore"
+GITATTRIBUTES_FILE = ROOT_DIR / ".gitattributes"
 MAIN_SCENE = "res://scenes/Main.tscn"
 MAIN_SCENE_FILE = GAME_DIR / "scenes" / "Main.tscn"
 MAIN_SCRIPT_FILE = GAME_DIR / "scripts" / "main.gd"
@@ -52,9 +61,13 @@ PROJECT_FILE = GAME_DIR / "project.godot"
 KNOWLEDGE_FILE = BACKEND_DIR / "config" / "knowledge_base.json"
 NPC_PROFILES_FILE = BACKEND_DIR / "config" / "npc_profiles.json"
 NPC_TUNING_FILE = BACKEND_DIR / "config" / "npc_tuning.json"
+LLM_PRICING_FILE = BACKEND_DIR / "config" / "llm_pricing.json"
 BACKEND_MAIN_FILE = BACKEND_DIR / "app" / "main.py"
 BACKEND_LLM_FILE = BACKEND_DIR / "app" / "llm.py"
 BACKEND_LLM_OBSERVABILITY_FILE = BACKEND_DIR / "app" / "llm_observability.py"
+BACKEND_LLM_FINGERPRINTING_FILE = BACKEND_DIR / "app" / "llm_fingerprinting.py"
+BACKEND_LLM_PRICING_FILE = BACKEND_DIR / "app" / "llm_pricing.py"
+BACKEND_EXPERIMENT_FILE = BACKEND_DIR / "app" / "experiment.py"
 BACKEND_NPC_DECISION_FILE = BACKEND_DIR / "app" / "npc_decision.py"
 BACKEND_NPC_TUNING_FILE = BACKEND_DIR / "app" / "npc_tuning.py"
 BACKEND_BELIEF_FILE = BACKEND_DIR / "app" / "belief.py"
@@ -62,31 +75,59 @@ BACKEND_STANCE_FILE = BACKEND_DIR / "app" / "stance.py"
 BACKEND_INVARIANCE_FILE = BACKEND_DIR / "app" / "invariance.py"
 BACKEND_SIMULATION_FILE = BACKEND_DIR / "app" / "simulation.py"
 BACKEND_SIMULATION_METRICS_FILE = BACKEND_DIR / "app" / "simulation_metrics.py"
+BACKEND_PLAYER_STRATEGY_FILE = BACKEND_DIR / "app" / "player_strategy.py"
+BACKEND_PLAYER_SPEECH_FILE = BACKEND_DIR / "app" / "player_speech.py"
+BACKEND_EVENT_LOG_FILE = BACKEND_DIR / "app" / "event_log.py"
+BACKEND_GAME_PERSISTENCE_FILE = BACKEND_DIR / "app" / "game_persistence.py"
+BACKEND_IDEMPOTENCY_FILE = BACKEND_DIR / "app" / "idempotency.py"
+BACKEND_PUBLIC_EVIDENCE_FILE = BACKEND_DIR / "app" / "public_evidence.py"
+BACKEND_POST_GAME_REVIEW_FILE = BACKEND_DIR / "app" / "post_game_review.py"
+BACKEND_SPEECH_QUALITY_FILE = BACKEND_DIR / "app" / "speech_quality.py"
 BACKEND_VOTE_CALIBRATION_FILE = BACKEND_DIR / "app" / "vote_calibration.py"
 SIMULATION_SCRIPT_FILE = ROOT_DIR / "scripts" / "simulate_games.py"
+GAME_PERSISTENCE_CHECK_FILE = ROOT_DIR / "scripts" / "check_game_persistence.py"
 LLM_OBSERVABILITY_SCRIPT_FILE = ROOT_DIR / "scripts" / "summarize_llm_observability.py"
-BACKEND_VENV_PYTHON = BACKEND_DIR / ".venv" / "bin" / "python"
+EXPERIMENT_COMPARE_SCRIPT_FILE = ROOT_DIR / "scripts" / "compare_simulation_artifacts.py"
 MIN_KNOWLEDGE_COUNT = 100
 
 
-def main() -> int:
-    checks = [
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Run Agent Town offline smoke checks without starting services."
+    )
+    parser.add_argument(
+        "--profile",
+        choices=("full", "core", "godot"),
+        default="full",
+        help="full is the compatible default; core skips Godot; godot runs UI and headless checks only",
+    )
+    args = parser.parse_args(argv)
+
+    core_checks = [
         check_release_docs,
+        check_ci_delivery_contracts,
         check_json_files,
         check_backend_compiles,
         check_llm_adapter,
         check_npc_decision_contracts,
         check_npc_tuning,
         check_headless_simulation,
+        check_game_persistence,
         check_backend_search,
         check_resident_chat,
         check_wolf_game_start,
         check_godot_ui_layout,
-        check_godot_loads,
     ]
+    if args.profile == "core":
+        checks = core_checks
+    elif args.profile == "godot":
+        checks = [check_godot_ui_layout, check_godot_loads]
+    else:
+        checks = [*core_checks, check_godot_loads]
 
     print("Agent Town smoke check")
     print("======================")
+    print(f"Profile: {args.profile}")
 
     for check in checks:
         try:
@@ -100,36 +141,111 @@ def main() -> int:
 
 
 def check_release_docs() -> None:
-    required_files = [ROOT_README_FILE, BACKEND_README_FILE, COMMANDS_FILE, V3_ROADMAP_FILE]
+    required_files = [
+        ROOT_README_FILE,
+        BACKEND_README_FILE,
+        BACKEND_ENV_EXAMPLE_FILE,
+        COMMANDS_FILE,
+        V3_ROADMAP_FILE,
+        V4_ROADMAP_FILE,
+        V4_RELEASE_CHECKLIST_FILE,
+        CI_WORKFLOW_FILE,
+        GITATTRIBUTES_FILE,
+    ]
     missing_files = [str(path.relative_to(ROOT_DIR)) for path in required_files if not path.is_file()]
     if missing_files:
         raise SmokeCheckError("release docs missing: " + ", ".join(missing_files))
 
     root_readme = ROOT_README_FILE.read_text(encoding="utf-8")
     backend_readme = BACKEND_README_FILE.read_text(encoding="utf-8")
+    backend_env_example = BACKEND_ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
     commands = COMMANDS_FILE.read_text(encoding="utf-8")
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
+    v4_roadmap = V4_ROADMAP_FILE.read_text(encoding="utf-8")
+    release_checklist = V4_RELEASE_CHECKLIST_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
+    v4_development_url = "https://github.com/KEswy/agent-town-demo-v4.0"
 
-    if not root_readme.startswith("# Agent Town Demo V3") or "V3.2-B" not in root_readme:
-        raise SmokeCheckError("root README must identify the active V3.2-B iteration")
+    if (
+        not root_readme.startswith("# Agent Town Demo V4")
+        or "V4.3-A" not in root_readme
+        or "V4.3-B" not in root_readme
+        or "V4.4-A" not in root_readme
+        or "V4.5-A" not in root_readme
+        or "V4.6-A" not in root_readme
+        or "V4.6-B" not in root_readme
+        or "V4.7-A" not in root_readme
+        or "V4.7-B" not in root_readme
+        or "V4.7-C" not in root_readme
+        or "V4.8-A" not in root_readme
+    ):
+        raise SmokeCheckError("root README must identify the active V4.8-A iteration")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
-    if "docs/V3_ROADMAP.md" not in root_readme or "../docs/V3_ROADMAP.md" not in backend_readme:
-        raise SmokeCheckError("README files must link to the standalone V3 roadmap")
+    if any(
+        v4_development_url not in document
+        for document in (
+            root_readme,
+            backend_readme,
+            commands,
+            v4_roadmap,
+            release_checklist,
+        )
+    ):
+        raise SmokeCheckError("V4 development repository URL must stay synchronized")
+    if (
+        "docs/V4_ROADMAP.md" not in root_readme
+        or "../docs/V4_ROADMAP.md" not in backend_readme
+        or "docs/V3_ROADMAP.md" not in root_readme
+    ):
+        raise SmokeCheckError("README files must link to the V4 and historical V3 roadmaps")
     if "/Users/" in commands:
         raise SmokeCheckError("COMMANDS.md must not contain a developer-specific absolute path")
     if "# Agent Town V3 改进与开发路线表" not in roadmap:
         raise SmokeCheckError("V3 roadmap title is missing")
     if roadmap.count("| M") < 24:
         raise SmokeCheckError("V3 roadmap must retain at least 24 concrete development items")
+    if (
+        "# Agent Town V4 改进与开发路线表" not in v4_roadmap
+        or "V4.1-A" not in v4_roadmap
+        or "V4.1-B" not in v4_roadmap
+        or "player_strategy.v1" not in v4_roadmap
+        or "agent_town_player_benchmark.v1" not in v4_roadmap
+        or "player_speech_preview.v1" not in v4_roadmap
+        or "player_speech_understanding.v1" not in v4_roadmap
+        or "game_rule_event.v1" not in v4_roadmap
+        or "game_rule_replay.v1" not in v4_roadmap
+        or "agent_town_rules.v4.2" not in v4_roadmap
+    ):
+        raise SmokeCheckError("V4 roadmap must document the V4.1-A/B and V4.2 baselines")
 
-    if "V3.2-B" not in backend_readme or "V3.2-B" not in roadmap:
-        raise SmokeCheckError("V3.2-B status must stay synchronized across development docs")
+    if (
+        "V4.2" not in backend_readme
+        or "V3.2-B" not in roadmap
+        or "V4.2" not in commands
+    ):
+        raise SmokeCheckError("V4.2 status must stay synchronized across development docs")
+    if (
+        "player_speech_preview.v1" not in commands
+        or "player_speech_understanding.v1" not in commands
+        or "/api/player-speech/preview" not in commands
+        or "preview_fingerprint" not in commands
+        or "确认提交 / 返回修改" not in commands
+    ):
+        raise SmokeCheckError("COMMANDS.md must document the V4.1-B preview contract")
+    if (
+        "player_strategy.v1" not in commands
+        or "player_strategy_context.v1" not in commands
+        or "agent_town_simulation.v17" not in commands
+        or "agent_town_metrics.v5" not in commands
+        or "agent_town_player_benchmark.v1" not in commands
+        or "--benchmark-player-strategies" not in commands
+    ):
+        raise SmokeCheckError("COMMANDS.md must document the V4.1-A benchmark contracts")
     if "scripts/simulate_games.py" not in commands:
         raise SmokeCheckError("COMMANDS.md must document the V3 batch simulator")
-    if "agent_town_metrics.v4" not in commands:
-        raise SmokeCheckError("COMMANDS.md must document the M02 metrics schema")
+    if "agent_town_metrics.v5" not in commands:
+        raise SmokeCheckError("COMMANDS.md must document the active metrics schema")
     if (
         "belief_state.v2" not in commands
         or "0.75" not in commands
@@ -161,12 +277,15 @@ def check_release_docs() -> None:
     ):
         raise SmokeCheckError("COMMANDS.md must document the M06-B authorization matrix")
     if (
-        "llm_observation.v1" not in commands
-        or "llm_observability_summary.v1" not in commands
+        "llm_observation.v2" not in commands
+        or "llm_observability_summary.v2" not in commands
+        or "llm_price_catalog.v1" not in commands
+        or "llm_cost_summary.v1" not in commands
+        or "--price-catalog" not in commands
         or "scripts/summarize_llm_observability.py" not in commands
         or "M09-A" not in commands
     ):
-        raise SmokeCheckError("COMMANDS.md must document redacted M09-A observability")
+        raise SmokeCheckError("COMMANDS.md must document V4.6-B observability and cost")
     if (
         "vote_probability_trace.v2" not in commands
         or "vote_probability_summary.v2" not in commands
@@ -192,9 +311,9 @@ def check_release_docs() -> None:
     if (
         "cross_day_exile_chain.v1" not in commands
         or "[EXILE-CHAIN]" not in commands
-        or "agent_town_simulation.v13" not in commands
+        or "agent_town_simulation.v17" not in commands
     ):
-        raise SmokeCheckError("COMMANDS.md must document V3.1-O balance policy")
+        raise SmokeCheckError("COMMANDS.md must retain the V3.1-O balance policy")
     if (
         "M16-A" not in commands
         or "claimed_good_anchor_id" not in commands
@@ -210,12 +329,350 @@ def check_release_docs() -> None:
     ):
         raise SmokeCheckError("COMMANDS.md must document V3.2-B concise NPC speech")
 
-    print("[OK] V3.2-B README, commands, and roadmap status are synchronized.")
+    if (
+        "game_rule_event.v1" not in commands
+        or "game_rule_event_log.v1" not in commands
+        or "game_rule_replay.v1" not in commands
+        or "/api/game/{game_id}/events" not in backend_readme
+        or "/api/game/{game_id}/replay" not in backend_readme
+        or "--include-event-logs" not in commands
+        or "[REPLAY]" not in commands
+    ):
+        raise SmokeCheckError("V4.2 event and replay contracts must stay documented")
+
+    v43_markers = (
+        "V4.3-A",
+        "V4.3-B",
+        "game_save.v1",
+        "game_restore.v1",
+        "game_recovery.v1",
+        "recovery_config_fingerprint.v1",
+        "game_command_idempotency.v1",
+        "game_command_result.v1",
+    )
+    if any(
+        marker not in document
+        for marker in v43_markers
+        for document in (root_readme, backend_readme, v4_roadmap)
+    ):
+        raise SmokeCheckError("V4.3-A/B schemas and status must stay synchronized")
+    if (
+        "/api/game/{game_id}/save" not in backend_readme
+        or "/api/game/{game_id}/restore" not in backend_readme
+        or "/api/game/recovery-status" not in backend_readme
+        or "/api/game/recovery-status" not in commands
+        or "AGENT_TOWN_GAME_SAVE_DIR" not in commands
+        or "AGENT_TOWN_GAME_SAVE_DIR=data/games" not in backend_env_example
+        or "单 worker" not in commands
+        or "scripts/check_game_persistence.py" not in commands
+        or "exactly-once" not in v4_roadmap
+        or "idempotency_key" not in commands
+        or "HTTP 409" not in commands
+    ):
+        raise SmokeCheckError("V4.3-A operations and V4.3-B boundary are incomplete")
+
+    v44_markers = (
+        "V4.4-A",
+        "V4.4-B",
+        "public_evidence_item.v1",
+        "public_evidence_timeline.v1",
+        "public_commitment_state.v1",
+        "public_contradiction_candidate.v1",
+        "public_evidence_analysis.v1",
+        "public_only_no_post_game_truth",
+        "projected_event_sequence",
+        "confirmed_action",
+        "unverified",
+    )
+    if any(
+        marker not in document
+        for marker in v44_markers
+        for document in (root_readme, backend_readme, commands, v4_roadmap)
+    ):
+        raise SmokeCheckError("V4.4-A/B public evidence contracts must stay synchronized")
+    if (
+        "/api/game/{game_id}/state" not in backend_readme
+        or "/api/game/替换为当前游戏编号/state" not in commands
+        or "V4.5" not in v4_roadmap
+        or "night_out" not in commands
+        or "exile_ballot" not in backend_readme
+        or "◇ / ◆ / ●" not in v4_roadmap
+        or "needs_review" not in commands
+        or "judgment=none" not in commands
+        or "identity_claim_changed" not in backend_readme
+        or "seer_result_changed" not in backend_readme
+        or "badge_flow_target_mismatch" not in backend_readme
+        or "badge_flow_action_mismatch" not in backend_readme
+    ):
+        raise SmokeCheckError("V4.4-A/B operations, privacy boundary, or next slice is incomplete")
+
+    v45_markers = (
+        "V4.5-A",
+        "post_game_evidence_reference.v1",
+        "post_game_decision_review.v1",
+        "post_game_explainable_review.v1",
+        "post_game_truth_unlocked",
+        "recorded_basis_plus_prior_day_public_evidence",
+        "deceived",
+        "insufficient_evidence",
+        "continuity_break",
+        "skill_misuse",
+        "deterministic_variance",
+    )
+    if any(
+        marker not in document
+        for marker in v45_markers
+        for document in (root_readme, backend_readme, commands, v4_roadmap)
+    ):
+        raise SmokeCheckError("V4.5-A post-game explanation contracts must stay synchronized")
+    if (
+        "/api/game/{game_id}/summary" not in backend_readme
+        or "/api/game/替换为当前游戏编号/summary" not in commands
+        or "解释复盘（赛后）" not in root_readme
+    ):
+        raise SmokeCheckError("V4.5-A operation or UI docs are incomplete")
+
+    v46_markers = (
+        "V4.6-A",
+        "npc_speech_normalization.v1",
+        "npc_speech_quality_observation.v1",
+        "npc_speech_actor_quality.v1",
+        "npc_speech_quality.v1",
+        "npc_speech_actor_quality_batch.v1",
+        "npc_speech_quality_batch.v1",
+        "npc_public_speeches_only",
+        "public_only_no_role_truth",
+        "0.82",
+        "[SPEECH-QUALITY]",
+    )
+    if any(
+        marker not in document
+        for marker in v46_markers
+        for document in (root_readme, backend_readme, commands, v4_roadmap)
+    ):
+        raise SmokeCheckError("V4.6-A speech-quality contracts must stay synchronized")
+    v46b_markers = (
+        "V4.6-B",
+        "experiment_fingerprint.v1",
+        "llm_observation.v2",
+        "llm_observability_summary.v2",
+        "llm_price_catalog.v1",
+        "llm_cost_summary.v1",
+        "agent_town_artifact_ab.v1",
+        "rule_only_artifacts_no_llm",
+        "llm_evaluated=false",
+    )
+    if any(
+        marker not in document
+        for marker in v46b_markers
+        for document in (root_readme, backend_readme, commands, v4_roadmap)
+    ):
+        raise SmokeCheckError(
+            "V4.6-B fingerprint, cost, and artifact A/B contracts must stay synchronized"
+        )
+    if (
+        "agent_town_simulation.v17" not in root_readme
+        or "agent_town_simulation_batch.v17" not in backend_readme
+        or "agent_town_simulation.v17" not in commands
+        or "agent_town_simulation_batch.v17" not in v4_roadmap
+        or "scripts/compare_simulation_artifacts.py" not in commands
+        or "scripts/summarize_llm_observability.py" not in commands
+        or "--price-catalog" not in commands
+        or "[EXPERIMENT]" not in commands
+        or "[ARTIFACT-A/B]" not in commands
+        or "[QUALITY-A/B]" not in commands
+        or "API Key" not in v4_roadmap
+        or "null" not in commands
+    ):
+        raise SmokeCheckError("V4.6-B operations, versions, or V4.7 handoff are incomplete")
+
+    v47a_markers = (
+        "V4.7-A",
+        "agent_town_onboarding.v1",
+        "identity_and_scope",
+        "post_game_review",
+        "user://agent_town_onboarding.cfg",
+        "automatic_guide_completed",
+        "F1",
+        "V4.7-B",
+        "V4.7-C",
+    )
+    if any(
+        marker not in document
+        for marker in v47a_markers
+        for document in (root_readme, backend_readme, commands, v4_roadmap)
+    ):
+        raise SmokeCheckError("V4.7-A onboarding and V4.7-B/C handoff must stay synchronized")
+    if (
+        "`GET /api/game/{game_id}/state`" not in v4_roadmap
+        or "不新增 HTTP/LLM 请求" not in v4_roadmap
+    ):
+        raise SmokeCheckError("V4.7-A activation boundary is incomplete")
+
+    v47b_markers = (
+        "V4.7-B",
+        "agent_town_responsive_layout.v1",
+        "agent_town_focus_navigation.v1",
+        "compact / default / wide",
+        "1100×650",
+        "1280×720",
+        "1600×900",
+        "V4.7-C",
+    )
+    if any(
+        marker not in document
+        for marker in v47b_markers
+        for document in (root_readme, backend_readme, commands, v4_roadmap)
+    ):
+        raise SmokeCheckError(
+            "V4.7-B responsive layout, focus navigation, and V4.7-C handoff must stay synchronized"
+        )
+
+    v47c_markers = (
+        "V4.7-C",
+        "Python 3.12",
+        "Godot 4.7.1",
+        "--profile core",
+        "--profile godot",
+        "docs/V4_RELEASE_CHECKLIST.md",
+        "尚未封版",
+        "源码交付",
+    )
+    if any(
+        marker not in document
+        for marker in v47c_markers
+        for document in (root_readme, backend_readme, commands, v4_roadmap)
+    ):
+        raise SmokeCheckError("V4.7-C CI and source-release boundaries must stay synchronized")
+
+    v48a_markers = (
+        "V4.8-A",
+        "enable_llm_validation",
+        "llm_validation_enabled",
+        "输出校验",
+        "原文直出",
+        "0 次",
+        "game_created",
+        "旧存档",
+    )
+    if any(
+        marker not in document
+        for marker in v48a_markers
+        for document in (root_readme, backend_readme, commands, v4_roadmap)
+    ):
+        raise SmokeCheckError(
+            "V4.8-A per-game LLM validation mode must stay synchronized"
+        )
+
+    release_markers = (
+        "v4.0.0",
+        "agent-town-demo-v4.0",
+        "v4-origin",
+        "origin",
+        "v2-origin",
+        "v3-origin",
+        "git push --all",
+        "v4.0.1",
+        "LICENSE",
+        "1100×650",
+        "Linux headless/后端已验证，Linux 图形交互为候选支持",
+    )
+    if any(marker not in release_checklist for marker in release_markers):
+        raise SmokeCheckError("V4 release checklist is missing a required governance gate")
+
+    print("[OK] V4.3-A/B through V4.8-A docs are synchronized.")
+
+
+def check_ci_delivery_contracts() -> None:
+    try:
+        workflow = CI_WORKFLOW_FILE.read_text(encoding="utf-8")
+        gitignore = GITIGNORE_FILE.read_text(encoding="utf-8")
+        gitattributes = GITATTRIBUTES_FILE.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SmokeCheckError(f"could not read V4.7-C delivery files: {exc}") from exc
+
+    required_workflow_markers = (
+        "ubuntu-24.04",
+        "macos-15",
+        'python-version: "3.12"',
+        "version: 4.7.1",
+        "use-dotnet: false",
+        "include-templates: false",
+        "persist-credentials: false",
+        "contents: read",
+        'ENABLE_LLM: "false"',
+        "LLM_PROVIDER: mock",
+        'LLM_API_KEY: ""',
+        'AGENT_TOWN_DISABLE_VECTOR_RAG: "1"',
+        'HF_HUB_OFFLINE: "1"',
+        "AGENT_TOWN_GAME_SAVE_DIR:",
+        "python -m pip check",
+        "python scripts/smoke_check.py --profile core",
+        "python scripts/smoke_check.py --profile godot",
+        "git diff --exit-code",
+    )
+    missing_markers = [
+        marker for marker in required_workflow_markers if marker not in workflow
+    ]
+    if missing_markers:
+        raise SmokeCheckError(
+            "V4 CI workflow is missing contracts: " + ", ".join(missing_markers)
+        )
+
+    action_lines = [
+        line.strip() for line in workflow.splitlines() if line.strip().startswith("uses:")
+    ]
+    if not action_lines or any(
+        re.search(r"@[0-9a-f]{40}(?:\s+#.*)?$", line) is None for line in action_lines
+    ):
+        raise SmokeCheckError("every V4 CI action must be pinned to a full commit SHA")
+    forbidden_workflow_patterns = (
+        (r"\$\{\{\s*secrets\.", "GitHub secrets"),
+        (r"\buvicorn\b", "FastAPI service startup"),
+        (r"\bgit\s+push\b", "git push"),
+        (r"uses:\s*\S+@main\b", "floating @main action"),
+    )
+    for pattern, label in forbidden_workflow_patterns:
+        if re.search(pattern, workflow, flags=re.IGNORECASE):
+            raise SmokeCheckError(f"V4 CI workflow must not contain {label}")
+
+    if "*.uid" in gitignore:
+        raise SmokeCheckError("Godot 4.7 UID sidecars must not be ignored")
+    expected_uid_files = {
+        GAME_DIR / "scripts" / "day_night_check.gd.uid",
+        GAME_DIR / "scripts" / "dialog_box.gd.uid",
+        GAME_DIR / "scripts" / "font_check.gd.uid",
+        GAME_DIR / "scripts" / "main.gd.uid",
+        GAME_DIR / "scripts" / "npc.gd.uid",
+        GAME_DIR / "scripts" / "player.gd.uid",
+        GAME_DIR / "scripts" / "town_background.gd.uid",
+    }
+    missing_uid_files = sorted(
+        str(path.relative_to(ROOT_DIR)) for path in expected_uid_files if not path.is_file()
+    )
+    if missing_uid_files:
+        raise SmokeCheckError("Godot UID sidecars missing: " + ", ".join(missing_uid_files))
+    if "* text=auto eol=lf" not in gitattributes or "*.ttf binary" not in gitattributes:
+        raise SmokeCheckError(".gitattributes must lock LF text and binary font handling")
+
+    print("[OK] V4.7-C CI is pinned, offline-by-contract, cross-platform, and release-safe.")
 
 
 def check_json_files() -> None:
     knowledge_items = load_json_list(KNOWLEDGE_FILE, "knowledge base")
     npc_profiles = load_json_list(NPC_PROFILES_FILE, "NPC profiles")
+    try:
+        llm_pricing = json.loads(LLM_PRICING_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SmokeCheckError(f"LLM price catalog is invalid JSON: {exc}") from exc
+    if (
+        not isinstance(llm_pricing, dict)
+        or llm_pricing.get("schema_version") != "llm_price_catalog.v1"
+        or llm_pricing.get("currency") != "USD"
+        or llm_pricing.get("unit_tokens") != 1_000_000
+        or not isinstance(llm_pricing.get("entries"), list)
+    ):
+        raise SmokeCheckError("LLM price catalog header is invalid")
     expected_trigger_profiles = {
         "梅西", "C罗", "周深", "梅长苏", "塞尔达", "小骑士",
         "大黄蜂", "喜羊羊", "懒羊羊", "洛洛", "奇异博士",
@@ -323,12 +780,17 @@ def check_json_files() -> None:
         raise SmokeCheckError("only 梅长苏 may reveal a real role through a trigger easter egg")
 
     for path in [
+        BACKEND_ENV_EXAMPLE_FILE,
         KNOWLEDGE_FILE,
         NPC_PROFILES_FILE,
         NPC_TUNING_FILE,
+        LLM_PRICING_FILE,
         BACKEND_MAIN_FILE,
         BACKEND_LLM_FILE,
         BACKEND_LLM_OBSERVABILITY_FILE,
+        BACKEND_LLM_FINGERPRINTING_FILE,
+        BACKEND_LLM_PRICING_FILE,
+        BACKEND_EXPERIMENT_FILE,
         BACKEND_NPC_DECISION_FILE,
         BACKEND_NPC_TUNING_FILE,
         BACKEND_BELIEF_FILE,
@@ -336,14 +798,27 @@ def check_json_files() -> None:
         BACKEND_INVARIANCE_FILE,
         BACKEND_SIMULATION_FILE,
         BACKEND_SIMULATION_METRICS_FILE,
+        BACKEND_PLAYER_STRATEGY_FILE,
+        BACKEND_PLAYER_SPEECH_FILE,
+        BACKEND_EVENT_LOG_FILE,
+        BACKEND_GAME_PERSISTENCE_FILE,
+        BACKEND_IDEMPOTENCY_FILE,
+        BACKEND_PUBLIC_EVIDENCE_FILE,
+        BACKEND_POST_GAME_REVIEW_FILE,
+        BACKEND_SPEECH_QUALITY_FILE,
         BACKEND_VOTE_CALIBRATION_FILE,
         SIMULATION_SCRIPT_FILE,
+        GAME_PERSISTENCE_CHECK_FILE,
         LLM_OBSERVABILITY_SCRIPT_FILE,
+        EXPERIMENT_COMPARE_SCRIPT_FILE,
     ]:
         if "\ufffd" in path.read_text(encoding="utf-8"):
             raise SmokeCheckError(f"Unicode replacement character found in {path.relative_to(ROOT_DIR)}")
 
-    print(f"[OK] JSON config valid: {len(knowledge_items)} knowledge items, {len(npc_profiles)} NPC profiles.")
+    print(
+        f"[OK] JSON config valid: {len(knowledge_items)} knowledge items, "
+        f"{len(npc_profiles)} NPC profiles, versioned LLM prices."
+    )
 
 
 def check_backend_compiles() -> None:
@@ -355,6 +830,9 @@ def check_backend_compiles() -> None:
             str(BACKEND_MAIN_FILE),
             str(BACKEND_LLM_FILE),
             str(BACKEND_LLM_OBSERVABILITY_FILE),
+            str(BACKEND_LLM_FINGERPRINTING_FILE),
+            str(BACKEND_LLM_PRICING_FILE),
+            str(BACKEND_EXPERIMENT_FILE),
             str(BACKEND_NPC_DECISION_FILE),
             str(BACKEND_NPC_TUNING_FILE),
             str(BACKEND_BELIEF_FILE),
@@ -362,9 +840,19 @@ def check_backend_compiles() -> None:
             str(BACKEND_INVARIANCE_FILE),
             str(BACKEND_SIMULATION_FILE),
             str(BACKEND_SIMULATION_METRICS_FILE),
+            str(BACKEND_PLAYER_STRATEGY_FILE),
+            str(BACKEND_PLAYER_SPEECH_FILE),
+            str(BACKEND_EVENT_LOG_FILE),
+            str(BACKEND_GAME_PERSISTENCE_FILE),
+            str(BACKEND_IDEMPOTENCY_FILE),
+            str(BACKEND_PUBLIC_EVIDENCE_FILE),
+            str(BACKEND_POST_GAME_REVIEW_FILE),
+            str(BACKEND_SPEECH_QUALITY_FILE),
             str(BACKEND_VOTE_CALIBRATION_FILE),
             str(SIMULATION_SCRIPT_FILE),
+            str(GAME_PERSISTENCE_CHECK_FILE),
             str(LLM_OBSERVABILITY_SCRIPT_FILE),
+            str(EXPERIMENT_COMPARE_SCRIPT_FILE),
         ],
         cwd=ROOT_DIR,
         fail_message="backend Python files failed to compile",
@@ -373,7 +861,7 @@ def check_backend_compiles() -> None:
 
 
 def check_llm_adapter() -> None:
-    python_bin = BACKEND_VENV_PYTHON if BACKEND_VENV_PYTHON.exists() else Path(sys.executable)
+    python_bin = Path(sys.executable)
     smoke_code = r'''
 import json
 import subprocess
@@ -384,7 +872,16 @@ from pathlib import Path
 import httpx
 
 from app.llm import LLMClient, LLMSettings
+from app.llm_fingerprinting import (
+    EXPERIMENT_FINGERPRINT_SCHEMA_VERSION,
+    LLM_CONFIG_FINGERPRINT_SCHEMA_VERSION,
+    LLM_PROMPT_FINGERPRINT_SCHEMA_VERSION,
+    build_experiment_fingerprint,
+    build_llm_config_fingerprint,
+    build_prompt_fingerprint,
+)
 from app.llm_observability import (
+    LEGACY_LLM_OBSERVATION_SCHEMA_VERSION,
     LLM_OBSERVABILITY_MODE,
     LLM_OBSERVABILITY_SUMMARY_VERSION,
     LLM_OBSERVATION_SCHEMA_VERSION,
@@ -395,6 +892,13 @@ from app.llm_observability import (
     summarize_observation_events,
     summarize_observation_file,
 )
+from app.llm_pricing import (
+    LLM_COST_SUMMARY_SCHEMA_VERSION,
+    LLM_PRICE_CATALOG_SCHEMA_VERSION,
+    LLMPricingError,
+    LLMPriceCatalogV1,
+    summarize_llm_cost,
+)
 
 api_key_marker = "TEST_API_KEY_MARKER_7D2F"
 system_marker = "SECRET_SYSTEM_PROMPT_MARKER_8A31"
@@ -403,6 +907,58 @@ response_marker = "SECRET_RESPONSE_MARKER_9B20"
 fallback_marker = "SECRET_FALLBACK_MARKER_5E14"
 captured_events = []
 fallback = fallback_marker
+
+prompt_fingerprint = build_prompt_fingerprint(
+    system_marker,
+    task="resident_chat",
+    operation="json_text",
+)
+if len(prompt_fingerprint) != 64 or system_marker in prompt_fingerprint:
+    raise SystemExit("prompt fingerprints must be digest-only")
+fingerprint_settings_a = LLMSettings(
+    enabled=True,
+    provider="deepseek",
+    base_url="https://user:secret@example.invalid/v1?token=one#fragment",
+    api_key=api_key_marker,
+    model="model-a",
+)
+fingerprint_settings_b = LLMSettings(
+    enabled=True,
+    provider="deepseek",
+    base_url="https://other:changed@example.invalid/v1?token=two#other",
+    api_key="ROTATED_KEY_MUST_NOT_AFFECT_FINGERPRINT",
+    model="model-a",
+)
+if build_llm_config_fingerprint(fingerprint_settings_a) != build_llm_config_fingerprint(
+    fingerprint_settings_b
+):
+    raise SystemExit("credentials and stripped URL data must not affect config fingerprints")
+redacted_status = LLMClient(fingerprint_settings_a).status()
+if redacted_status["base_url"] != "https://example.invalid/v1":
+    raise SystemExit("LLM status must expose only the sanitized endpoint identity")
+for endpoint_secret in ("user", "secret", "token=one", "fragment"):
+    if endpoint_secret in json.dumps(redacted_status):
+        raise SystemExit("LLM status must strip endpoint credentials and URL secrets")
+if build_llm_config_fingerprint(fingerprint_settings_a) == build_llm_config_fingerprint(
+    LLMSettings(**{**fingerprint_settings_a.__dict__, "temperature": 0.2})
+):
+    raise SystemExit("effective model settings must affect config fingerprints")
+experiment_a = build_experiment_fingerprint(
+    execution_mode="rule_only_no_llm",
+    components={"rules": ({"version": 1}, True), "prompt": ("A", False)},
+)
+experiment_b = build_experiment_fingerprint(
+    execution_mode="rule_only_no_llm",
+    components={"rules": ({"version": 1}, True), "prompt": ("B", False)},
+)
+if (
+    experiment_a["schema_version"] != EXPERIMENT_FINGERPRINT_SCHEMA_VERSION
+    or experiment_a["configuration_fingerprint"]
+    == experiment_b["configuration_fingerprint"]
+    or experiment_a["effective_fingerprint"]
+    != experiment_b["effective_fingerprint"]
+):
+    raise SystemExit("experiment fingerprints must separate full and active config")
 
 disabled_client = LLMClient(
     LLMSettings(enabled=False),
@@ -649,11 +1205,20 @@ expected_event_fields = {
     "total_tokens",
     "fallback_category",
     "rejection_category_counts",
+    "prompt_fingerprint",
+    "config_fingerprint",
+    "token_usage_status",
+    "usage_reported_attempt_count",
+    "usage_unreported_attempt_count",
+    "billing_model",
+    "billing_model_source",
 }
 if len(captured_events) != 9:
     raise SystemExit(f"each LLM adapter result should emit one event: {len(captured_events)}")
 if any(set(event) != expected_event_fields for event in captured_events):
-    raise SystemExit("request observations must use the exact redacted v1 fields")
+    raise SystemExit("request observations must use the exact redacted v2 fields")
+if any(event["schema_version"] != LLM_OBSERVATION_SCHEMA_VERSION for event in captured_events):
+    raise SystemExit("new request observations must use v2")
 serialized_events = json.dumps(captured_events, ensure_ascii=False)
 for secret_marker in (
     api_key_marker,
@@ -675,6 +1240,13 @@ if event_by_key[("rewrite_public_speech", "success", "")]["retry_count"] != 1:
     raise SystemExit("retry success observations must preserve the retry count")
 if event_by_key[("rewrite_public_speech", "success", "")]["total_tokens"] != 11:
     raise SystemExit("retry observations should add provider token usage across attempts")
+retry_event = event_by_key[("rewrite_public_speech", "success", "")]
+if (
+    retry_event["token_usage_status"] != "complete"
+    or retry_event["usage_reported_attempt_count"] != 2
+    or retry_event["usage_unreported_attempt_count"] != 0
+):
+    raise SystemExit("retry usage coverage must conserve adapter attempts")
 for expected_key in (
     ("resident_chat", "fallback", "disabled"),
     ("resident_chat", "fallback", "mock"),
@@ -687,6 +1259,25 @@ for expected_key in (
 token_events = [event for event in captured_events if event["total_tokens"] is not None]
 if len(token_events) != 4 or sum(event["total_tokens"] for event in token_events) != 48:
     raise SystemExit("provider token usage should be captured when available")
+usage_status_counts = {
+    status: sum(event["token_usage_status"] == status for event in captured_events)
+    for status in ("not_applicable", "complete", "partial", "missing")
+}
+if usage_status_counts != {
+    "not_applicable": 2,
+    "complete": 4,
+    "partial": 0,
+    "missing": 3,
+}:
+    raise SystemExit(f"request usage coverage is incomplete: {usage_status_counts}")
+if any(
+    not isinstance(event["prompt_fingerprint"], str)
+    or len(event["prompt_fingerprint"]) != 64
+    or not isinstance(event["config_fingerprint"], str)
+    or len(event["config_fingerprint"]) != 64
+    for event in captured_events
+):
+    raise SystemExit("every adapter result must carry digest-only provenance")
 
 validation_events = [
     build_validation_observation(
@@ -723,10 +1314,34 @@ if (
     or summary["validation_recovered_count"] != 1
     or summary["validation_fallback_count"] != 1
     or summary["retry_count"] != 2
+    or summary["adapter_retry_count"] != 1
+    or summary["semantic_retry_count"] != 1
+    or summary["provider_attempt_count"] != 8
+    or summary["semantic_attempt_count"] != 3
     or summary["token_sample_count"] != 4
     or summary["total_tokens"] != 48
+    or summary["usage_not_applicable_request_count"] != 2
+    or summary["usage_complete_request_count"] != 4
+    or summary["usage_partial_request_count"] != 0
+    or summary["usage_missing_request_count"] != 3
+    or summary["prompt_fingerprint_coverage"] != 1.0
+    or summary["config_fingerprint_coverage"] != 1.0
 ):
     raise SystemExit(f"redacted observability summary is incomplete: {summary}")
+cost_summary = summary["cost_summary"]
+if (
+    cost_summary["schema_version"] != LLM_COST_SUMMARY_SCHEMA_VERSION
+    or cost_summary["catalog_schema_version"]
+    != LLM_PRICE_CATALOG_SCHEMA_VERSION
+    or cost_summary["billable_request_count"] != 7
+    or cost_summary["provider_attempt_count"] != 8
+    or cost_summary["adapter_retry_count"] != 1
+    or cost_summary["semantic_retry_count"] != 1
+    or cost_summary["cost_unknown_request_count"] != 7
+    or cost_summary["total_cost_usd_micros"] is not None
+    or cost_summary["cost_complete"]
+):
+    raise SystemExit(f"conservative default cost summary is incomplete: {cost_summary}")
 if summary["rejection_category_counts"] != {
     "hidden_information": 1,
     "schema_invalid": 1,
@@ -736,6 +1351,159 @@ if "resident_chat" not in summary["by_task"]:
     raise SystemExit("observability summary should group metrics by task")
 if "deepseek/deepseek-v4-flash" not in summary["by_provider_model"]:
     raise SystemExit("observability summary should group metrics by provider and model")
+if len(summary["by_prompt_config"]) != 8:
+    raise SystemExit("observability summary should group digest-only prompt/config pairs")
+
+legacy_event = {
+    key: captured_events[2][key]
+    for key in expected_event_fields
+    if key not in {
+        "prompt_fingerprint",
+        "config_fingerprint",
+        "token_usage_status",
+        "usage_reported_attempt_count",
+        "usage_unreported_attempt_count",
+        "billing_model",
+        "billing_model_source",
+    }
+}
+legacy_event["schema_version"] = LEGACY_LLM_OBSERVATION_SCHEMA_VERSION
+legacy_summary = summarize_observation_events([legacy_event])
+if (
+    legacy_summary["event_count"] != 1
+    or legacy_summary["legacy_event_count"] != 1
+    or legacy_summary["usage_complete_request_count"] != 1
+):
+    raise SystemExit("historical v1 observations must remain readable")
+
+known_price_catalog = LLMPriceCatalogV1.model_validate(
+    {
+        "schema_version": "llm_price_catalog.v1",
+        "catalog_version": "smoke-known-v1",
+        "currency": "USD",
+        "unit_tokens": 1_000_000,
+        "entries": [
+            {
+                "price_id": "openai-compatible-cheap-model-known",
+                "provider": "openai_compatible",
+                "model": "cheap-model",
+                "billing_mode": "standard",
+                "effective_from": "2020-01-01T00:00:00Z",
+                "effective_until": None,
+                "pricing_status": "known",
+                "input_usd_micros_per_million_tokens": 1_000_000,
+                "output_usd_micros_per_million_tokens": 2_000_000,
+                "source": None,
+                "verified_at": None,
+            },
+            {
+                "price_id": "deepseek-v4-flash-explicitly-unknown",
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "billing_mode": "standard",
+                "effective_from": "2020-01-01T00:00:00Z",
+                "effective_until": None,
+                "pricing_status": "unknown",
+                "input_usd_micros_per_million_tokens": None,
+                "output_usd_micros_per_million_tokens": None,
+                "source": None,
+                "verified_at": None,
+            },
+        ],
+    }
+)
+known_cost = summarize_llm_cost(
+    [*captured_events, *validation_events],
+    known_price_catalog,
+)
+if (
+    known_cost["known_cost_usd_micros"] != 46
+    or known_cost["fully_costed_request_count"] != 3
+    or known_cost["cost_unknown_request_count"] != 4
+    or known_cost["total_cost_usd_micros"] is not None
+):
+    raise SystemExit(f"known and unknown cost parts must stay separate: {known_cost}")
+
+zero_attempt_fallback_cost = summarize_llm_cost(
+    [captured_events[0]],
+    known_price_catalog,
+)
+if (
+    not zero_attempt_fallback_cost["cost_complete"]
+    or zero_attempt_fallback_cost["total_cost_usd_micros"] != 0
+    or zero_attempt_fallback_cost["billable_request_count"] != 0
+):
+    raise SystemExit("zero-attempt fallbacks must remain explicitly non-billable")
+
+invalid_success_without_attempt = {
+    **captured_events[0],
+    "outcome": "success",
+    "fallback_category": "",
+}
+for validator_name, validator in (
+    ("observation", normalize_observation_event),
+    (
+        "pricing",
+        lambda event: summarize_llm_cost([event], known_price_catalog),
+    ),
+):
+    try:
+        validator(invalid_success_without_attempt)
+    except (LLMObservationError, LLMPricingError):
+        pass
+    else:
+        raise SystemExit(
+            f"{validator_name} must reject success without a provider attempt"
+        )
+
+invalid_retry_count = {**retry_event, "retry_count": 0}
+for validator_name, validator in (
+    ("observation", normalize_observation_event),
+    (
+        "pricing",
+        lambda event: summarize_llm_cost([event], known_price_catalog),
+    ),
+):
+    try:
+        validator(invalid_retry_count)
+    except (LLMObservationError, LLMPricingError):
+        pass
+    else:
+        raise SystemExit(
+            f"{validator_name} must reject adapter retry undercounting"
+        )
+
+legacy_success_without_attempt = {
+    key: invalid_success_without_attempt[key]
+    for key in expected_event_fields
+    if key not in {
+        "prompt_fingerprint",
+        "config_fingerprint",
+        "token_usage_status",
+        "usage_reported_attempt_count",
+        "usage_unreported_attempt_count",
+        "billing_model",
+        "billing_model_source",
+    }
+}
+legacy_success_without_attempt["schema_version"] = (
+    LEGACY_LLM_OBSERVATION_SCHEMA_VERSION
+)
+for validator_name, validator in (
+    ("legacy observation", normalize_observation_event),
+    (
+        "legacy pricing",
+        lambda event: summarize_llm_cost([event], known_price_catalog),
+    ),
+):
+    try:
+        validator(legacy_success_without_attempt)
+    except (LLMObservationError, LLMPricingError):
+        pass
+    else:
+        raise SystemExit(
+            f"{validator_name} must reject legacy success without an attempt"
+        )
 
 try:
     normalize_observation_event({**captured_events[0], "secret": context_marker})
@@ -755,16 +1523,33 @@ with tempfile.TemporaryDirectory(prefix="agent-town-m09a-") as temp_dir:
     file_summary = summarize_observation_file(observation_path)
     if file_summary["event_count"] != 11 or file_summary["invalid_event_count"] != 1:
         raise SystemExit("file summary should skip and count malformed JSONL rows")
+    price_catalog_path = Path(temp_dir) / "llm-pricing.json"
+    price_catalog_path.write_text(
+        json.dumps(known_price_catalog.model_dump(mode="json")),
+        encoding="utf-8",
+    )
     cli_script = Path.cwd().parent / "scripts" / "summarize_llm_observability.py"
     cli_result = subprocess.run(
-        [sys.executable, str(cli_script), "--input", str(observation_path), "--compact"],
+        [
+            sys.executable,
+            str(cli_script),
+            "--input",
+            str(observation_path),
+            "--price-catalog",
+            str(price_catalog_path),
+            "--compact",
+        ],
         check=True,
         capture_output=True,
         text=True,
     )
     cli_summary = json.loads(cli_result.stdout)
-    if cli_summary["schema_version"] != LLM_OBSERVABILITY_SUMMARY_VERSION:
-        raise SystemExit("M09-A summary CLI should print the versioned summary")
+    if (
+        cli_summary["schema_version"] != LLM_OBSERVABILITY_SUMMARY_VERSION
+        or cli_summary["cost_summary"]["catalog_version"] != "smoke-known-v1"
+        or cli_summary["cost_summary"]["known_cost_usd_micros"] != 46
+    ):
+        raise SystemExit("V4.6-B summary CLI should print versioned cost provenance")
 
 print("LLM adapter and redacted observability smoke test passed")
 '''
@@ -777,7 +1562,7 @@ print("LLM adapter and redacted observability smoke test passed")
 
 
 def check_npc_decision_contracts() -> None:
-    python_bin = BACKEND_VENV_PYTHON if BACKEND_VENV_PYTHON.exists() else Path(sys.executable)
+    python_bin = Path(sys.executable)
     smoke_code = r'''
 from copy import deepcopy
 
@@ -1369,7 +2154,7 @@ print("NPC decision contract smoke test passed")
 
 
 def check_npc_tuning() -> None:
-    python_bin = BACKEND_VENV_PYTHON if BACKEND_VENV_PYTHON.exists() else Path(sys.executable)
+    python_bin = Path(sys.executable)
     smoke_code = r'''
 from copy import deepcopy
 import json
@@ -1549,16 +2334,33 @@ print("NPC tuning smoke test passed")
 
 
 def check_headless_simulation() -> None:
-    python_bin = BACKEND_VENV_PYTHON if BACKEND_VENV_PYTHON.exists() else Path(sys.executable)
+    python_bin = Path(sys.executable)
     smoke_code = r'''
 import os
+import json
 import math
 import random
+from copy import deepcopy
 
 os.environ["AGENT_TOWN_DISABLE_VECTOR_RAG"] = "1"
 
 from app import main as rules
 from app import vote_calibration as vote_calibration_module
+from app.event_log import (
+    GAME_EVENT_LOG_SCHEMA_VERSION,
+    GAME_EVENT_SCHEMA_VERSION,
+    GAME_REPLAY_SCHEMA_VERSION,
+    GAME_RULESET_VERSION,
+    validate_game_rule_event_chain,
+)
+from app.experiment import (
+    ARTIFACT_AB_SCHEMA_VERSION,
+    compare_simulation_artifacts,
+)
+from app.llm_fingerprinting import (
+    EXPERIMENT_FINGERPRINT_SCHEMA_VERSION,
+    canonical_payload_digest,
+)
 from app.belief import (
     BELIEF_MODE,
     BELIEF_SCHEMA_VERSION,
@@ -1582,16 +2384,32 @@ from app.invariance import (
 )
 from app.simulation import (
     BATCH_SCHEMA_VERSION,
+    DEFAULT_PLAYER_STRATEGY,
+    GAMEPLAY_DIGEST_PROJECTION_VERSION,
     BELIEF_SCHEMA_VERSION as SIMULATION_BELIEF_SCHEMA_VERSION,
     METRICS_SCHEMA_VERSION,
+    PLAYER_BENCHMARK_SCHEMA_VERSION,
+    PLAYER_DECISION_TRACE_SCHEMA_VERSION,
     SIMULATION_SCHEMA_VERSION,
     SPEECH_CONTINUITY_METRICS_VERSION,
     STANCE_SCHEMA_VERSION as SIMULATION_STANCE_SCHEMA_VERSION,
     VOTE_CALIBRATION_SCHEMA_VERSION as SIMULATION_VOTE_CALIBRATION_SCHEMA_VERSION,
     VOTE_CALIBRATION_SUMMARY_VERSION as SIMULATION_VOTE_CALIBRATION_SUMMARY_VERSION,
     _choose_public_player_target,
+    run_player_strategy_benchmark,
     run_rule_simulation,
     run_rule_simulation_batch,
+)
+from app.player_strategy import (
+    BENCHMARK_PLAYER_ROLES,
+    PLAYER_STRATEGY_CONTEXT_SCHEMA_VERSION,
+    PLAYER_STRATEGY_POLICY_VERSIONS,
+    PLAYER_STRATEGY_SCHEMA_VERSION,
+    PLAYER_STRATEGY_TIERS,
+    best_candidate_ids,
+    build_player_strategy_context,
+    build_player_strategy_descriptor,
+    player_strategy_context_digest,
 )
 from app.stance import (
     STANCE_MODE,
@@ -1599,8 +2417,24 @@ from app.stance import (
     StanceTraceRecorder,
     build_stance_snapshot,
 )
+from app.speech_quality import (
+    NEAR_DUPLICATE_THRESHOLD,
+    NPC_SPEECH_ACTOR_QUALITY_BATCH_SCHEMA_VERSION,
+    NPC_SPEECH_ACTOR_QUALITY_SCHEMA_VERSION,
+    NPC_SPEECH_NORMALIZATION_SCHEMA_VERSION,
+    NPC_SPEECH_QUALITY_OBSERVATION_SCHEMA_VERSION,
+    NPC_SPEECH_QUALITY_BATCH_SCHEMA_VERSION,
+    NPC_SPEECH_QUALITY_SCHEMA_VERSION,
+    NPCSpeechQualityBatchV1,
+    NPCSpeechQualityV1,
+    aggregate_npc_speech_quality,
+    build_npc_speech_quality,
+    canonicalize_speech_template,
+    normalize_speech_text,
+)
 from app.simulation_metrics import (
     CROSS_DAY_EXILE_CHAIN_SCHEMA_VERSION,
+    PLAYER_PERFORMANCE_SCHEMA_VERSION,
     _summarize_vote_transition_pairs,
     build_game_metrics,
     summarize_ballot_distribution,
@@ -1635,6 +2469,18 @@ for public_model in (
         raise SystemExit("shadow vote probabilities must not enter live API schemas")
     if "witch_strategy_decisions" in public_model.model_fields:
         raise SystemExit("NPC witch audit records must not enter live API schemas")
+    if "player_strategy" in public_model.model_fields:
+        raise SystemExit("offline player strategies must not enter live API schemas")
+    if "rule_events" in public_model.model_fields:
+        raise SystemExit("private rule events must not enter ordinary live API schemas")
+    if "npc_speech_quality" in public_model.model_fields:
+        raise SystemExit("offline NPC speech quality must not enter live API schemas")
+openapi_paths = rules.app.openapi()["paths"]
+if (
+    "/api/game/{game_id}/events" not in openapi_paths
+    or "/api/game/{game_id}/replay" not in openapi_paths
+):
+    raise SystemExit("V4.2 terminal event export and replay APIs must stay registered")
 
 empty_distribution = summarize_ballot_distribution([])
 if empty_distribution["entropy_bits"] is not None:
@@ -2012,11 +2858,420 @@ if (
 ):
     raise SystemExit("a simulated game must expose versioned post-game metrics")
 if (
-    SIMULATION_SCHEMA_VERSION != "agent_town_simulation.v13"
-    or BATCH_SCHEMA_VERSION != "agent_town_simulation_batch.v13"
-    or METRICS_SCHEMA_VERSION != "agent_town_metrics.v4"
+    SIMULATION_SCHEMA_VERSION != "agent_town_simulation.v17"
+    or BATCH_SCHEMA_VERSION != "agent_town_simulation_batch.v17"
+    or METRICS_SCHEMA_VERSION != "agent_town_metrics.v5"
+    or PLAYER_BENCHMARK_SCHEMA_VERSION
+    != "agent_town_player_benchmark.v1"
+    or PLAYER_PERFORMANCE_SCHEMA_VERSION != "player_performance.v1"
+    or PLAYER_STRATEGY_SCHEMA_VERSION != "player_strategy.v1"
+    or PLAYER_STRATEGY_CONTEXT_SCHEMA_VERSION
+    != "player_strategy_context.v1"
+    or GAME_EVENT_SCHEMA_VERSION != "game_rule_event.v1"
+    or GAME_EVENT_LOG_SCHEMA_VERSION != "game_rule_event_log.v1"
+    or GAME_REPLAY_SCHEMA_VERSION != "game_rule_replay.v1"
+    or GAME_RULESET_VERSION != "agent_town_rules.v4.2"
+    or GAMEPLAY_DIGEST_PROJECTION_VERSION != "agent_town_simulation.v14"
 ):
-    raise SystemExit("V3.1-O simulation and metrics schemas must stay explicit")
+    raise SystemExit("V4 simulation, benchmark, event, and replay schemas must stay explicit")
+first_experiment = first["experiment_fingerprint"]
+if (
+    first["experiment_fingerprint_schema_version"]
+    != EXPERIMENT_FINGERPRINT_SCHEMA_VERSION
+    or first_experiment["schema_version"]
+    != EXPERIMENT_FINGERPRINT_SCHEMA_VERSION
+    or first_experiment["execution_mode"] != "rule_only_no_llm"
+    or set(first_experiment)
+    != {
+        "schema_version",
+        "fingerprint_algorithm",
+        "execution_mode",
+        "configuration_fingerprint",
+        "effective_fingerprint",
+        "components",
+    }
+    or any(set(component) != {"name", "digest", "active"} for component in first_experiment["components"])
+    or any(len(component["digest"]) != 64 for component in first_experiment["components"])
+):
+    raise SystemExit("V4.6-B experiment provenance must be strict and digest-only")
+first_quality = first["npc_speech_quality"]
+if (
+    first["npc_speech_quality_schema_version"]
+    != NPC_SPEECH_QUALITY_SCHEMA_VERSION
+    or first_quality["schema_version"] != NPC_SPEECH_QUALITY_SCHEMA_VERSION
+    or first_quality["normalization_schema_version"]
+    != NPC_SPEECH_NORMALIZATION_SCHEMA_VERSION
+    or first_quality["truth_scope"] != "public_only_no_role_truth"
+    or first_quality["near_duplicate_threshold"]
+    != NEAR_DUPLICATE_THRESHOLD
+    or first_quality["speech_count"] <= 0
+    or sum(first_quality["phase_counts"].values())
+    != first_quality["speech_count"]
+    or sum(actor["speech_count"] for actor in first_quality["actors"])
+    != first_quality["speech_count"]
+    or any(
+        actor["schema_version"]
+        != NPC_SPEECH_ACTOR_QUALITY_SCHEMA_VERSION
+        for actor in first_quality["actors"]
+    )
+    or any(
+        observation["schema_version"]
+        != NPC_SPEECH_QUALITY_OBSERVATION_SCHEMA_VERSION
+        for observation in first_quality["observations"]
+    )
+):
+    raise SystemExit("V4.6-A single-game NPC speech quality schema is inconsistent")
+for rate_name in (
+    "surface_repeat_rate",
+    "template_repeat_rate",
+    "near_duplicate_pair_rate",
+    "cross_actor_near_duplicate_pair_rate",
+    "evidence_citation_rate",
+    "information_increment_rate",
+    "zero_information_increment_rate",
+    "persona_marker_speech_rate",
+    "persona_marker_actor_coverage",
+    "persona_differentiation_score",
+):
+    rate = first_quality[rate_name]
+    if rate is not None and not 0.0 <= rate <= 1.0:
+        raise SystemExit(f"NPC speech quality rate is out of range: {rate_name}")
+
+quality_fixture = rules.create_wolf_game_state(
+    rules.GameStartRequest(player_name="表达质量测试"),
+    game_id="speech_quality_fixture",
+    random_seed=20260720,
+)
+quality_fixture.phase = "GAME_OVER"
+quality_fixture.winner = "good"
+quality_fixture.speeches = [
+    rules.SpeechState(
+        day=1,
+        character_id=2,
+        name=quality_fixture.characters[1].name,
+        speech="我怀疑3号 C罗。",
+        is_player=False,
+        evidence_titles=["公开规则证据"],
+        public_position=rules.PublicPositionV1(
+            speaker_id=2,
+            day=1,
+            phase="DAY_MEETING",
+            suspected_target_ids=[3],
+        ),
+    ),
+    rules.SpeechState(
+        day=1,
+        character_id=2,
+        name=quality_fixture.characters[1].name,
+        speech="我怀疑3号 C罗。",
+        is_player=False,
+        public_position=rules.PublicPositionV1(
+            speaker_id=2,
+            day=1,
+            phase="DAY_MEETING",
+            suspected_target_ids=[3],
+        ),
+    ),
+    rules.SpeechState(
+        day=1,
+        character_id=3,
+        name=quality_fixture.characters[2].name,
+        speech="我怀疑4号 周深。",
+        is_player=False,
+        public_position=rules.PublicPositionV1(
+            speaker_id=3,
+            day=1,
+            phase="DAY_MEETING",
+            suspected_target_ids=[4],
+        ),
+    ),
+    rules.SpeechState(
+        day=1,
+        character_id=2,
+        name=quality_fixture.characters[1].name,
+        speech="先别慌，局面还在场上。",
+        is_player=False,
+    ),
+]
+quality_fixture_before = quality_fixture.model_dump(mode="json")
+quality_contract = build_npc_speech_quality(quality_fixture)
+quality_contract_json = quality_contract.model_dump_json()
+if (
+    quality_contract.speech_count != 4
+    or quality_contract.actor_count != 2
+    or quality_contract.surface_repeat_count != 1
+    or quality_contract.template_repeat_count != 2
+    or quality_contract.cross_actor_template_repeat_count != 1
+    or quality_contract.near_duplicate_pair_count != 3
+    or quality_contract.cross_actor_near_duplicate_pair_count != 2
+    or quality_contract.evidence_citation_count != 1
+    or quality_contract.information_atom_count != 3
+    or quality_contract.new_information_atom_count != 2
+    or quality_contract.zero_information_increment_count != 2
+    or quality_contract.persona_marker_speech_count != 1
+    or quality_contract.persona_marker_actor_count != 1
+    or quality_fixture.model_dump(mode="json") != quality_fixture_before
+):
+    raise SystemExit("V4.6-A synthetic speech quality fixture changed")
+if (
+    '"role":' in quality_contract_json
+    or '"camp":' in quality_contract_json
+    or "我怀疑3号" in quality_contract_json
+    or "先别慌" in quality_contract_json
+):
+    raise SystemExit("speech quality must not expose role truth or raw speech text")
+strict_quality_payload = quality_contract.model_dump(mode="json")
+strict_quality_payload["unexpected"] = True
+try:
+    NPCSpeechQualityV1.model_validate(strict_quality_payload)
+except ValueError:
+    pass
+else:
+    raise SystemExit("speech quality schemas must reject extra fields")
+for label, field_name, invalid_value in (
+    ("coerced speech count", "speech_count", "4"),
+    ("changed threshold", "near_duplicate_threshold", 0.81),
+    ("inconsistent repeat rate", "surface_repeat_rate", 0.75),
+    ("inconsistent pair count", "speech_pair_count", 99),
+):
+    malformed_quality_payload = quality_contract.model_dump(mode="json")
+    malformed_quality_payload[field_name] = invalid_value
+    try:
+        NPCSpeechQualityV1.model_validate(malformed_quality_payload)
+    except ValueError:
+        pass
+    else:
+        raise SystemExit(f"speech quality should reject {label}")
+late_aggregate_fixture = quality_fixture.model_copy(deep=True)
+late_aggregate_fixture.public_claims.append(
+    rules.PublicClaimState(
+        day=1,
+        character_id=2,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=4,
+        result="werewolf",
+        source="later_day_meeting_claim",
+    )
+)
+if build_npc_speech_quality(late_aggregate_fixture) != quality_contract:
+    raise SystemExit(
+        "terminal public-claim aggregates must not backfill earlier speeches"
+    )
+wrong_player_marker_fixture = quality_fixture.model_copy(deep=True)
+wrong_player_marker_fixture.speeches[0].is_player = True
+try:
+    build_npc_speech_quality(wrong_player_marker_fixture)
+except ValueError:
+    pass
+else:
+    raise SystemExit("speech player markers must match the canonical character")
+player_only_fixture = quality_fixture.model_copy(deep=True)
+player_character = player_only_fixture.characters[0]
+player_only_fixture.speeches = [
+    rules.SpeechState(
+        day=1,
+        character_id=player_character.id,
+        name=player_character.name,
+        speech="这是玩家公开发言。",
+        is_player=True,
+    )
+]
+player_only_quality = build_npc_speech_quality(player_only_fixture)
+if (
+    player_only_quality.speech_count != 0
+    or player_only_quality.actor_count != 0
+    or player_only_quality.phase_counts
+    or player_only_quality.surface_repeat_rate is not None
+    or player_only_quality.near_duplicate_pair_rate is not None
+    or player_only_quality.information_increment_rate is not None
+    or player_only_quality.persona_differentiation_score is not None
+):
+    raise SystemExit("empty NPC speech samples must preserve null denominators")
+if (
+    normalize_speech_text(" 冷静，Calma。 ") != "冷静calma"
+    or canonicalize_speech_template(
+        "我怀疑3号 C罗。",
+        quality_fixture.characters,
+    )
+    != canonicalize_speech_template(
+        "我怀疑4号 周深。",
+        quality_fixture.characters,
+    )
+):
+    raise SystemExit("speech normalization must remove punctuation and target identity")
+hidden_quality_fixture = quality_fixture.model_copy(deep=True)
+hidden_quality_fixture.characters[1].role, hidden_quality_fixture.characters[2].role = (
+    hidden_quality_fixture.characters[2].role,
+    hidden_quality_fixture.characters[1].role,
+)
+hidden_quality_fixture.characters[1].camp, hidden_quality_fixture.characters[2].camp = (
+    hidden_quality_fixture.characters[2].camp,
+    hidden_quality_fixture.characters[1].camp,
+)
+if build_npc_speech_quality(hidden_quality_fixture) != quality_contract:
+    raise SystemExit("speech quality must be invariant to hidden role/camp swaps")
+quality_batch_fixture = aggregate_npc_speech_quality(
+    [quality_contract, quality_contract.model_dump(mode="json")]
+)
+if (
+    quality_batch_fixture.game_count != 2
+    or quality_batch_fixture.speech_count != 8
+    or quality_batch_fixture.template_repeat_count != 4
+    or quality_batch_fixture.evidence_citation_count != 2
+    or quality_batch_fixture.information_atom_count != 6
+    or quality_batch_fixture.new_information_atom_count != 4
+    or quality_batch_fixture.actor_game_count != 4
+    or sum(actor.speech_count for actor in quality_batch_fixture.actors) != 8
+    or sum(actor.game_count for actor in quality_batch_fixture.actors) != 4
+    or quality_batch_fixture.distinct_actor_count
+    != len(quality_batch_fixture.actors)
+    or any(
+        actor.schema_version
+        != NPC_SPEECH_ACTOR_QUALITY_BATCH_SCHEMA_VERSION
+        for actor in quality_batch_fixture.actors
+    )
+):
+    raise SystemExit("speech quality batch must sum raw counts before rates")
+malformed_quality_batch = quality_batch_fixture.model_dump(mode="json")
+malformed_quality_batch["actor_game_count"] += 1
+try:
+    NPCSpeechQualityBatchV1.model_validate(malformed_quality_batch)
+except ValueError:
+    pass
+else:
+    raise SystemExit("speech quality batch should reject broken actor conservation")
+unfinished_quality_fixture = quality_fixture.model_copy(
+    update={"phase": "DAY_MEETING", "winner": None}
+)
+try:
+    build_npc_speech_quality(unfinished_quality_fixture)
+except ValueError:
+    pass
+else:
+    raise SystemExit("speech quality should reject unfinished games")
+if (
+    first["event_schema_version"] != GAME_EVENT_SCHEMA_VERSION
+    or first["event_log_schema_version"] != GAME_EVENT_LOG_SCHEMA_VERSION
+    or first["replay_schema_version"] != GAME_REPLAY_SCHEMA_VERSION
+    or first["ruleset_version"] != GAME_RULESET_VERSION
+    or first["event_log"]["schema_version"] != GAME_EVENT_LOG_SCHEMA_VERSION
+    or not first["event_summary"]["chain_valid"]
+    or not first["event_summary"]["replay_supported"]
+    or first["event_summary"]["event_count"] <= 1
+    or not first["replay"]["supported"]
+    or not first["replay"]["verified"]
+    or first["replay"]["checked_event_count"]
+    != first["event_summary"]["event_count"]
+    or first["replay"]["expected_final_state_digest"]
+    != first["replay"]["actual_final_state_digest"]
+    or first["replay"]["expected_projection_digest"]
+    != first["replay"]["actual_projection_digest"]
+):
+    raise SystemExit("V4.2 rule events must form a fully verified deterministic replay")
+first_events = [
+    rules.GameRuleEventV1.model_validate(event)
+    for event in first["event_log"]["events"]
+]
+if (
+    not validate_game_rule_event_chain(first_events)
+    or [event.sequence for event in first_events]
+    != list(range(1, len(first_events) + 1))
+    or first_events[0].event_type != "game_created"
+    or first_events[0].visibility != "system_private"
+    or not any(event.visibility == "player_private" for event in first_events)
+    or not any(event.visibility == "public" for event in first_events)
+    or len({event.event_id for event in first_events}) != len(first_events)
+    or len({event.command_id for event in first_events}) != len(first_events)
+):
+    raise SystemExit("V4.2 event sequence and visibility scopes must stay explicit")
+tampered_events = list(first_events)
+tampered_events[-1] = tampered_events[-1].model_copy(
+    update={"phase_after": "TAMPERED"}
+)
+if validate_game_rule_event_chain(tampered_events):
+    raise SystemExit("V4.2 event chain must reject a modified sealed event")
+
+non_replayable_state = rules.create_wolf_game_state(
+    rules.GameStartRequest(enable_rag=True),
+    game_id="v4_event_non_replayable",
+    random_seed=20260719,
+)
+non_replayable_report = rules.replay_game_rule_events(
+    game_id=non_replayable_state.game_id,
+    events=non_replayable_state.rule_events,
+    expected_projection=rules.build_rule_replay_projection(non_replayable_state),
+)
+if (
+    non_replayable_report.supported
+    or non_replayable_report.verified
+    or "只支持审计" not in non_replayable_report.reason
+):
+    raise SystemExit("LLM/RAG event logs must not claim unsupported determinism")
+
+collision_source = rules.create_wolf_game_state(
+    rules.GameStartRequest(),
+    game_id="v4_event_collision_source",
+    random_seed=20260721,
+)
+collision_id = "replay_" + rules.canonical_payload_digest(
+    {
+        "game_id": collision_source.game_id,
+        "last_event_digest": collision_source.rule_events[-1].event_digest,
+    }
+)[:24]
+collision_sentinel = rules.create_wolf_game_state(
+    rules.GameStartRequest(),
+    game_id=collision_id,
+    random_seed=20260722,
+)
+rules.GAME_STORE[collision_id] = collision_sentinel
+try:
+    collision_report = rules.replay_game_rule_events(
+        game_id=collision_source.game_id,
+        events=collision_source.rule_events,
+        expected_projection=rules.build_rule_replay_projection(collision_source),
+    )
+    if (
+        collision_report.verified
+        or "ID 冲突" not in collision_report.reason
+        or rules.GAME_STORE.get(collision_id) is not collision_sentinel
+    ):
+        raise SystemExit("a replay ID collision must preserve the existing game slot")
+finally:
+    rules.GAME_STORE.pop(collision_id, None)
+
+read_only_state = rules.create_wolf_game_state(
+    rules.GameStartRequest(),
+    game_id="v4_event_read_only",
+    random_seed=20260720,
+)
+rules.GAME_STORE[read_only_state.game_id] = read_only_state
+try:
+    serialized_before_get = read_only_state.model_dump(mode="json")
+    rules.get_wolf_game_state(read_only_state.game_id)
+    if read_only_state.model_dump(mode="json") != serialized_before_get:
+        raise SystemExit("GET game state must not mutate event-backed rule state")
+    try:
+        rules.get_game_rule_events(read_only_state.game_id)
+    except rules.HTTPException as exc:
+        if exc.status_code != 400:
+            raise
+    else:
+        raise SystemExit("full private event logs must remain locked before game over")
+finally:
+    rules.GAME_STORE.pop(read_only_state.game_id, None)
+if (
+    first["player_strategy"]
+    != build_player_strategy_descriptor(DEFAULT_PLAYER_STRATEGY)
+    or first["player_policy_version"]
+    != PLAYER_STRATEGY_POLICY_VERSIONS["standard"]
+    or first["player_decision_trace"]["schema_version"]
+    != PLAYER_DECISION_TRACE_SCHEMA_VERSION
+    or first["metrics"]["player_performance"]["schema_version"]
+    != PLAYER_PERFORMANCE_SCHEMA_VERSION
+):
+    raise SystemExit("the V3 player baseline must be frozen as the standard V4 strategy")
 balance_diagnostics = first["metrics"]["balance_diagnostics"]
 if (
     balance_diagnostics["winner_reason"] != first["winner_reason"]
@@ -2333,8 +3588,150 @@ if (
     batch["schema_version"] != BATCH_SCHEMA_VERSION
     or batch["metrics_schema_version"] != METRICS_SCHEMA_VERSION
     or batch["metrics"]["schema_version"] != METRICS_SCHEMA_VERSION
+    or batch["player_strategy"]["tier"] != "standard"
+    or batch["metrics"]["player_performance"]["game_count"] != 6
 ):
     raise SystemExit("batch simulation must expose compatible metric versions")
+if (
+    batch["event_schema_version"] != GAME_EVENT_SCHEMA_VERSION
+    or batch["event_log_schema_version"] != GAME_EVENT_LOG_SCHEMA_VERSION
+    or batch["replay_schema_version"] != GAME_REPLAY_SCHEMA_VERSION
+    or batch["ruleset_version"] != GAME_RULESET_VERSION
+    or batch["summary"]["replays_verified"] != 6
+    or batch["summary"]["events_recorded"] <= 6
+    or batch["event_logs_included"]
+    or any(game["event_log"] is not None for game in batch["games"])
+    or any(not game["replay"]["verified"] for game in batch["games"])
+):
+    raise SystemExit("batch simulations must verify replay without bloating default JSON")
+if (
+    batch["experiment_fingerprint_schema_version"]
+    != EXPERIMENT_FINGERPRINT_SCHEMA_VERSION
+    or batch["experiment_fingerprint"]
+    != batch["games"][0]["experiment_fingerprint"]
+    or any(
+        game["experiment_fingerprint"] != batch["experiment_fingerprint"]
+        for game in batch["games"]
+    )
+    or batch["artifact_digest"]
+    != canonical_payload_digest(
+        {key: value for key, value in batch.items() if key != "artifact_digest"}
+    )
+    or batch["trace_capture"]
+    != {
+        "beliefs": True,
+        "stances": True,
+        "vote_calibration": True,
+        "event_logs": False,
+    }
+):
+    raise SystemExit("V4.6-B batch provenance or artifact seal is inconsistent")
+
+ab_arm_a = run_rule_simulation_batch(
+    20260729,
+    1,
+    player_role="seer",
+    capture_beliefs=False,
+    capture_stances=False,
+    capture_vote_calibration=False,
+)
+ab_arm_b = deepcopy(ab_arm_a)
+candidate_fingerprint = deepcopy(ab_arm_b["experiment_fingerprint"])
+candidate_component = next(
+    component
+    for component in candidate_fingerprint["components"]
+    if component["active"]
+)
+candidate_component["digest"] = "0" * 64
+fingerprint_header = {
+    key: candidate_fingerprint[key]
+    for key in ("schema_version", "fingerprint_algorithm", "execution_mode")
+}
+candidate_fingerprint["configuration_fingerprint"] = canonical_payload_digest(
+    {**fingerprint_header, "components": candidate_fingerprint["components"]}
+)
+candidate_fingerprint["effective_fingerprint"] = canonical_payload_digest(
+    {
+        **fingerprint_header,
+        "components": [
+            {"name": component["name"], "digest": component["digest"]}
+            for component in candidate_fingerprint["components"]
+            if component["active"]
+        ],
+    }
+)
+ab_arm_b["experiment_fingerprint"] = candidate_fingerprint
+for game in ab_arm_b["games"]:
+    game["experiment_fingerprint"] = candidate_fingerprint
+    game.pop("result_digest")
+    game["result_digest"] = canonical_payload_digest(game)
+ab_arm_b.pop("artifact_digest")
+ab_arm_b["artifact_digest"] = canonical_payload_digest(ab_arm_b)
+ab_report = compare_simulation_artifacts([ab_arm_a], [ab_arm_b])
+ab_outcomes = ab_report["paired_outcomes"]
+if (
+    ab_report["schema_version"] != ARTIFACT_AB_SCHEMA_VERSION
+    or ab_report["comparison_mode"] != "rule_only_artifacts_no_llm"
+    or ab_report["llm_evaluated"]
+    or ab_report["prompt_effect_evaluated"]
+    or ab_report["cohort_count"] != 1
+    or ab_outcomes["same_gameplay_count"] != 1
+    or sum(
+        ab_outcomes[key]
+        for key in (
+            "a_only_win_count",
+            "b_only_win_count",
+            "same_win_count",
+            "same_loss_count",
+        )
+    )
+    != 1
+    or ab_report["report_digest"]
+    != canonical_payload_digest(
+        {
+            key: value
+            for key, value in ab_report.items()
+            if key != "report_digest"
+        }
+    )
+    or any(
+        sum(comparison["paired_cohort_counts"].values()) != 1
+        for comparison in ab_report["speech_quality_comparisons"].values()
+    )
+):
+    raise SystemExit("V4.6-B artifact A/B report does not conserve paired cohorts")
+tampered_arm = deepcopy(ab_arm_b)
+tampered_arm["games"][0]["winner"] = (
+    "werewolf"
+    if tampered_arm["games"][0]["winner"] == "good"
+    else "good"
+)
+tampered_arm.pop("artifact_digest")
+tampered_arm["artifact_digest"] = canonical_payload_digest(tampered_arm)
+try:
+    compare_simulation_artifacts([ab_arm_a], [tampered_arm])
+except ValueError:
+    pass
+else:
+    raise SystemExit("artifact A/B must reject a game with a stale result digest")
+for incomplete_field, invalid_value in (
+    ("games_requested", ab_arm_a["games_requested"] + 1),
+    ("start_seed", ab_arm_a["start_seed"] + 1),
+):
+    incomplete_arm_a = deepcopy(ab_arm_a)
+    incomplete_arm_b = deepcopy(ab_arm_b)
+    for incomplete_arm in (incomplete_arm_a, incomplete_arm_b):
+        incomplete_arm[incomplete_field] = invalid_value
+        incomplete_arm.pop("artifact_digest")
+        incomplete_arm["artifact_digest"] = canonical_payload_digest(incomplete_arm)
+    try:
+        compare_simulation_artifacts([incomplete_arm_a], [incomplete_arm_b])
+    except ValueError:
+        pass
+    else:
+        raise SystemExit(
+            "artifact A/B must reject equally incomplete declared seed cohorts"
+        )
 batch_balance = batch["metrics"]["balance_diagnostics"]
 if (
     sum(batch_balance["winner_reason_counts"].values()) != 6
@@ -2523,6 +3920,41 @@ if (
     )
 ):
     raise SystemExit("batch simulation must conserve controlled speech reasons")
+speech_quality_summary = batch["npc_speech_quality_summary"]
+if (
+    batch["npc_speech_quality_schema_version"]
+    != NPC_SPEECH_QUALITY_SCHEMA_VERSION
+    or batch["npc_speech_quality_batch_schema_version"]
+    != NPC_SPEECH_QUALITY_BATCH_SCHEMA_VERSION
+    or speech_quality_summary["schema_version"]
+    != NPC_SPEECH_QUALITY_BATCH_SCHEMA_VERSION
+    or speech_quality_summary["game_count"] != 6
+    or speech_quality_summary["speech_count"]
+    != sum(
+        game["npc_speech_quality"]["speech_count"]
+        for game in batch["games"]
+    )
+    or speech_quality_summary["evidence_citation_count"]
+    != sum(
+        game["npc_speech_quality"]["evidence_citation_count"]
+        for game in batch["games"]
+    )
+    or speech_quality_summary["new_information_atom_count"]
+    != sum(
+        game["npc_speech_quality"]["new_information_atom_count"]
+        for game in batch["games"]
+    )
+    or sum(speech_quality_summary["phase_counts"].values())
+    != speech_quality_summary["speech_count"]
+):
+    raise SystemExit("V4.6-A batch speech quality counts must conserve games")
+if speech_quality_summary["cross_actor_pair_count"] > 0 and not math.isclose(
+    speech_quality_summary["persona_differentiation_score"]
+    + speech_quality_summary["mean_cross_actor_template_similarity"],
+    1.0,
+    abs_tol=0.000002,
+):
+    raise SystemExit("persona differentiation must complement cross-actor similarity")
 stance_alignment_total = sum(
     batch["stance_summary"]["alignment_counts"].values()
 )
@@ -2597,6 +4029,113 @@ for game in batch["games"]:
         if (fake[denominator_name] == 0) != (fake[rate_name] is None):
             raise SystemExit("empty metric samples must map to null rates exactly")
 
+benchmark = run_player_strategy_benchmark(20260719, 2)
+if (
+    benchmark["schema_version"] != PLAYER_BENCHMARK_SCHEMA_VERSION
+    or benchmark["games_requested"] != 36
+    or benchmark["games_completed"] != 36
+    or benchmark["cohorts_requested"] != 12
+    or benchmark["cohorts_completed"] != 12
+    or benchmark["player_roles"] != list(BENCHMARK_PLAYER_ROLES)
+    or [item["tier"] for item in benchmark["strategies"]]
+    != list(PLAYER_STRATEGY_TIERS)
+):
+    raise SystemExit("V4.1-A benchmark must complete the 3 x 6 x 2 matrix")
+compatibility_game = next(
+    game
+    for game in benchmark["games"]
+    if game["seed"] == 20260719
+    and game["player_strategy"]["tier"] == "standard"
+    and game["metrics"]["player_performance"]["player_role"] == "werewolf"
+)
+if (
+    compatibility_game["gameplay_digest_projection_version"]
+    != GAMEPLAY_DIGEST_PROJECTION_VERSION
+    or compatibility_game["gameplay_digest"]
+    != "0f6a4316e1458fee20fafd349706a0313d24f4de6a7bb6d231f99a8211567227"
+):
+    raise SystemExit("V4.2 event metadata must preserve the frozen v14 gameplay digest")
+double_black_check_regression = run_rule_simulation(
+    20260765,
+    player_role="hunter",
+    player_strategy="beginner",
+    capture_beliefs=False,
+    capture_stances=False,
+    capture_vote_calibration=False,
+)
+if double_black_check_regression["winner"] not in {"good", "werewolf"}:
+    raise SystemExit(
+        "double black-check wolf-story regression must reach a legal winner"
+    )
+benchmark_metrics = benchmark["metrics"]
+if (
+    benchmark_metrics["game_count"] != 36
+    or benchmark_metrics["cohort_count"] != 12
+    or benchmark_metrics["strategy_count"] != 3
+    or set(benchmark_metrics["by_strategy"]) != set(PLAYER_STRATEGY_TIERS)
+    or any(
+        group["game_count"] != 12
+        or group["player_performance"]["game_count"] != 12
+        for group in benchmark_metrics["by_strategy"].values()
+    )
+):
+    raise SystemExit("V4.1-A strategy groups must conserve all benchmark games")
+if any(
+    set(benchmark_metrics["by_strategy_and_role"][strategy])
+    != set(BENCHMARK_PLAYER_ROLES)
+    or any(
+        role_group["game_count"] != 2
+        for role_group in benchmark_metrics[
+            "by_strategy_and_role"
+        ][strategy].values()
+    )
+    for strategy in PLAYER_STRATEGY_TIERS
+):
+    raise SystemExit("V4.1-A role-paired groups must contain two games per role")
+benchmark_cohorts = {}
+for game in benchmark["games"]:
+    performance = game["metrics"]["player_performance"]
+    cohort_key = (game["seed"], performance["player_role"])
+    cohort = benchmark_cohorts.setdefault(
+        cohort_key,
+        {"layouts": set(), "strategies": set(), "traces": set()},
+    )
+    cohort["layouts"].add(game["initial_layout_digest"])
+    cohort["strategies"].add(game["player_strategy"]["tier"])
+    cohort["traces"].add(
+        json.dumps(
+            game["player_decision_trace"],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    if (
+        game["belief_trace"] is not None
+        or game["stance_trace"] is not None
+        or game["vote_calibration_trace"] is not None
+    ):
+        raise SystemExit("paired benchmark defaults must omit detailed shadow traces")
+if any(
+    len(cohort["layouts"]) != 1
+    or cohort["strategies"] != set(PLAYER_STRATEGY_TIERS)
+    for cohort in benchmark_cohorts.values()
+):
+    raise SystemExit("strategies must share one initial layout per seed/role cohort")
+if not any(
+    len(cohort["traces"]) > 1
+    for cohort in benchmark_cohorts.values()
+):
+    raise SystemExit("the three player strategies must produce distinct legal actions")
+for outcome in benchmark_metrics["paired_outcomes"].values():
+    if (
+        outcome["a_only_win_count"]
+        + outcome["b_only_win_count"]
+        + outcome["same_win_count"]
+        + outcome["same_loss_count"]
+        != outcome["cohort_count"]
+    ):
+        raise SystemExit("paired benchmark outcomes must conserve every cohort")
+
 def assert_finite_metrics(value):
     if isinstance(value, dict):
         for nested in value.values():
@@ -2608,7 +4147,9 @@ def assert_finite_metrics(value):
         raise SystemExit("metric payload must not contain NaN or infinity")
 
 assert_finite_metrics(batch["metrics"])
+assert_finite_metrics(batch["npc_speech_quality_summary"])
 assert_finite_metrics(batch["vote_calibration_summary"])
+assert_finite_metrics(benchmark["metrics"])
 if any(game_id.startswith("simulation_") for game_id in rules.GAME_STORE):
     raise SystemExit("completed simulations must be removed from the live game store")
 if rules.HYBRID_INDEX.status()["initialized"]:
@@ -2635,6 +4176,10 @@ if [game["gameplay_digest"] for game in compact_batch["games"]] != [
     game["gameplay_digest"] for game in batch["games"][:2]
 ]:
     raise SystemExit("compact shadow mode must preserve gameplay digests")
+if [game["npc_speech_quality"] for game in compact_batch["games"]] != [
+    game["npc_speech_quality"] for game in batch["games"][:2]
+]:
+    raise SystemExit("trace capture must not change NPC speech quality")
 
 without_vote_calibration = run_rule_simulation_batch(
     20260719,
@@ -2653,6 +4198,11 @@ if [game["gameplay_digest"] for game in without_vote_calibration["games"]] != [
     game["gameplay_digest"] for game in batch["games"][:2]
 ]:
     raise SystemExit("M15-A/B trace capture must not change gameplay digests")
+if (
+    without_vote_calibration["npc_speech_quality_summary"]
+    != compact_batch["npc_speech_quality_summary"]
+):
+    raise SystemExit("vote trace capture must not change speech-quality aggregation")
 
 belief_only_batch = run_rule_simulation_batch(
     20260719,
@@ -4055,7 +5605,22 @@ if without_stances["gameplay_digest"] != first["gameplay_digest"]:
     raise SystemExit("shadow stance capture must not change gameplay")
 
 left.phase = "VOTE"
-choice_before_hidden_swap = _choose_public_player_target(left, "hidden_swap_check")
+public_pressure_target = next(
+    character
+    for character in left.characters
+    if not character.is_player
+)
+left.public_claims.append(
+    rules.PublicClaimState(
+        day=1,
+        character_id=public_pressure_target.id,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=public_pressure_target.id,
+        result="werewolf",
+        source="strategy_context_fixture",
+    )
+)
 hidden_swap = left.model_copy(deep=True)
 wolf = next(
     character
@@ -4069,12 +5634,45 @@ good = next(
 )
 wolf.role, good.role = good.role, wolf.role
 wolf.camp, good.camp = good.camp, wolf.camp
-choice_after_hidden_swap = _choose_public_player_target(
-    hidden_swap,
-    "hidden_swap_check",
-)
-if choice_before_hidden_swap != choice_after_hidden_swap:
-    raise SystemExit("good-player policy must be invariant to unseen NPC role swaps")
+left_context = build_player_strategy_context(left)
+hidden_context = build_player_strategy_context(hidden_swap)
+if (
+    player_strategy_context_digest(left_context)
+    != player_strategy_context_digest(hidden_context)
+):
+    raise SystemExit("player strategy context must hide unseen NPC role swaps")
+candidate_ids = [
+    character.id
+    for character in left.characters
+    if character.alive and not character.is_player
+]
+if best_candidate_ids(
+    left_context,
+    candidate_ids,
+    strategy="beginner",
+    purpose="hidden_context_check",
+) == best_candidate_ids(
+    left_context,
+    candidate_ids,
+    strategy="expert",
+    purpose="hidden_context_check",
+):
+    raise SystemExit("constructed public context must separate beginner and expert ranking")
+for player_strategy in PLAYER_STRATEGY_TIERS:
+    choice_before_hidden_swap = _choose_public_player_target(
+        left,
+        "hidden_swap_check",
+        player_strategy=player_strategy,
+    )
+    choice_after_hidden_swap = _choose_public_player_target(
+        hidden_swap,
+        "hidden_swap_check",
+        player_strategy=player_strategy,
+    )
+    if choice_before_hidden_swap != choice_after_hidden_swap:
+        raise SystemExit(
+            f"{player_strategy} good-player policy must be hidden-role invariant"
+        )
 
 print("headless simulation smoke test passed")
 '''
@@ -4083,11 +5681,24 @@ print("headless simulation smoke test passed")
         cwd=BACKEND_DIR,
         fail_message="headless deterministic simulation smoke test failed",
     )
-    print("[OK] Simulations, hidden-information matrices, V3.1-O balance, and V3.2 badge-flow/speech policies are deterministic.")
+    print("[OK] Simulations, V4.1-A player strategies, hidden-information matrices, and V3 balance policies are deterministic.")
+
+
+def check_game_persistence() -> None:
+    python_bin = Path(sys.executable)
+    run_command(
+        [str(python_bin), str(GAME_PERSISTENCE_CHECK_FILE)],
+        cwd=ROOT_DIR,
+        fail_message="V4.3-A/B persistence and idempotency checks failed",
+    )
+    print(
+        "[OK] V4.3-A/B saves and command results are atomic, recoverable, "
+        "integrity-checked, and isolated from simulation/replay."
+    )
 
 
 def check_backend_search() -> None:
-    python_bin = BACKEND_VENV_PYTHON if BACKEND_VENV_PYTHON.exists() else Path(sys.executable)
+    python_bin = Path(sys.executable)
     smoke_code = """
 from app.main import reload_config, search_knowledge
 from app.main import get_relationship_hint, get_relationship_level
@@ -4163,7 +5774,7 @@ print("backend search matched", len(cases), "cases")
 
 
 def check_resident_chat() -> None:
-    python_bin = BACKEND_VENV_PYTHON if BACKEND_VENV_PYTHON.exists() else Path(sys.executable)
+    python_bin = Path(sys.executable)
     smoke_code = r'''
 import json
 import tempfile
@@ -4300,11 +5911,12 @@ print("resident chat smoke test passed")
 
 
 def check_wolf_game_start() -> None:
-    python_bin = BACKEND_VENV_PYTHON if BACKEND_VENV_PYTHON.exists() else Path(sys.executable)
+    python_bin = Path(sys.executable)
     smoke_code = """
 from collections import Counter
 import json
 from pathlib import Path
+import tempfile
 
 from fastapi import HTTPException
 
@@ -4322,7 +5934,7 @@ from app.main import DayMeetingState, EliminationState, GAME_STORE, GameStartReq
 from app.main import HunterShotRequest, HunterShotState
 from app.main import NightActionRequest, NightActionState, NightResolutionState, NightResolveRequest
 from app.main import EndFreeActivityRequest, NpcSpeechRequest
-from app.main import PlayerSpeechRequest
+from app.main import PlayerSpeechPreviewRequest, PlayerSpeechRequest
 from app.main import PlayerVoteRequest, PrivateChatRequest, PrivateConversationState
 from app.main import BadgeTransferRequest, SheriffElectionState, SheriffEventState, SheriffMeetingOrderRequest, SheriffNominationRequest
 from app.main import SheriffSignupRequest, SheriffSpeechRequest, SheriffVoteRequest
@@ -4333,11 +5945,17 @@ from app.main import get_game_summary, get_wolf_game_state, initialize_social_st
 from app.main import resolve_hunter_shot, resolve_night
 from app.main import start_wolf_game, submit_night_action
 from app.main import submit_and_resolve_all_votes, submit_and_resolve_sheriff_vote
-from app.main import submit_player_sheriff_speech, submit_player_speech
+from app.main import preview_player_speech, submit_player_sheriff_speech, submit_player_speech
 from app.main import submit_sheriff_meeting_order, submit_sheriff_nomination
 from app.main import submit_badge_transfer, submit_sheriff_signup, submit_sheriff_withdrawal
+from app.player_speech import (
+    PLAYER_SPEECH_PREVIEW_SCHEMA_VERSION,
+    PLAYER_SPEECH_UNDERSTANDING_SCHEMA_VERSION,
+)
 
 captured_validation_observations = []
+validation_temp_dir = tempfile.TemporaryDirectory(prefix="agent-town-smoke-")
+validation_temp_root = Path(validation_temp_dir.name)
 
 class InMemoryObservationRecorder:
     def record_event(self, event):
@@ -4345,18 +5963,117 @@ class InMemoryObservationRecorder:
 
 main_module.LLM_OBSERVABILITY_RECORDER = InMemoryObservationRecorder()
 
-forced_witch_response = start_wolf_game(
-    GameStartRequest(player_name="女巫测试玩家", player_role="witch")
+def assert_player_role_projection(expected_role):
+    start_response = start_wolf_game(
+        GameStartRequest(
+            player_name=f"{expected_role}投影测试",
+            player_role=expected_role,
+        )
+    )
+    raw_state = GAME_STORE[start_response.game_id]
+    state_response = get_wolf_game_state(start_response.game_id)
+    if "player_private_info" in start_response.model_dump(mode="json"):
+        raise SystemExit("GameStartResponse must not include the player-private projection")
+    if Counter(character.role for character in raw_state.characters) != Counter(main_module.DEFAULT_WOLF_ROLES):
+        raise SystemExit(f"{expected_role} must preserve the canonical role pool")
+
+    player_id = raw_state.player_character_id
+    start_player = next(item for item in start_response.characters if item.is_player)
+    state_player = next(item for item in state_response.characters if item.is_player)
+    if (
+        start_player.role_visible_to_player != expected_role
+        or state_player.role_visible_to_player != expected_role
+    ):
+        raise SystemExit(f"{expected_role} player must see exactly their own role")
+
+    expected_visible_ids = {player_id}
+    if expected_role == "werewolf":
+        expected_visible_ids = {
+            character.id
+            for character in raw_state.characters
+            if character.role == "werewolf"
+        }
+    for label, characters in (
+        ("start", start_response.characters),
+        ("state", state_response.characters),
+    ):
+        visible_roles = {
+            character.id: character.role_visible_to_player
+            for character in characters
+            if character.role_visible_to_player is not None
+        }
+        if set(visible_roles) != expected_visible_ids:
+            raise SystemExit(
+                f"{label} {expected_role} role visibility leaked or omitted a seat"
+            )
+        if expected_role == "werewolf":
+            if set(visible_roles.values()) != {"werewolf"}:
+                raise SystemExit("wolf-visible seats must all be wolves")
+        elif visible_roles != {player_id: expected_role}:
+            raise SystemExit(f"non-wolf {expected_role} must see no NPC role")
+
+    private = state_response.player_private_info
+    expected_private_fields = {
+        "role",
+        "camp",
+        "last_check_result",
+        "wolf_teammates",
+        "witch_attacked_target",
+        "witch_antidote_available",
+        "witch_poison_available",
+        "hunter_can_shoot",
+        "action_history",
+    }
+    if set(private.model_dump(mode="json")) != expected_private_fields:
+        raise SystemExit("player_private_info field allowlist changed")
+    expected_camp = "werewolf" if expected_role == "werewolf" else "good"
+    if private.role != expected_role or private.camp != expected_camp:
+        raise SystemExit(f"{expected_role} private role/camp mismatch")
+
+    expected_teammate_ids = (
+        expected_visible_ids - {player_id}
+        if expected_role == "werewolf"
+        else set()
+    )
+    actual_teammate_ids = {int(item["id"]) for item in private.wolf_teammates}
+    if actual_teammate_ids != expected_teammate_ids:
+        raise SystemExit(f"{expected_role} wolf teammate projection mismatch")
+    if any(set(item) != {"id", "name", "alive"} for item in private.wolf_teammates):
+        raise SystemExit("wolf teammate rows must not expose role/camp")
+
+    is_witch = expected_role == "witch"
+    if (
+        private.witch_antidote_available != is_witch
+        or private.witch_poison_available != is_witch
+    ):
+        raise SystemExit(f"{expected_role} potion projection mismatch")
+    if not is_witch and private.witch_attacked_target is not None:
+        raise SystemExit(f"{expected_role} must not receive the witch knife target")
+    if private.last_check_result is not None or private.hunter_can_shoot:
+        raise SystemExit(f"{expected_role} initial private state contains premature results")
+    return start_response, raw_state, state_response
+
+
+role_projection_fixtures = {
+    role: assert_player_role_projection(role)
+    for role in ("werewolf", "seer", "witch", "hunter", "guard", "villager")
+}
+forced_witch_response, forced_witch_state, forced_witch_state_response = (
+    role_projection_fixtures["witch"]
 )
-forced_witch_state = GAME_STORE[forced_witch_response.game_id]
-forced_witch_player = forced_witch_state.characters[0]
-if forced_witch_player.role != "witch":
-    raise SystemExit("specified player role should assign witch to the player")
-if Counter(character.role for character in forced_witch_state.characters) != Counter(main_module.DEFAULT_WOLF_ROLES):
-    raise SystemExit("specified player role must preserve the twelve-player role pool")
-witch_private = get_wolf_game_state(forced_witch_response.game_id).player_private_info
+forced_witch_player = next(
+    character for character in forced_witch_state.characters if character.is_player
+)
+witch_private = forced_witch_state_response.player_private_info
 if not witch_private.witch_antidote_available or not witch_private.witch_poison_available:
     raise SystemExit("player witch should receive both potion resources")
+
+if GameStartRequest().enable_llm_validation is not True:
+    raise SystemExit("omitted LLM validation preference must preserve strict mode")
+if "llm_validation_enabled" in main_module.WolfGameState.model_fields:
+    raise SystemExit(
+        "per-game LLM validation mode must not change the persisted WolfGameState shape"
+    )
 
 response = start_wolf_game(
     GameStartRequest(player_name="测试玩家", enable_rag=True)
@@ -4365,10 +6082,21 @@ if response.day != 1 or response.phase != "NIGHT":
     raise SystemExit("new game should start at day 1 NIGHT")
 if len(response.characters) != 12:
     raise SystemExit("new game should create 12 characters")
+if response.llm_enabled or response.llm_validation_enabled:
+    raise SystemExit("validation cannot be effective when this game did not enable LLM")
 
 player_view = next(character for character in response.characters if character.is_player)
 npc_views = [character for character in response.characters if not character.is_player]
 game_state = GAME_STORE[response.game_id]
+creation_command = game_state.rule_events[0].command
+if (
+    creation_command.get("start_request", {}).get("enable_llm_validation")
+    is not True
+    or creation_command.get("effective_llm_validation_enabled") is not False
+):
+    raise SystemExit(
+        "game_created must seal requested and effective LLM validation modes"
+    )
 player = next(character for character in game_state.characters if character.is_player)
 if player_view.role_visible_to_player is None:
     raise SystemExit("player role should be visible to player")
@@ -4401,6 +6129,8 @@ if dict(role_counts) != expected_roles:
     raise SystemExit(f"unexpected role assignment: {role_counts}")
 
 state_response = get_wolf_game_state(response.game_id)
+if state_response.llm_validation_enabled:
+    raise SystemExit("state projection must report the effective validation mode")
 if state_response.player_private_info.role != player_view.role_visible_to_player:
     raise SystemExit("state response should keep player private role")
 if len(state_response.characters) != 12:
@@ -4760,11 +6490,16 @@ def select_test_fake_seer(characters):
             return fake_seer_id
     raise SystemExit("test fixture must find a deterministic fake-seer campaign seed")
 
-def make_rule_test_game(roles):
+def make_rule_test_game(roles, enable_llm_validation=True):
     if len(roles) > 12:
         raise SystemExit("rule test role list cannot exceed 12 characters")
     expanded_roles = list(roles) + ["villager"] * (12 - len(roles))
-    response = start_wolf_game(GameStartRequest(player_name="规则测试"))
+    response = start_wolf_game(
+        GameStartRequest(
+            player_name="规则测试",
+            enable_llm_validation=enable_llm_validation,
+        )
+    )
     game_state = GAME_STORE[response.game_id]
     for index, role in enumerate(expanded_roles):
         character = game_state.characters[index]
@@ -4831,6 +6566,23 @@ seat_boundary_checks = [
 ]
 if len(seat_boundary_checks) != 1 or seat_boundary_checks[0].get("target_id") != 12:
     raise SystemExit("seat 12 black-check parsing must produce exactly one target")
+suffix_result_parse = main_module.parse_player_speech(
+    seat_boundary_state,
+    "我是预言家，我查验了3号，结果是狼人。",
+)
+suffix_result_checks = [
+    claim
+    for claim in suffix_result_parse.claims
+    if claim.get("claim_type") == "seer_check"
+]
+if (
+    len(suffix_result_checks) != 1
+    or suffix_result_checks[0].get("target_id") != 3
+    or suffix_result_checks[0].get("result") != "werewolf"
+):
+    raise SystemExit(
+        "a comma-separated result suffix must remain attached to its check target"
+    )
 
 # A first seer claim made during the sheriff campaign (including PK) must carry
 # a badge flow. Rejection is mutation-free. When the same speech reports a
@@ -4845,6 +6597,34 @@ required_sheriff_flow_state.sheriff_election = SheriffElectionState(
     candidates=[1],
     speech_order=[1],
 )
+required_flow_state_before_preview = json.dumps(
+    required_sheriff_flow_state.model_dump(mode="json"),
+    ensure_ascii=False,
+    sort_keys=True,
+)
+rejected_required_flow_preview = preview_player_speech(
+    PlayerSpeechPreviewRequest(
+        game_id=required_sheriff_flow_state.game_id,
+        character_id=1,
+        speech_kind="sheriff",
+        speech="我是预言家，昨晚验了2号是金水。",
+    )
+)
+if (
+    rejected_required_flow_preview.accepted
+    or rejected_required_flow_preview.preview_fingerprint
+    or "必须同时交代警徽流"
+    not in " ".join(rejected_required_flow_preview.errors)
+    or json.dumps(
+        required_sheriff_flow_state.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    != required_flow_state_before_preview
+):
+    raise SystemExit(
+        "a rejected sheriff preview must explain the missing flow without mutation"
+    )
 try:
     submit_player_sheriff_speech(
         SheriffSpeechRequest(
@@ -4865,14 +6645,49 @@ if (
     or required_sheriff_flow_state.sheriff_election.current_index != 0
 ):
     raise SystemExit("a missing mandatory sheriff badge flow must not mutate public state")
+required_flow_input = main_module.BadgeFlowInput(
+    primary_target_id=3,
+    secondary_target_id=4,
+)
+accepted_required_flow_preview = preview_player_speech(
+    PlayerSpeechPreviewRequest(
+        game_id=required_sheriff_flow_state.game_id,
+        character_id=1,
+        speech_kind="sheriff",
+        speech="我是预言家，昨晚验了2号是金水。",
+        badge_flow=required_flow_input,
+    )
+)
+if (
+    not accepted_required_flow_preview.accepted
+    or accepted_required_flow_preview.schema_version
+    != PLAYER_SPEECH_PREVIEW_SCHEMA_VERSION
+    or accepted_required_flow_preview.understanding.schema_version
+    != PLAYER_SPEECH_UNDERSTANDING_SCHEMA_VERSION
+    or accepted_required_flow_preview.normalized_badge_flow is None
+    or accepted_required_flow_preview.normalized_badge_flow.primary_target_id
+    != 3
+    or accepted_required_flow_preview.normalized_badge_flow.claimed_good_anchor_id
+    != 2
+    or len(accepted_required_flow_preview.preview_fingerprint) != 64
+    or json.dumps(
+        required_sheriff_flow_state.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    != required_flow_state_before_preview
+):
+    raise SystemExit(
+        "an accepted sheriff preview must normalize claims and badge flow without mutation"
+    )
 submit_player_sheriff_speech(
     SheriffSpeechRequest(
         game_id=required_sheriff_flow_state.game_id,
         character_id=1,
         speech="我是预言家，昨晚验了2号是金水。",
-        badge_flow=main_module.BadgeFlowInput(
-            primary_target_id=3,
-            secondary_target_id=4,
+        badge_flow=required_flow_input,
+        preview_fingerprint=(
+            accepted_required_flow_preview.preview_fingerprint
         ),
     )
 )
@@ -6530,7 +8345,7 @@ class StubLLMClient:
         )
 
 original_llm_client = main_module.LLM_CLIENT
-recovered_validation_log_path = Path("/tmp/agent-town-llm-recovered-smoke.jsonl")
+recovered_validation_log_path = validation_temp_root / "llm-recovered.jsonl"
 original_recovered_validation_log_path = main_module.LLM_VALIDATION_LOG_FILE
 try:
     recovered_validation_log_path.unlink(missing_ok=True)
@@ -6812,7 +8627,7 @@ validation_failure_rag = [
     },
 ]
 always_invalid_client = AlwaysInvalidStructuredLLMClient()
-validation_log_path = Path("/tmp/agent-town-llm-validation-smoke.jsonl")
+validation_log_path = validation_temp_root / "llm-validation.jsonl"
 original_validation_log_path = main_module.LLM_VALIDATION_LOG_FILE
 try:
     validation_log_path.unlink(missing_ok=True)
@@ -6916,6 +8731,448 @@ finally:
     main_module.LLM_CLIENT = original_llm_client
     main_module.LLM_VALIDATION_LOG_FILE = original_validation_log_path
     validation_log_path.unlink(missing_ok=True)
+
+zero_validation_state = make_rule_test_game(
+    ["villager", "villager", "werewolf", "seer", "guard", "witch", "hunter"],
+    enable_llm_validation=False,
+)
+zero_validation_state.llm_enabled = True
+zero_validation_state.phase = "DAY_MEETING"
+zero_validation_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[2],
+)
+zero_validation_speaker = zero_validation_state.characters[1]
+zero_validation_target = zero_validation_state.characters[0]
+zero_validation_speaker.memory_summary = "关闭校验前的私有记忆。"
+zero_validation_state.speeches = [
+    SpeechState(
+        day=1,
+        character_id=zero_validation_target.id,
+        name=zero_validation_target.name,
+        speech="我没什么信息，先过吧。",
+        is_player=True,
+    ),
+]
+if (
+    main_module.is_llm_validation_enabled(zero_validation_state)
+    or main_module.get_llm_validation_attempt_limit(zero_validation_state) != 0
+    or zero_validation_state.rule_events[0].command.get("start_request", {}).get(
+        "enable_llm_validation"
+    )
+    is not False
+    or get_wolf_game_state(zero_validation_state.game_id).llm_validation_enabled
+):
+    raise SystemExit(
+        "a creation-sealed disabled preference must project zero-validation mode"
+    )
+
+legacy_validation_state = zero_validation_state.model_copy(deep=True)
+legacy_creation = legacy_validation_state.rule_events[0]
+legacy_command = dict(legacy_creation.command)
+legacy_start_request = dict(legacy_command.get("start_request", {}))
+legacy_start_request.pop("enable_llm_validation", None)
+legacy_command["start_request"] = legacy_start_request
+legacy_validation_state.rule_events[0] = legacy_creation.model_copy(
+    update={"command": legacy_command}
+)
+if (
+    not main_module.is_llm_validation_enabled(legacy_validation_state)
+    or main_module.get_llm_validation_attempt_limit(legacy_validation_state) != 5
+):
+    raise SystemExit("legacy game_created events must preserve five-attempt strict mode")
+
+class ZeroValidationTextClient:
+    def __init__(self, text="", derive_public_target=False):
+        self.text = text
+        self.derive_public_target = derive_public_target
+        self.text_calls = 0
+        self.object_calls = 0
+        self.contexts = []
+        self.max_attempts = []
+        self.last_text = ""
+        self.unsafe_target_id = None
+
+    def status(self):
+        return {
+            "enabled": True,
+            "provider": "stub",
+            "model": "stub-model",
+            "configured": True,
+            "base_url": "",
+        }
+
+    def generate_json_object(
+        self,
+        _system_prompt,
+        _context,
+        _fallback_object=None,
+        max_attempts=None,
+    ):
+        self.object_calls += 1
+        raise AssertionError(
+            "zero-validation mode must not ask the LLM for a strategy object"
+        )
+
+    def generate_json_text(
+        self,
+        _system_prompt,
+        context,
+        _fallback_text,
+        max_attempts=None,
+    ):
+        self.text_calls += 1
+        self.contexts.append(context)
+        self.max_attempts.append(max_attempts)
+        generated_text = self.text
+        if self.derive_public_target:
+            public_plan = context.get("public_plan") or {}
+            referenced_ids = set()
+            for key in [
+                "primary_target",
+                "secondary_target",
+                "stance_target",
+                "provisional_vote_target",
+            ]:
+                value = public_plan.get(key)
+                if isinstance(value, dict) and isinstance(value.get("id"), int):
+                    referenced_ids.add(value["id"])
+            for key in ["question", "verification"]:
+                value = public_plan.get(key)
+                if isinstance(value, dict) and isinstance(value.get("target_id"), int):
+                    referenced_ids.add(value["target_id"])
+            speaker_id = int(context.get("speaker", {}).get("id", 0))
+            self.unsafe_target_id = next(
+                character_id
+                for character_id in range(1, 13)
+                if character_id != speaker_id and character_id not in referenced_ids
+            )
+            generated_text = (
+                f"我是预言家，我查验{self.unsafe_target_id}号是狼人，"
+                f"我的狼队友是{self.unsafe_target_id}号，今天投{self.unsafe_target_id}号。"
+            )
+        self.last_text = generated_text
+        return LLMGeneration(
+            text=generated_text,
+            used_llm=True,
+            provider="stub",
+            model="stub-model",
+            raw_response_text=json.dumps({"text": generated_text}, ensure_ascii=False),
+        )
+
+zero_validation_log_path = validation_temp_root / "llm-validation-disabled.jsonl"
+zero_validation_observation_count = len(captured_validation_observations)
+zero_validation_failure_count = len(zero_validation_state.llm_validation_failures)
+original_validate_llm_rewrite = main_module.validate_llm_rewrite
+unexpected_validator_calls = []
+
+def reject_unexpected_semantic_validation(*args, **kwargs):
+    unexpected_validator_calls.append((args, kwargs))
+    raise AssertionError(
+        "zero-validation mode must not call the semantic text validator"
+    )
+
+try:
+    zero_validation_log_path.unlink(missing_ok=True)
+    main_module.LLM_VALIDATION_LOG_FILE = zero_validation_log_path
+    main_module.validate_llm_rewrite = reject_unexpected_semantic_validation
+
+    structured_zero_client = ZeroValidationTextClient(derive_public_target=True)
+    main_module.LLM_CLIENT = structured_zero_client
+    zero_validation_gameplay_before = (
+        list(zero_validation_state.speeches),
+        list(zero_validation_state.public_claims),
+        list(zero_validation_state.public_logs),
+        zero_validation_speaker.memory_summary,
+    )
+    (
+        zero_selected_target,
+        zero_selected_claims,
+        zero_rag_context,
+        zero_generation,
+        zero_plan,
+    ) = main_module.generate_structured_public_speech_plan(
+        zero_validation_state,
+        zero_validation_speaker,
+        False,
+        zero_validation_target,
+        validation_failure_rag,
+        [],
+    )
+    zero_plan_target_ids = {
+        target_id
+        for target_id in [
+            zero_plan.primary_target_id,
+            zero_plan.secondary_target_id,
+            zero_plan.stance_target_id,
+            zero_plan.provisional_vote_target_id,
+            zero_plan.question.target_id if zero_plan.question is not None else None,
+            (
+                zero_plan.verification.target_id
+                if zero_plan.verification is not None
+                else None
+            ),
+        ]
+        if target_id is not None
+    }
+    if (
+        structured_zero_client.text_calls != 1
+        or structured_zero_client.object_calls != 0
+        or structured_zero_client.max_attempts != [1]
+        or zero_generation.text != structured_zero_client.last_text
+        or not zero_generation.used_llm
+        or zero_generation.validation_attempts
+        or zero_generation.validation_failure_id
+        or zero_generation.fallback_reason
+    ):
+        raise SystemExit(
+            "disabled validation must generate one public expression and return it unchanged"
+        )
+    if (
+        zero_selected_target is None
+        or zero_selected_target.id != zero_plan.primary_target_id
+        or structured_zero_client.unsafe_target_id in zero_plan_target_ids
+        or zero_selected_claims
+        or any(not item.get("safe_to_show") for item in zero_rag_context)
+    ):
+        raise SystemExit(
+            "unvalidated public prose must not replace the Python plan, claims, target, or evidence"
+        )
+    zero_validation_gameplay_after = (
+        list(zero_validation_state.speeches),
+        list(zero_validation_state.public_claims),
+        list(zero_validation_state.public_logs),
+        zero_validation_speaker.memory_summary,
+    )
+    if zero_validation_gameplay_after != zero_validation_gameplay_before:
+        raise SystemExit(
+            "zero-validation plan generation must stay side-effect free before commit"
+        )
+    if main_module.build_llm_validation_failure_view(
+        zero_validation_state,
+        zero_generation.validation_failure_id,
+    ) is not None:
+        raise SystemExit("zero-validation output must not create a failure view")
+
+    unsafe_voice_client = ZeroValidationTextClient("我今天投3号")
+    main_module.LLM_CLIENT = unsafe_voice_client
+    unsafe_voice_result = main_module.generate_structured_speech_voice_prefix(
+        zero_validation_state,
+        zero_validation_speaker,
+        "Python 生成的安全事实正文。",
+    )
+    if (
+        unsafe_voice_client.text_calls != 0
+        or unsafe_voice_client.object_calls != 0
+        or unsafe_voice_result.used_llm
+        or unsafe_voice_result.text != "Python 生成的安全事实正文。"
+        or unsafe_voice_result.validation_attempts
+        or unsafe_voice_result.validation_failure_id
+    ):
+        raise SystemExit(
+            "disabled validation must skip the validated voice-prefix chain entirely"
+        )
+
+    unsafe_private_client = ZeroValidationTextClient("我的狼队友是4号。")
+    main_module.LLM_CLIENT = unsafe_private_client
+    unsafe_private_result = main_module.generate_private_chat_llm_text(
+        zero_validation_state,
+        zero_validation_state.characters[2],
+        "你的狼队友是谁？",
+        "我不会把未经授权的隐藏身份当成回答。",
+        [],
+    )
+    if (
+        unsafe_private_client.text_calls != 1
+        or unsafe_private_client.object_calls != 0
+        or unsafe_private_client.max_attempts != [1]
+        or not unsafe_private_result.used_llm
+        or unsafe_private_result.text != "我的狼队友是4号。"
+        or unsafe_private_result.validation_attempts
+        or unsafe_private_result.validation_failure_id
+    ):
+        raise SystemExit(
+            "disabled private validation must return one hidden-information draft unchanged"
+        )
+
+    zero_validation_e2e_state = make_rule_test_game(
+        ["villager", "villager", "werewolf", "seer", "guard", "witch", "hunter"],
+        enable_llm_validation=False,
+    )
+    zero_validation_e2e_state.llm_enabled = True
+    zero_validation_e2e_state.phase = "DAY_MEETING"
+    zero_validation_e2e_state.meeting = DayMeetingState(
+        day=1,
+        direction="clockwise",
+        order=[2],
+    )
+    zero_validation_e2e_client = ZeroValidationTextClient(
+        derive_public_target=True
+    )
+    main_module.LLM_CLIENT = zero_validation_e2e_client
+    e2e_claim_count_before = len(zero_validation_e2e_state.public_claims)
+    zero_validation_e2e_response = generate_npc_speech(
+        NpcSpeechRequest(
+            game_id=zero_validation_e2e_state.game_id,
+            character_id=2,
+        )
+    )
+    stored_zero_validation_speech = zero_validation_e2e_state.speeches[-1]
+    new_e2e_claims = zero_validation_e2e_state.public_claims[
+        e2e_claim_count_before:
+    ]
+    stored_position = stored_zero_validation_speech.public_position
+    raw_target_id = zero_validation_e2e_client.unsafe_target_id
+    position_target_ids = set()
+    if stored_position is not None:
+        position_target_ids.update(stored_position.trusted_target_ids)
+        position_target_ids.update(stored_position.suspected_target_ids)
+        for target_id in [
+            stored_position.provisional_vote_target_id,
+            stored_position.question_target_id,
+            stored_position.change_condition_target_id,
+        ]:
+            if target_id is not None:
+                position_target_ids.add(target_id)
+    if (
+        zero_validation_e2e_client.text_calls != 1
+        or zero_validation_e2e_client.object_calls != 0
+        or zero_validation_e2e_client.max_attempts != [1]
+        or not zero_validation_e2e_response.speech.llm_used
+        or zero_validation_e2e_client.last_text
+        not in zero_validation_e2e_response.speech.speech
+        or zero_validation_e2e_response.speech.llm_validation_failure is not None
+        or raw_target_id == stored_zero_validation_speech.focus_target_id
+        or raw_target_id in position_target_ids
+        or any(
+            claim.character_id == 2
+            and (
+                claim.claimed_role == "seer"
+                or claim.target_id == raw_target_id
+            )
+            for claim in new_e2e_claims
+        )
+    ):
+        raise SystemExit(
+            "end-to-end unvalidated prose may display but must not become the rule plan, claims, or target"
+        )
+    zero_persuasion_before = main_module.get_public_persuasion_strength(
+        zero_validation_e2e_state,
+        zero_validation_e2e_state.characters[1],
+    )
+    zero_low_information_before = main_module.is_low_information_public_speech(
+        zero_validation_e2e_state,
+        stored_zero_validation_speech,
+    )
+    original_unvalidated_speech = stored_zero_validation_speech.speech
+    stored_zero_validation_speech.speech = "没信息，过。"
+    zero_persuasion_after = main_module.get_public_persuasion_strength(
+        zero_validation_e2e_state,
+        zero_validation_e2e_state.characters[1],
+    )
+    zero_low_information_after = main_module.is_low_information_public_speech(
+        zero_validation_e2e_state,
+        stored_zero_validation_speech,
+    )
+    stored_zero_validation_speech.speech = original_unvalidated_speech
+    if (
+        zero_persuasion_after != zero_persuasion_before
+        or zero_low_information_after != zero_low_information_before
+    ):
+        raise SystemExit(
+            "unvalidated display prose must not alter persuasion or low-information rule signals"
+        )
+    zero_validation_e2e_state.private_conversations.append(
+        PrivateConversationState(
+            day=1,
+            npc_character_id=2,
+            question="你怎么看当前局势？",
+            reply="4号是狼，下一句里的他就是4号。",
+            effective=False,
+        )
+    )
+    if (
+        main_module.get_previous_private_third_party_id(
+            zero_validation_e2e_state,
+            2,
+        )
+        is not None
+    ):
+        raise SystemExit(
+            "an unvalidated private reply must not create an authoritative pronoun target"
+        )
+
+    zero_validation_sheriff_state = make_rule_test_game(
+        ["villager", "villager", "werewolf", "seer", "guard", "witch", "hunter"],
+        enable_llm_validation=False,
+    )
+    zero_validation_sheriff_state.llm_enabled = True
+    zero_validation_sheriff_state.badge_destroyed = False
+    zero_validation_sheriff_state.sheriff_election = SheriffElectionState(
+        candidates=[2],
+        speech_order=[2],
+    )
+    zero_validation_sheriff_state.phase = "SHERIFF_SPEECH"
+    zero_validation_sheriff_client = ZeroValidationTextClient(
+        "我是预言家，我查验4号是狼人，我的狼队友是5号，今天投4号，女巫今晚毒4号。"
+    )
+    main_module.LLM_CLIENT = zero_validation_sheriff_client
+    sheriff_claim_count_before = len(zero_validation_sheriff_state.public_claims)
+    zero_validation_sheriff_response = generate_npc_sheriff_campaign_speech(
+        SheriffSpeechRequest(
+            game_id=zero_validation_sheriff_state.game_id,
+            character_id=2,
+        )
+    )
+    sheriff_stored_speech = zero_validation_sheriff_state.speeches[-1]
+    sheriff_new_claims = zero_validation_sheriff_state.public_claims[
+        sheriff_claim_count_before:
+    ]
+    if (
+        zero_validation_sheriff_client.text_calls != 1
+        or zero_validation_sheriff_client.object_calls != 0
+        or zero_validation_sheriff_client.max_attempts != [1]
+        or not zero_validation_sheriff_response.speech.llm_used
+        or zero_validation_sheriff_client.last_text
+        not in zero_validation_sheriff_response.speech.speech
+        or (
+            sheriff_stored_speech.public_position is not None
+            and sheriff_stored_speech.public_position.claimed_role == "seer"
+        )
+        or sheriff_stored_speech.witch_directive is not None
+        or any(
+            claim.character_id == 2
+            and (
+                claim.claimed_role == "seer"
+                or (claim.claim_type == "seer_check" and claim.target_id == 4)
+            )
+            for claim in sheriff_new_claims
+        )
+    ):
+        raise SystemExit(
+            "unvalidated sheriff prose must display without becoming an authoritative seer claim"
+        )
+
+    if unexpected_validator_calls:
+        raise SystemExit(
+            "all three disabled-validation generation chains must bypass semantic validators"
+        )
+    if zero_validation_log_path.exists():
+        raise SystemExit("zero-validation mode must not write a validation JSONL audit")
+    if (
+        len(captured_validation_observations) != zero_validation_observation_count
+        or len(zero_validation_state.llm_validation_failures)
+        != zero_validation_failure_count
+    ):
+        raise SystemExit(
+            "zero-validation mode must not emit validation observations or failure state"
+        )
+finally:
+    main_module.LLM_CLIENT = original_llm_client
+    main_module.LLM_VALIDATION_LOG_FILE = original_validation_log_path
+    main_module.validate_llm_rewrite = original_validate_llm_rewrite
+    zero_validation_log_path.unlink(missing_ok=True)
 
 class IntentStructuredLLMClient:
     def __init__(self, intent, target_id, expression_text):
@@ -7135,7 +9392,7 @@ low_information_client = LowInformationRetryLLMClient(
     low_information_target.id,
     grounded_low_information_text,
 )
-low_information_log_path = Path("/tmp/agent-town-low-information-smoke.jsonl")
+low_information_log_path = validation_temp_root / "low-information.jsonl"
 original_low_information_log_path = main_module.LLM_VALIDATION_LOG_FILE
 try:
     low_information_log_path.unlink(missing_ok=True)
@@ -7361,7 +9618,7 @@ if (
     raise SystemExit("a role-only rule fallback must reveal with target_id null")
 
 role_only_client = RoleOnlyRevealLLMClient()
-role_only_log_path = Path("/tmp/agent-town-role-only-reveal-smoke.jsonl")
+role_only_log_path = validation_temp_root / "role-only-reveal.jsonl"
 original_role_only_log_path = main_module.LLM_VALIDATION_LOG_FILE
 try:
     role_only_log_path.unlink(missing_ok=True)
@@ -7444,6 +9701,14 @@ first_private_response = private_chat(
 )
 if not first_private_response.effective:
     raise SystemExit("the first daily private question should affect NPC decisions")
+private_event = meeting_influence_state.rule_events[-1]
+if (
+    private_event.event_type != "private_chat_completed"
+    or private_event.visibility != "player_private"
+    or private_event.command["question"]
+    != f"我觉得{private_target.id}号很可疑，我们一起合作。"
+):
+    raise SystemExit("private chat must retain its exact command under player-private visibility")
 if private_npc.suspicion.get(str(private_target.id), 0) <= suspicion_before_private_chat:
     raise SystemExit("an effective private question should update the target NPC suspicion")
 if meeting_influence_state.public_logs != public_logs_before_private_chat:
@@ -7753,11 +10018,120 @@ player_claim_state.meeting = DayMeetingState(
     direction="clockwise",
     order=list(range(1, 13)),
 )
+player_claim_text = (
+    "我是预言家，昨晚查验3号C罗是狼人，"
+    "我怀疑4号，今天投4号。"
+)
+player_claim_state_before_preview = json.dumps(
+    player_claim_state.model_dump(mode="json"),
+    ensure_ascii=False,
+    sort_keys=True,
+)
+player_claim_preview = preview_player_speech(
+    PlayerSpeechPreviewRequest(
+        game_id=player_claim_state.game_id,
+        character_id=1,
+        speech_kind="day",
+        speech=player_claim_text,
+    )
+)
+if (
+    not player_claim_preview.accepted
+    or len(player_claim_preview.understanding.claims) != 2
+    or {
+        claim.target_id
+        for claim in player_claim_preview.understanding.claims
+        if claim.claim_type == "seer_check"
+    }
+    != {3}
+    or not any(
+        item.kind == "vote_intent" and item.target_id == 4
+        for item in player_claim_preview.strategic_signals_to_apply
+    )
+    or json.dumps(
+        player_claim_state.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    != player_claim_state_before_preview
+):
+    raise SystemExit(
+        "day preview must split comma clauses and remain completely side-effect free"
+    )
+
+hidden_preview_state = player_claim_state.model_copy(deep=True)
+hidden_wolf = hidden_preview_state.characters[2]
+hidden_good = hidden_preview_state.characters[3]
+hidden_wolf.role, hidden_good.role = hidden_good.role, hidden_wolf.role
+hidden_wolf.camp, hidden_good.camp = hidden_good.camp, hidden_wolf.camp
+hidden_prepared_preview = main_module.prepare_player_speech_preview(
+    hidden_preview_state,
+    hidden_preview_state.characters[0],
+    speech_kind="day",
+    speech=player_claim_text,
+).preview
+for public_preview_field in (
+    "understanding",
+    "public_facts_to_write",
+    "strategic_signals_to_apply",
+    "text_only_notes",
+    "preview_fingerprint",
+):
+    if getattr(player_claim_preview, public_preview_field) != getattr(
+        hidden_prepared_preview,
+        public_preview_field,
+    ):
+        raise SystemExit(
+            "player speech preview must be invariant to unseen NPC role swaps"
+        )
+
+try:
+    submit_player_speech(
+        PlayerSpeechRequest(
+            game_id=player_claim_state.game_id,
+            character_id=1,
+            speech=player_claim_text + "我支持5号。",
+            preview_fingerprint=player_claim_preview.preview_fingerprint,
+        )
+    )
+    raise SystemExit("an edited speech must not reuse an earlier preview")
+except HTTPException as exc:
+    if exc.status_code != 409:
+        raise
+if json.dumps(
+    player_claim_state.model_dump(mode="json"),
+    ensure_ascii=False,
+    sort_keys=True,
+) != player_claim_state_before_preview:
+    raise SystemExit("a stale preview fingerprint must reject before any mutation")
+
+original_player_claim_updated_at = player_claim_state.updated_at
+player_claim_state.updated_at = "state-changed-after-preview"
+try:
+    submit_player_speech(
+        PlayerSpeechRequest(
+            game_id=player_claim_state.game_id,
+            character_id=1,
+            speech=player_claim_text,
+            preview_fingerprint=player_claim_preview.preview_fingerprint,
+        )
+    )
+    raise SystemExit("a changed turn state must invalidate an earlier preview")
+except HTTPException as exc:
+    if exc.status_code != 409:
+        raise
+if player_claim_state.speeches or player_claim_state.public_claims:
+    raise SystemExit(
+        "a state-stale preview must reject before speech or claim writes"
+    )
+player_claim_state.updated_at = original_player_claim_updated_at
+
 player_claim_response = submit_player_speech(
     PlayerSpeechRequest(
         game_id=player_claim_state.game_id,
         character_id=1,
-        speech="我是预言家，昨晚查验3号C罗是狼人。",
+        speech=player_claim_text,
+        preview_fingerprint=player_claim_preview.preview_fingerprint,
     )
 )
 if len(player_claim_response.parsed.claims) != 2:
@@ -7873,6 +10247,975 @@ for expected_public_text in [
         raise SystemExit("public-intel accordion data is missing: " + expected_public_text)
 if not any(item.category == "confirmed_action" for item in power_public_intel):
     raise SystemExit("confirmed hunter actions should be distinct from unverified claims")
+
+# V4.4-A exposes one deterministic public-only evidence timeline.  Public
+# claims and commitments remain unverified; a confirmed marker confirms only
+# that an action occurred, never that a role/check story is true.
+public_timeline_state = make_rule_test_game(
+    ["villager", "werewolf", "seer", "guard", "witch", "hunter"]
+)
+public_timeline_state.phase = "DAY_MEETING"
+public_timeline_state.public_claims = [
+    main_module.PublicClaimState(
+        day=1,
+        character_id=2,
+        claim_type="role",
+        claimed_role="seer",
+        source="hidden_fake_origin",
+    ),
+    main_module.PublicClaimState(
+        day=1,
+        character_id=2,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=3,
+        result="werewolf",
+        source="hidden_fake_origin",
+    ),
+    main_module.PublicClaimState(
+        day=1,
+        character_id=10,
+        claim_type="role",
+        claimed_role="villager",
+        source="player_speech",
+    ),
+]
+public_timeline_state.badge_flows = [
+    main_module.BadgeFlowState(
+        day=1,
+        effective_night_day=2,
+        character_id=2,
+        version=1,
+        phase="DAY_MEETING",
+        primary_target_id=4,
+        secondary_target_id=5,
+        claimed_good_anchor_id=6,
+    )
+]
+public_timeline_state.sheriff_events = [
+    SheriffEventState(
+        day=1,
+        event_type="temporary_nomination",
+        actor_id=4,
+        target_id=3,
+        detail="4号周深暂时归票给3号C罗。",
+    ),
+    SheriffEventState(
+        day=1,
+        event_type="sheriff_vote",
+        actor_id=5,
+        target_id=4,
+        context="round:0",
+        detail="5号投给4号。",
+    ),
+    SheriffEventState(
+        day=1,
+        event_type="badge_transfer",
+        actor_id=4,
+        target_id=5,
+        detail="4号周深将警徽移交给5号梅长苏。",
+    ),
+]
+public_timeline_state.hunter_shots = [
+    HunterShotState(day=1, hunter_id=6, target_id=7, trigger="vote")
+]
+public_timeline_state.eliminations = [
+    EliminationState(
+        day=1,
+        character_id=8,
+        cause="night_kill",
+        source_action="werewolf_kill",
+        source_actor_ids=[2],
+        source_target_id=8,
+    )
+]
+timeline_state_before = json.dumps(
+    public_timeline_state.model_dump(mode="json"),
+    ensure_ascii=False,
+    sort_keys=True,
+)
+public_timeline = main_module.build_public_evidence_timeline(public_timeline_state)
+if json.dumps(
+    public_timeline_state.model_dump(mode="json"),
+    ensure_ascii=False,
+    sort_keys=True,
+) != timeline_state_before:
+    raise SystemExit("public evidence projection must be completely read-only")
+if (
+    public_timeline.schema_version != "public_evidence_timeline.v1"
+    or public_timeline.projected_event_sequence
+    != public_timeline_state.rule_events[-1].sequence
+    or public_timeline.item_count != len(public_timeline.items)
+    or [item.sequence for item in public_timeline.items]
+    != list(range(1, public_timeline.item_count + 1))
+    or len({item.evidence_id for item in public_timeline.items})
+    != public_timeline.item_count
+):
+    raise SystemExit("public evidence timeline schema, cursor, IDs, or order is invalid")
+if not any(
+    item.kind == "seer_check"
+    and item.verification == "unverified"
+    and item.public_result == "werewolf"
+    for item in public_timeline.items
+):
+    raise SystemExit("a claimed black check must remain explicitly unverified")
+if not any(
+    item.kind == "role"
+    and item.actor_id == 10
+    and item.public_result == "villager"
+    and item.verification == "unverified"
+    for item in public_timeline.items
+):
+    raise SystemExit("the unified timeline must retain ordinary identity claims")
+if not any(
+    item.kind == "badge_flow"
+    and item.category == "commitment"
+    and item.verification == "unverified"
+    and set(item.related_character_ids) >= {2, 4, 5, 6}
+    for item in public_timeline.items
+):
+    raise SystemExit("badge flow must be one structured, unverified public commitment")
+for confirmed_kind in {
+    "temporary_nomination",
+    "sheriff_ballot",
+    "badge_transfer",
+    "hunter_shot",
+    "night_result",
+}:
+    if not any(
+        item.kind == confirmed_kind
+        and item.category == "confirmed_action"
+        and item.verification == "confirmed"
+        for item in public_timeline.items
+    ):
+        raise SystemExit("public evidence is missing confirmed action: " + confirmed_kind)
+
+def collect_public_timeline_keys(value):
+    if isinstance(value, dict):
+        keys = set(value)
+        for nested in value.values():
+            keys.update(collect_public_timeline_keys(nested))
+        return keys
+    if isinstance(value, list):
+        keys = set()
+        for nested in value:
+            keys.update(collect_public_timeline_keys(nested))
+        return keys
+    return set()
+
+public_timeline_payload = public_timeline.model_dump(mode="json")
+for forbidden_public_key in {
+    "role",
+    "camp",
+    "winner",
+    "cause",
+    "source",
+    "source_action",
+    "source_actor_ids",
+}:
+    if forbidden_public_key in collect_public_timeline_keys(public_timeline_payload):
+        raise SystemExit(
+            "public evidence must not expose hidden key: " + forbidden_public_key
+        )
+if main_module.build_public_evidence_timeline(
+    public_timeline_state
+).model_dump(mode="json") != public_timeline_payload:
+    raise SystemExit("public evidence projection must be deterministic")
+timeline_public_knowledge_ids = {
+    item.id
+    for item in main_module.build_actor_legal_knowledge(
+        public_timeline_state,
+        public_timeline_state.characters[6],
+    )
+    if item.visibility == "public"
+}
+if not {
+    item.evidence_id for item in public_timeline.items[-24:]
+}.issubset(timeline_public_knowledge_ids):
+    raise SystemExit("NPC legal knowledge and player UI must share evidence IDs")
+
+hidden_timeline_state = public_timeline_state.model_copy(deep=True)
+hidden_timeline_state.characters[1].role, hidden_timeline_state.characters[2].role = (
+    hidden_timeline_state.characters[2].role,
+    hidden_timeline_state.characters[1].role,
+)
+hidden_timeline_state.characters[1].camp, hidden_timeline_state.characters[2].camp = (
+    hidden_timeline_state.characters[2].camp,
+    hidden_timeline_state.characters[1].camp,
+)
+for claim in hidden_timeline_state.public_claims:
+    claim.source = "hidden_true_origin"
+hidden_timeline_state.eliminations[0].cause = "witch_poison"
+hidden_timeline_state.eliminations[0].source_action = "witch_poison"
+hidden_timeline_state.eliminations[0].source_actor_ids = [5]
+if main_module.build_public_evidence_timeline(
+    hidden_timeline_state
+).model_dump(mode="json") != public_timeline_payload:
+    raise SystemExit(
+        "public evidence must be invariant to hidden roles, claim origin, and night cause"
+    )
+
+dual_night_result_state = public_timeline_state.model_copy(deep=True)
+dual_night_result_state.eliminations.append(
+    EliminationState(
+        day=1,
+        character_id=9,
+        cause="witch_poison",
+        source_action="witch_poison",
+        source_actor_ids=[5],
+        source_target_id=9,
+    )
+)
+swapped_dual_night_result_state = dual_night_result_state.model_copy(deep=True)
+swapped_dual_night_result_state.eliminations[0].cause = "witch_poison"
+swapped_dual_night_result_state.eliminations[0].source_action = "witch_poison"
+swapped_dual_night_result_state.eliminations[0].source_actor_ids = [5]
+swapped_dual_night_result_state.eliminations[1].cause = "night_kill"
+swapped_dual_night_result_state.eliminations[1].source_action = "werewolf_kill"
+swapped_dual_night_result_state.eliminations[1].source_actor_ids = [2]
+if main_module.build_public_evidence_timeline(
+    dual_night_result_state
+).model_dump(mode="json") != main_module.build_public_evidence_timeline(
+    swapped_dual_night_result_state
+).model_dump(mode="json"):
+    raise SystemExit("multiple night-result ordering must not reveal kill versus poison")
+
+unresolved_ballot_state = main_module.create_wolf_game_state(
+    GameStartRequest(player_name="未公布票型", enable_rag=False),
+    game_id="public-evidence-unresolved-ballot",
+    random_seed=20260720,
+)
+unresolved_ballot_state.votes = [
+    VoteState(day=1, voter_id=1, target_id=2),
+    VoteState(day=1, voter_id=3, target_id=2),
+]
+if any(
+    item.kind == "exile_ballot"
+    for item in main_module.build_public_evidence_timeline(
+        unresolved_ballot_state
+    ).items
+):
+    raise SystemExit("unresolved private ballots must not enter the public timeline")
+unresolved_ballot_state.votes = []
+ballot_checkpoint = main_module.begin_game_command(unresolved_ballot_state)
+unresolved_ballot_state.votes = [
+    VoteState(day=1, voter_id=1, target_id=2),
+    VoteState(day=1, voter_id=3, target_id=2),
+]
+main_module.append_game_rule_event(
+    unresolved_ballot_state,
+    event_type="all_votes_submitted_and_resolved",
+    visibility="public",
+    command={"projection_smoke": True},
+    checkpoint=ballot_checkpoint,
+    actor_id=1,
+)
+resolved_ballot_timeline = main_module.build_public_evidence_timeline(
+    unresolved_ballot_state
+)
+if len(
+    [item for item in resolved_ballot_timeline.items if item.kind == "exile_ballot"]
+) != 2:
+    raise SystemExit("ballots must enter the timeline only after a public resolution event")
+
+state_response_timeline = get_wolf_game_state(public_timeline_state.game_id)
+if (
+    state_response_timeline.public_evidence_timeline.model_dump(mode="json")
+    != public_timeline_payload
+):
+    raise SystemExit("game state must expose the shared public evidence timeline")
+openapi_schema = main_module.app.openapi()
+state_response_properties = openapi_schema["components"]["schemas"][
+    "GameStateResponse"
+]["properties"]
+if (
+    "public_evidence_timeline" not in state_response_properties
+    or "PublicEvidenceTimelineV1" not in openapi_schema["components"]["schemas"]
+    or "PublicEvidenceItemV1" not in openapi_schema["components"]["schemas"]
+):
+    raise SystemExit("OpenAPI must publish both V4.4-A evidence schemas")
+
+# V4.4-B derives commitment lifecycle states and neutral contradiction
+# candidates from the same public timeline.  It never verifies a claim against
+# hidden role/camp truth and never assigns a lie or alignment verdict.
+def make_public_analysis_flow_state():
+    state = make_rule_test_game(
+        ["villager", "werewolf", "seer", "guard", "witch", "hunter"]
+    )
+    state.day = 1
+    state.phase = "DAY_MEETING"
+    state.sheriff_id = 2
+    state.badge_destroyed = False
+    state.public_claims = [
+        main_module.PublicClaimState(
+            day=1,
+            character_id=2,
+            claim_type="role",
+            claimed_role="seer",
+            source="analysis_fixture",
+        )
+    ]
+    main_module.publish_badge_flow(
+        state,
+        state.characters[1],
+        main_module.BadgeFlowInput(
+            primary_target_id=4,
+            secondary_target_id=5,
+        ),
+    )
+    return state
+
+
+def require_commitment(analysis, version=1):
+    return next(
+        commitment
+        for commitment in analysis.commitments
+        if commitment.version == version
+    )
+
+
+analysis_active_state = make_public_analysis_flow_state()
+analysis_state_before = json.dumps(
+    analysis_active_state.model_dump(mode="json"),
+    ensure_ascii=False,
+    sort_keys=True,
+)
+analysis_active_timeline = main_module.build_public_evidence_timeline(
+    analysis_active_state
+)
+analysis_active = main_module.build_public_evidence_analysis(
+    analysis_active_state,
+    analysis_active_timeline,
+)
+if json.dumps(
+    analysis_active_state.model_dump(mode="json"),
+    ensure_ascii=False,
+    sort_keys=True,
+) != analysis_state_before:
+    raise SystemExit("public evidence analysis must be completely read-only")
+if main_module.build_public_evidence_analysis(
+    analysis_active_state
+).model_dump(mode="json") != analysis_active.model_dump(mode="json"):
+    raise SystemExit("public evidence analysis must be deterministic")
+active_commitment = require_commitment(analysis_active)
+if (
+    active_commitment.status != "active"
+    or active_commitment.status_reason != "awaiting_effective_night"
+):
+    raise SystemExit("a future badge flow must remain an active public commitment")
+
+analysis_waiting_state = analysis_active_state.model_copy(deep=True)
+analysis_waiting_state.day = 2
+analysis_waiting_state.phase = "DAY_MEETING"
+analysis_waiting = main_module.build_public_evidence_analysis(
+    analysis_waiting_state
+)
+waiting_commitment = require_commitment(analysis_waiting)
+if (
+    waiting_commitment.status != "active"
+    or waiting_commitment.status_reason != "awaiting_public_follow_up"
+):
+    raise SystemExit("a due flow must wait for its first public follow-up")
+
+analysis_revised_state = analysis_active_state.model_copy(deep=True)
+main_module.publish_badge_flow(
+    analysis_revised_state,
+    analysis_revised_state.characters[1],
+    main_module.BadgeFlowInput(
+        primary_target_id=5,
+        secondary_target_id=4,
+        revision_reason="speech_change",
+    ),
+)
+analysis_revised = main_module.build_public_evidence_analysis(
+    analysis_revised_state
+)
+revised_v1 = require_commitment(analysis_revised, 1)
+revised_v2 = require_commitment(analysis_revised, 2)
+if (
+    revised_v1.status != "superseded"
+    or revised_v1.status_reason != "revised_before_effective_night"
+    or revised_v1.superseded_by_evidence_id != revised_v2.source_evidence_id
+    or analysis_revised.contradiction_candidates
+):
+    raise SystemExit("a timely badge-flow revision must supersede, not contradict")
+
+analysis_reported_state = analysis_active_state.model_copy(deep=True)
+analysis_reported_state.day = 2
+analysis_reported_state.phase = "DAY_MEETING"
+analysis_reported_state.public_claims.append(
+    main_module.PublicClaimState(
+        day=2,
+        character_id=2,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=4,
+        result="good",
+        source="hidden_true_or_fake",
+    )
+)
+analysis_reported = main_module.build_public_evidence_analysis(
+    analysis_reported_state
+)
+reported_commitment = require_commitment(analysis_reported)
+if (
+    reported_commitment.status != "fulfilled"
+    or reported_commitment.status_reason != "reported_planned_target"
+):
+    raise SystemExit("reporting the planned target must fulfill the public commitment")
+
+analysis_badge_fulfilled_state = analysis_active_state.model_copy(deep=True)
+analysis_badge_fulfilled_state.day = 2
+analysis_badge_fulfilled_state.phase = "BADGE_TRANSFER"
+main_module.apply_badge_transfer(
+    analysis_badge_fulfilled_state,
+    analysis_badge_fulfilled_state.characters[1],
+    4,
+    continuation="after_night",
+)
+analysis_badge_fulfilled = main_module.build_public_evidence_analysis(
+    analysis_badge_fulfilled_state
+)
+badge_fulfilled_commitment = require_commitment(analysis_badge_fulfilled)
+if (
+    badge_fulfilled_commitment.status != "fulfilled"
+    or badge_fulfilled_commitment.status_reason
+    != "badge_action_matched_published_branch"
+):
+    raise SystemExit("a listed after-night badge branch must fulfill the commitment")
+
+analysis_badge_destroyed_state = analysis_active_state.model_copy(deep=True)
+analysis_badge_destroyed_state.day = 2
+analysis_badge_destroyed_state.phase = "BADGE_TRANSFER"
+main_module.apply_badge_transfer(
+    analysis_badge_destroyed_state,
+    analysis_badge_destroyed_state.characters[1],
+    None,
+    continuation="after_night",
+)
+analysis_badge_destroyed = main_module.build_public_evidence_analysis(
+    analysis_badge_destroyed_state
+)
+badge_destroyed_commitment = require_commitment(analysis_badge_destroyed)
+if (
+    badge_destroyed_commitment.status != "fulfilled"
+    or badge_destroyed_commitment.status_reason
+    != "badge_action_matched_published_branch"
+):
+    raise SystemExit("a published badge-destruction branch must fulfill the commitment")
+
+analysis_target_out_state = analysis_active_state.model_copy(deep=True)
+analysis_target_out_state.characters[3].alive = False
+analysis_target_out_state.eliminations.append(
+    EliminationState(
+        day=1,
+        character_id=4,
+        cause="exiled",
+        source_action="day_vote",
+        source_actor_ids=[],
+        source_target_id=4,
+    )
+)
+analysis_target_out = main_module.build_public_evidence_analysis(
+    analysis_target_out_state
+)
+target_out_commitment = require_commitment(analysis_target_out)
+if (
+    target_out_commitment.status != "invalidated"
+    or target_out_commitment.status_reason
+    != "target_unavailable_before_effective_night"
+    or analysis_target_out.contradiction_candidates
+):
+    raise SystemExit("a publicly eliminated target must invalidate, not contradict")
+
+analysis_claimant_out_state = analysis_active_state.model_copy(deep=True)
+analysis_claimant_out_state.characters[1].alive = False
+analysis_claimant_out_state.eliminations.append(
+    EliminationState(
+        day=1,
+        character_id=2,
+        cause="exiled",
+        source_action="day_vote",
+        source_actor_ids=[],
+        source_target_id=2,
+    )
+)
+claimant_out_commitment = require_commitment(
+    main_module.build_public_evidence_analysis(analysis_claimant_out_state)
+)
+if (
+    claimant_out_commitment.status != "invalidated"
+    or claimant_out_commitment.status_reason
+    != "claimant_unavailable_before_effective_night"
+):
+    raise SystemExit("a publicly eliminated claimant must invalidate the commitment")
+
+analysis_undetermined_state = analysis_active_state.model_copy(deep=True)
+analysis_undetermined_state.day = 3
+analysis_undetermined_state.phase = "DAY_MEETING"
+analysis_undetermined_state.speeches.append(
+    SpeechState(
+        day=2,
+        character_id=2,
+        name=analysis_undetermined_state.characters[1].name,
+        speech="我暂时没有新的公开查验结果。",
+        is_player=False,
+        phase="DAY_MEETING",
+    )
+)
+analysis_undetermined = main_module.build_public_evidence_analysis(
+    analysis_undetermined_state
+)
+undetermined_commitment = require_commitment(analysis_undetermined)
+if (
+    undetermined_commitment.status != "undetermined"
+    or undetermined_commitment.status_reason != "public_follow_up_missing"
+):
+    raise SystemExit("a passed commitment without a public result must stay undetermined")
+
+analysis_target_mismatch_state = analysis_active_state.model_copy(deep=True)
+analysis_target_mismatch_state.day = 2
+analysis_target_mismatch_state.phase = "DAY_MEETING"
+analysis_target_mismatch_state.public_claims.append(
+    main_module.PublicClaimState(
+        day=2,
+        character_id=2,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=5,
+        result="good",
+        source="hidden_true_or_fake",
+    )
+)
+analysis_target_mismatch = main_module.build_public_evidence_analysis(
+    analysis_target_mismatch_state
+)
+target_mismatch_commitment = require_commitment(analysis_target_mismatch)
+if (
+    target_mismatch_commitment.status != "contradicted"
+    or target_mismatch_commitment.status_reason != "reported_different_target"
+    or [
+        candidate.kind
+        for candidate in analysis_target_mismatch.contradiction_candidates
+    ] != ["badge_flow_target_mismatch"]
+):
+    raise SystemExit("a different due-day target must become a neutral review candidate")
+
+analysis_action_mismatch_state = analysis_active_state.model_copy(deep=True)
+analysis_action_mismatch_state.day = 2
+analysis_action_mismatch_state.phase = "BADGE_TRANSFER"
+main_module.apply_badge_transfer(
+    analysis_action_mismatch_state,
+    analysis_action_mismatch_state.characters[1],
+    6,
+    continuation="after_night",
+)
+analysis_action_mismatch = main_module.build_public_evidence_analysis(
+    analysis_action_mismatch_state
+)
+action_mismatch_commitment = require_commitment(analysis_action_mismatch)
+if (
+    action_mismatch_commitment.status != "contradicted"
+    or action_mismatch_commitment.status_reason
+    != "badge_action_outside_published_branches"
+    or [
+        candidate.kind
+        for candidate in analysis_action_mismatch.contradiction_candidates
+    ] != ["badge_flow_action_mismatch"]
+):
+    raise SystemExit("an unlisted badge action must become a neutral review candidate")
+
+analysis_branch_out_state = analysis_active_state.model_copy(deep=True)
+analysis_branch_out_state.day = 2
+analysis_branch_out_state.phase = "BADGE_TRANSFER"
+analysis_branch_out_state.characters[3].alive = False
+analysis_branch_out_state.eliminations.append(
+    EliminationState(
+        day=2,
+        character_id=4,
+        cause="night_kill",
+        source_action="werewolf_kill",
+        source_actor_ids=[3],
+        source_target_id=4,
+    )
+)
+main_module.apply_badge_transfer(
+    analysis_branch_out_state,
+    analysis_branch_out_state.characters[1],
+    6,
+    continuation="after_night",
+)
+analysis_branch_out = main_module.build_public_evidence_analysis(
+    analysis_branch_out_state
+)
+branch_out_commitment = require_commitment(analysis_branch_out)
+if (
+    branch_out_commitment.status != "invalidated"
+    or branch_out_commitment.status_reason
+    != "published_branch_became_unavailable"
+    or analysis_branch_out.contradiction_candidates
+):
+    raise SystemExit("an unavailable published branch must not become a contradiction")
+
+analysis_late_revision_state = analysis_active_state.model_copy(deep=True)
+analysis_late_revision_state.day = 2
+analysis_late_revision_state.phase = "DAY_MEETING"
+main_module.publish_badge_flow(
+    analysis_late_revision_state,
+    analysis_late_revision_state.characters[1],
+    main_module.BadgeFlowInput(
+        primary_target_id=5,
+        secondary_target_id=4,
+        revision_reason="speech_change",
+    ),
+)
+late_v1 = require_commitment(
+    main_module.build_public_evidence_analysis(analysis_late_revision_state),
+    1,
+)
+if (
+    late_v1.status != "undetermined"
+    or late_v1.status_reason != "revised_after_due_without_public_result"
+):
+    raise SystemExit("an overdue revision must not rewrite the old commitment")
+
+lifecycle_statuses = {
+    active_commitment.status,
+    revised_v1.status,
+    reported_commitment.status,
+    target_out_commitment.status,
+    undetermined_commitment.status,
+    target_mismatch_commitment.status,
+}
+if lifecycle_statuses != {
+    "active",
+    "superseded",
+    "fulfilled",
+    "invalidated",
+    "undetermined",
+    "contradicted",
+}:
+    raise SystemExit("V4.4-B must retain all six explicit lifecycle states")
+
+analysis_claim_change_state = make_rule_test_game(
+    ["villager", "werewolf", "seer", "guard", "witch", "hunter"]
+)
+analysis_claim_change_state.day = 2
+analysis_claim_change_state.phase = "DAY_MEETING"
+analysis_claim_change_state.public_claims = [
+    main_module.PublicClaimState(
+        day=1,
+        character_id=2,
+        claim_type="role",
+        claimed_role="seer",
+        source="a",
+    ),
+    main_module.PublicClaimState(
+        day=2,
+        character_id=2,
+        claim_type="role",
+        claimed_role="witch",
+        source="b",
+    ),
+    main_module.PublicClaimState(
+        day=1,
+        character_id=3,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=4,
+        result="good",
+        source="c",
+    ),
+    main_module.PublicClaimState(
+        day=2,
+        character_id=3,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=4,
+        result="werewolf",
+        source="d",
+    ),
+]
+analysis_claim_change = main_module.build_public_evidence_analysis(
+    analysis_claim_change_state
+)
+if (
+    analysis_claim_change.commitments
+    or {
+        candidate.kind
+        for candidate in analysis_claim_change.contradiction_candidates
+    }
+    != {"identity_claim_changed", "seer_result_changed"}
+):
+    raise SystemExit("identity and same-target result changes must be neutral candidates")
+
+analysis_nomination_state = make_rule_test_game([])
+analysis_nomination_state.day = 1
+analysis_nomination_state.phase = "DAY_MEETING"
+analysis_nomination_state.sheriff_id = 2
+analysis_nomination_state.badge_destroyed = False
+analysis_nomination_state.meeting = DayMeetingState(
+    day=1,
+    direction="clockwise",
+    order=[2, 3, 4],
+    sheriff_id=2,
+)
+main_module.set_temporary_sheriff_nomination(
+    analysis_nomination_state,
+    analysis_nomination_state.characters[1],
+    3,
+)
+main_module.set_sheriff_nomination(
+    analysis_nomination_state,
+    analysis_nomination_state.characters[1],
+    4,
+)
+if main_module.build_public_evidence_analysis(
+    analysis_nomination_state
+).contradiction_candidates:
+    raise SystemExit("temporary-to-final nomination changes are not contradictions")
+
+analysis_contract_examples = [
+    analysis_active,
+    analysis_revised,
+    analysis_reported,
+    analysis_badge_fulfilled,
+    analysis_badge_destroyed,
+    analysis_target_out,
+    analysis_undetermined,
+    analysis_target_mismatch,
+    analysis_action_mismatch,
+    analysis_branch_out,
+    analysis_claim_change,
+]
+for analysis_contract in analysis_contract_examples:
+    matching_state = (
+        analysis_claim_change_state
+        if analysis_contract is analysis_claim_change
+        else analysis_active_state
+    )
+    if analysis_contract is analysis_revised:
+        matching_state = analysis_revised_state
+    elif analysis_contract is analysis_reported:
+        matching_state = analysis_reported_state
+    elif analysis_contract is analysis_badge_fulfilled:
+        matching_state = analysis_badge_fulfilled_state
+    elif analysis_contract is analysis_badge_destroyed:
+        matching_state = analysis_badge_destroyed_state
+    elif analysis_contract is analysis_target_out:
+        matching_state = analysis_target_out_state
+    elif analysis_contract is analysis_undetermined:
+        matching_state = analysis_undetermined_state
+    elif analysis_contract is analysis_target_mismatch:
+        matching_state = analysis_target_mismatch_state
+    elif analysis_contract is analysis_action_mismatch:
+        matching_state = analysis_action_mismatch_state
+    elif analysis_contract is analysis_branch_out:
+        matching_state = analysis_branch_out_state
+    matching_timeline = main_module.build_public_evidence_timeline(matching_state)
+    matching_evidence_ids = {
+        item.evidence_id for item in matching_timeline.items
+    }
+    if (
+        analysis_contract.schema_version != "public_evidence_analysis.v1"
+        or analysis_contract.truth_scope != "public_only_no_post_game_truth"
+        or analysis_contract.projected_event_sequence
+        != matching_timeline.projected_event_sequence
+        or analysis_contract.commitment_count
+        != len(analysis_contract.commitments)
+        or analysis_contract.contradiction_candidate_count
+        != len(analysis_contract.contradiction_candidates)
+        or [item.sequence for item in analysis_contract.commitments]
+        != list(range(1, analysis_contract.commitment_count + 1))
+        or [
+            item.sequence
+            for item in analysis_contract.contradiction_candidates
+        ]
+        != list(
+            range(1, analysis_contract.contradiction_candidate_count + 1)
+        )
+    ):
+        raise SystemExit("public analysis schema, cursor, counts, or order is invalid")
+    if len(
+        {item.commitment_id for item in analysis_contract.commitments}
+    ) != len(analysis_contract.commitments) or len(
+        {
+            item.candidate_id
+            for item in analysis_contract.contradiction_candidates
+        }
+    ) != len(analysis_contract.contradiction_candidates):
+        raise SystemExit("public analysis IDs must be unique")
+    for commitment in analysis_contract.commitments:
+        linked_ids = {
+            commitment.source_evidence_id,
+            *commitment.related_evidence_ids,
+        }
+        if commitment.superseded_by_evidence_id is not None:
+            linked_ids.add(commitment.superseded_by_evidence_id)
+        if commitment.resolved_by_evidence_id is not None:
+            linked_ids.add(commitment.resolved_by_evidence_id)
+        if (
+            commitment.schema_version != "public_commitment_state.v1"
+            or commitment.judgment != "none"
+            or not linked_ids.issubset(matching_evidence_ids)
+        ):
+            raise SystemExit("commitment states must cite only shared public evidence")
+    for candidate in analysis_contract.contradiction_candidates:
+        if (
+            candidate.schema_version
+            != "public_contradiction_candidate.v1"
+            or candidate.review_status != "needs_review"
+            or candidate.judgment != "none"
+            or candidate.earlier_evidence_id not in matching_evidence_ids
+            or candidate.later_evidence_id not in matching_evidence_ids
+            or candidate.earlier_evidence_id == candidate.later_evidence_id
+        ):
+            raise SystemExit("contradiction candidates must remain neutral and traceable")
+
+analysis_payload = analysis_action_mismatch.model_dump(mode="json")
+for forbidden_analysis_key in {
+    "role",
+    "camp",
+    "winner",
+    "cause",
+    "source",
+    "source_action",
+    "source_actor_ids",
+    "actual_role",
+    "actual_result",
+    "alignment",
+    "wolf_probability",
+    "verdict",
+}:
+    if forbidden_analysis_key in collect_public_timeline_keys(analysis_payload):
+        raise SystemExit(
+            "public analysis must not expose hidden verdict key: "
+            + forbidden_analysis_key
+        )
+
+analysis_action_mismatch_state.characters[7].alive = False
+analysis_action_mismatch_state.eliminations.append(
+    EliminationState(
+        day=1,
+        character_id=8,
+        cause="night_kill",
+        source_action="werewolf_kill",
+        source_actor_ids=[2],
+        source_target_id=8,
+    )
+)
+public_only_analysis_payload = main_module.build_public_evidence_analysis(
+    analysis_action_mismatch_state
+).model_dump(mode="json")
+hidden_analysis_state = analysis_action_mismatch_state.model_copy(deep=True)
+hidden_analysis_state.characters[1].role, hidden_analysis_state.characters[2].role = (
+    hidden_analysis_state.characters[2].role,
+    hidden_analysis_state.characters[1].role,
+)
+hidden_analysis_state.characters[1].camp, hidden_analysis_state.characters[2].camp = (
+    hidden_analysis_state.characters[2].camp,
+    hidden_analysis_state.characters[1].camp,
+)
+for claim in hidden_analysis_state.public_claims:
+    claim.source = "different_hidden_origin"
+hidden_analysis_state.eliminations[-1].cause = "witch_poison"
+hidden_analysis_state.eliminations[-1].source_action = "witch_poison"
+hidden_analysis_state.eliminations[-1].source_actor_ids = [5]
+hidden_analysis_state.winner = "werewolf"
+hidden_analysis_state.winner_reason = "hidden_test_only"
+hidden_analysis_state.night_actions.append(
+    NightActionState(
+        day=1,
+        actor_id=2,
+        action_type="werewolf_kill",
+        target_id=8,
+    )
+)
+if main_module.build_public_evidence_analysis(
+    hidden_analysis_state
+).model_dump(mode="json") != public_only_analysis_payload:
+    raise SystemExit(
+        "public analysis must ignore hidden roles, origins, night causes, and winner"
+    )
+
+strict_analysis_payload = analysis_action_mismatch.model_dump(mode="json")
+try:
+    main_module.PublicEvidenceAnalysisV1.model_validate(
+        {**strict_analysis_payload, "winner": "werewolf"}
+    )
+except main_module.ValidationError:
+    pass
+else:
+    raise SystemExit("public analysis schema must reject hidden top-level fields")
+try:
+    main_module.PublicCommitmentStateV1.model_validate(
+        {
+            **strict_analysis_payload["commitments"][0],
+            "actual_role": "seer",
+        }
+    )
+except main_module.ValidationError:
+    pass
+else:
+    raise SystemExit("public commitment schema must reject truth fields")
+try:
+    main_module.PublicContradictionCandidateV1.model_validate(
+        {
+            **strict_analysis_payload["contradiction_candidates"][0],
+            "alignment": "werewolf",
+        }
+    )
+except main_module.ValidationError:
+    pass
+else:
+    raise SystemExit("public contradiction schema must reject alignment fields")
+
+GAME_STORE[analysis_action_mismatch_state.game_id] = analysis_action_mismatch_state
+state_response_analysis = get_wolf_game_state(
+    analysis_action_mismatch_state.game_id
+)
+direct_response_analysis = main_module.build_public_evidence_analysis(
+    analysis_action_mismatch_state,
+    state_response_analysis.public_evidence_timeline,
+)
+if (
+    state_response_analysis.public_evidence_analysis.model_dump(mode="json")
+    != direct_response_analysis.model_dump(mode="json")
+):
+    raise SystemExit("game state must expose the shared public evidence analysis")
+analysis_public_knowledge_ids = {
+    item.id
+    for item in main_module.build_actor_legal_knowledge(
+        analysis_action_mismatch_state,
+        analysis_action_mismatch_state.characters[6],
+    )
+    if item.visibility == "public"
+}
+if not {
+    item.evidence_id
+    for item in state_response_analysis.public_evidence_timeline.items[-24:]
+}.issubset(analysis_public_knowledge_ids) or not {
+    item.commitment_id
+    for item in state_response_analysis.public_evidence_analysis.commitments[-8:]
+}.union(
+    {
+        item.candidate_id
+        for item in state_response_analysis.public_evidence_analysis.contradiction_candidates[-8:]
+    }
+).issubset(analysis_public_knowledge_ids):
+    raise SystemExit("NPCs and the UI must consume the same public analysis IDs")
+
+state_response_properties = main_module.app.openapi()["components"]["schemas"][
+    "GameStateResponse"
+]["properties"]
+analysis_openapi_schemas = main_module.app.openapi()["components"]["schemas"]
+if (
+    "public_evidence_analysis" not in state_response_properties
+    or "PublicEvidenceAnalysisV1" not in analysis_openapi_schemas
+    or "PublicCommitmentStateV1" not in analysis_openapi_schemas
+    or "PublicContradictionCandidateV1" not in analysis_openapi_schemas
+):
+    raise SystemExit("OpenAPI must publish all V4.4-B public analysis schemas")
 
 true_seer_claim_state = make_rule_test_game(
     ["villager", "seer", "werewolf", "guard", "witch", "hunter"]
@@ -10969,6 +14312,7 @@ summary_state.eliminations = [
 summary_state.characters[2].alive = False
 summary_state.phase = "GAME_OVER"
 summary_state.winner = "good"
+summary_state_before_review = summary_state.model_dump(mode="json")
 summary = get_game_summary(summary_state.game_id)
 if len(summary.characters) != 12 or summary.winner != "good":
     raise SystemExit("game summary should reveal all twelve roles and the winner")
@@ -10978,6 +14322,149 @@ for expected_text in ["查验", "成功挡下狼刀", "公开声明", "私下询
         raise SystemExit(f"game summary is missing action detail: {expected_text}")
 if not any(event.is_private for event in summary.timeline):
     raise SystemExit("game summary should mark hidden actions and private chats")
+explainable_review = summary.explainable_review
+if (
+    explainable_review.schema_version != "post_game_explainable_review.v1"
+    or explainable_review.truth_scope != "post_game_truth_unlocked"
+    or explainable_review.knowledge_scope
+    != "recorded_basis_plus_prior_day_public_evidence"
+    or explainable_review.review_count != 5
+):
+    raise SystemExit("terminal summary should expose the versioned explainable review")
+if {item.decision_kind for item in explainable_review.items} != {
+    "public_speech",
+    "exile_vote",
+    "night_action",
+}:
+    raise SystemExit("explainable review should cover persisted speech, vote, and night choices")
+if not all(item.post_game_truth_unlocked for item in explainable_review.items):
+    raise SystemExit("every truth-bearing review item must carry the post-game marker")
+if (
+    summary_state.model_dump(mode="json") != summary_state_before_review
+    or main_module.build_post_game_explainable_review(
+        summary_state
+    ).model_dump(mode="json")
+    != explainable_review.model_dump(mode="json")
+):
+    raise SystemExit("post-game review projection must be read-only and deterministic")
+
+live_state_payload = get_wolf_game_state(summary_state.game_id).model_dump(mode="json")
+if "explainable_review" in live_state_payload:
+    raise SystemExit("post-game truth must not be added to the live state response")
+summary_openapi = main_module.app.openapi()["components"]["schemas"]
+summary_properties = summary_openapi["GameSummaryResponse"]["properties"]
+for required_schema in [
+    "PostGameExplainableReviewV1",
+    "PostGameDecisionReviewV1",
+    "PostGameEvidenceReferenceV1",
+]:
+    if required_schema not in summary_openapi:
+        raise SystemExit(f"OpenAPI is missing {required_schema}")
+if "explainable_review" not in summary_properties:
+    raise SystemExit("summary OpenAPI should expose the explainable review")
+
+review_error_state = make_rule_test_game(
+    [
+        "villager", "werewolf", "werewolf", "villager",
+        "villager", "villager", "villager", "villager",
+        "hunter", "villager", "witch", "villager",
+    ]
+)
+false_good_signal_id = "signal:seer_check_claim:1:3:2:good"
+review_error_state.public_claims = [
+    main_module.PublicClaimState(
+        day=1,
+        character_id=3,
+        claim_type="seer_check",
+        target_id=2,
+        result="good",
+        source="speech",
+    ),
+]
+review_error_state.speeches = [
+    SpeechState(
+        day=1,
+        character_id=1,
+        name=review_error_state.characters[0].name,
+        speech="我暂时相信2号。",
+        is_player=True,
+        decision_signal_ids=[false_good_signal_id],
+        public_position=PublicPositionV1(
+            speaker_id=1,
+            day=1,
+            phase="DAY_MEETING",
+            trusted_target_ids=[2],
+            basis_signal_ids=[false_good_signal_id],
+        ),
+    ),
+    SpeechState(
+        day=1,
+        character_id=6,
+        name=review_error_state.characters[5].name,
+        speech="我暂票2号。",
+        is_player=False,
+        public_position=PublicPositionV1(
+            speaker_id=6,
+            day=1,
+            phase="DAY_MEETING",
+            suspected_target_ids=[2],
+            provisional_vote_target_id=2,
+        ),
+    ),
+    SpeechState(
+        day=1,
+        character_id=8,
+        name=review_error_state.characters[7].name,
+        speech="这一轮我选择相信2号。",
+        is_player=False,
+        decision_plan={
+            "stance": "support",
+            "stance_target_id": 2,
+            "continuity_reason": "deterministic_variance",
+        },
+        public_position=PublicPositionV1(
+            speaker_id=8,
+            day=1,
+            phase="DAY_MEETING",
+            trusted_target_ids=[2],
+        ),
+    ),
+]
+review_error_state.votes = [
+    VoteState(day=1, voter_id=4, target_id=5, reason="我没有更多证据。"),
+    VoteState(day=1, voter_id=6, target_id=7, reason="临场改票。"),
+]
+review_error_state.hunter_shots = [
+    HunterShotState(day=1, hunter_id=9, target_id=10, trigger="vote"),
+]
+review_error_state.phase = "GAME_OVER"
+review_error_state.winner = "good"
+error_state_before_review = review_error_state.model_dump(mode="json")
+error_review = main_module.build_post_game_explainable_review(review_error_state)
+mistake_categories = {
+    item.error_category
+    for item in error_review.items
+    if item.assessment == "mistaken"
+}
+if mistake_categories != {
+    "deceived",
+    "insufficient_evidence",
+    "continuity_break",
+    "skill_misuse",
+    "deterministic_variance",
+}:
+    raise SystemExit(
+        "post-game review should distinguish all five error categories: "
+        + repr(mistake_categories)
+    )
+if (
+    error_review.error_category_counts["deceived"] != 1
+    or error_review.error_category_counts["skill_misuse"] != 1
+    or len({item.review_id for item in error_review.items})
+    != error_review.review_count
+    or review_error_state.model_dump(mode="json") != error_state_before_review
+):
+    raise SystemExit("review counts, stable IDs, and read-only behavior are inconsistent")
 
 validation_observability_summary = summarize_observation_events(
     captured_validation_observations
@@ -11003,6 +14490,7 @@ for forbidden_observation_detail in [
     if forbidden_observation_detail in serialized_validation_observations:
         raise SystemExit("redacted semantic observations leaked raw validation data")
 
+validation_temp_dir.cleanup()
 print("wolf game start smoke test passed")
 """
     run_command(
@@ -11014,30 +14502,59 @@ print("wolf game start smoke test passed")
 
 
 def check_godot_loads() -> None:
-    godot_bin = shutil.which("godot") or shutil.which("godot4")
+    configured_godot = os.getenv("GODOT_BIN", "").strip()
+    godot_bin = configured_godot or shutil.which("godot") or shutil.which("godot4")
+    macos_app_bin = Path("/Applications/Godot.app/Contents/MacOS/Godot")
+    if not godot_bin and macos_app_bin.is_file():
+        godot_bin = str(macos_app_bin)
     if godot_bin is None:
-        raise SmokeCheckError("Godot CLI not found. On macOS, install it with: brew install --cask godot")
+        raise SmokeCheckError(
+            "Godot CLI not found. Set GODOT_BIN or install Godot 4.7 on Linux/macOS."
+        )
+    godot_path = Path(godot_bin).expanduser()
+    if configured_godot and not godot_path.is_file():
+        raise SmokeCheckError(f"GODOT_BIN does not point to a file: {godot_path}")
+
+    version_result = subprocess.run(
+        [str(godot_path), "--version"],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    version_text = "\n".join(
+        part.strip() for part in (version_result.stdout, version_result.stderr) if part.strip()
+    )
+    if (
+        version_result.returncode != 0
+        or not version_text.startswith("4.7")
+        or ".stable" not in version_text
+    ):
+        raise SmokeCheckError(
+            "Godot 4.7 stable is required for headless checks; detected: "
+            + (version_text or "unknown")
+        )
 
     run_command(
-        [godot_bin, "--headless", "--editor", "--path", str(GAME_DIR), "--quit"],
+        [str(godot_path), "--headless", "--editor", "--path", str(GAME_DIR), "--quit"],
         cwd=ROOT_DIR,
         fail_message="Godot failed to import project resources",
         forbidden_output=("SCRIPT ERROR", "Parse Error", "Failed to load script"),
     )
     run_command(
-        [godot_bin, "--headless", "--path", str(GAME_DIR), "--script", "res://scripts/font_check.gd"],
+        [str(godot_path), "--headless", "--path", str(GAME_DIR), "--script", "res://scripts/font_check.gd"],
         cwd=ROOT_DIR,
         fail_message="Godot dialog font glyph check failed",
         forbidden_output=("SCRIPT ERROR", "Parse Error", "Failed to load", "missing characters"),
     )
     run_command(
-        [godot_bin, "--headless", "--path", str(GAME_DIR), "--script", "res://scripts/day_night_check.gd"],
+        [str(godot_path), "--headless", "--path", str(GAME_DIR), "--script", "res://scripts/day_night_check.gd"],
         cwd=ROOT_DIR,
         fail_message="Godot day/night phase mapping check failed",
         forbidden_output=("SCRIPT ERROR", "Parse Error", "Failed to load"),
     )
     run_command(
-        [godot_bin, "--headless", "--path", str(GAME_DIR), MAIN_SCENE, "--quit"],
+        [str(godot_path), "--headless", "--path", str(GAME_DIR), MAIN_SCENE, "--quit"],
         cwd=ROOT_DIR,
         fail_message="Godot failed to load the main scene",
         forbidden_output=("SCRIPT ERROR", "Parse Error", "Failed to load script"),
@@ -11076,7 +14593,7 @@ def check_godot_ui_layout() -> None:
         '[node name="KeyInfoToggleButton" type="Button" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock"]',
         '[node name="KeyInfoContentPanel" type="PanelContainer" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock"]',
         '[node name="KeyInfoLabel" type="Label" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoContentPanel/Margin/VBox/ScrollContainer"]',
-        'text = "◇ 公开说法（真假未确认） · ● 已确认公开动作"',
+        'text = "◇ 公开说法（真假未确认） · ◆ 公开承诺（未验真） · ● 已确认公开动作"',
         '[node name="WolfPanel" type="Control" parent="UI"]',
         'text = "当前行动"',
         '[node name="IntelPanel" type="Control" parent="UI"]',
@@ -11087,6 +14604,8 @@ def check_godot_ui_layout() -> None:
         '[node name="GameSetupOverlay" type="Control" parent="UI"]',
         '[node name="PlayerNameInput" type="LineEdit" parent="UI/GameSetupOverlay/Panel/Margin/VBox/PlayerNameRow"]',
         '[node name="LLMEnabledToggle" type="CheckButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow"]',
+        '[node name="LLMValidationToggle" type="CheckButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/LLMValidationRow"]',
+        'text = "启用 LLM 输出校验"',
         '[node name="PlayerRoleOption" type="OptionButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/PlayerRoleRow"]',
         '[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_phase_hud"]',
         '[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_wolf_panel"]',
@@ -11101,16 +14620,34 @@ def check_godot_ui_layout() -> None:
         'TabBar/colors/font_selected_color = Color(0, 0, 0, 1)',
         'TabBar/colors/font_unselected_color = Color(0, 0, 0, 1)',
         'TextEdit/colors/font_readonly_color = Color(0, 0, 0, 1)',
-        'offset_left = -270.0',
         '[node name="ScrollContainer" type="ScrollContainer"',
         'horizontal_scroll_mode = 0',
-        'offset_left = -456.0',
-        'default_font_size = 13',
-        'columns = 3',
+        'default_font_size = 14',
+        '[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_light_control_focus"]',
+        '[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_dark_focus"]',
+        'Button/styles/focus = SubResource("StyleBoxFlat_light_control_focus")',
+        'CheckButton/styles/focus = SubResource("StyleBoxFlat_light_control_focus")',
+        'LineEdit/styles/focus = SubResource("StyleBoxFlat_light_control_focus")',
+        'OptionButton/styles/focus = SubResource("StyleBoxFlat_light_control_focus")',
+        'TextEdit/styles/focus = SubResource("StyleBoxFlat_light_control_focus")',
+        'TabBar/styles/tab_focus = SubResource("StyleBoxFlat_light_control_focus")',
         'text = "RanRanHuaiHuaiKill"',
         '[node name="GameSummaryOverlay" type="Control"',
+        '[node name="ExplainableReview" type="ScrollContainer" parent="UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs"]',
+        '[node name="ReviewLabel" type="Label" parent="UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs/ExplainableReview/Margin"]',
         '[node name="ReviewGameButton" type="Button"',
         '[node name="GameSummaryRequest" type="HTTPRequest"',
+        '[node name="GuideButton" type="Button" parent="UI/PhaseHUD/Panel/Margin/Row"]',
+        '[node name="OnboardingOverlay" type="Control" parent="UI"]',
+        '[node name="ProgressLabel" type="Label" parent="UI/OnboardingOverlay/Panel/Margin/VBox/HeaderRow"]',
+        '[node name="ScopeLabel" type="Label" parent="UI/OnboardingOverlay/Panel/Margin/VBox"]',
+        '[node name="BodyScroll" type="ScrollContainer" parent="UI/OnboardingOverlay/Panel/Margin/VBox"]',
+        '[node name="SkipButton" type="Button" parent="UI/OnboardingOverlay/Panel/Margin/VBox/ActionRow"]',
+        '[node name="BackButton" type="Button" parent="UI/OnboardingOverlay/Panel/Margin/VBox/ActionRow"]',
+        '[node name="NextButton" type="Button" parent="UI/OnboardingOverlay/Panel/Margin/VBox/ActionRow"]',
+        'text = "仅你可见 · 我的身份"',
+        'text = "仅你可见 · 狼队友：暂无"',
+        '键盘：Tab / Shift+Tab 切换正文和按钮',
         '[node name="LittleKnight" parent="." instance=ExtResource("3_npc_scene")]',
         '[node name="DoctorStrange" parent="." instance=ExtResource("3_npc_scene")]',
         '[node name="HuaiHuai" parent="." instance=ExtResource("3_npc_scene")]',
@@ -11138,10 +14675,15 @@ def check_godot_ui_layout() -> None:
         '[ext_resource type="FontFile" path="res://assets/fonts/NotoSansSC-Variable.ttf" id="5_main_font"]',
         'theme = SubResource("Theme_main_cjk")',
         '[node name="HistoryText" type="TextEdit"',
-        'custom_minimum_size = Vector2(0, 420)',
         'theme_override_font_sizes/font_size = 13',
         'text = "仅你可见的行动记录"',
         '[node name="TemporaryNominationOption" type="OptionButton"',
+        '[node name="SpeechPreviewPanel" type="PanelContainer"',
+        'theme_override_styles/panel = SubResource("StyleBoxFlat_light_control")',
+        '[node name="ConfirmButton" type="Button" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel/Margin/VBox/Actions"]',
+        'text = "返回修改"',
+        'text = "确认提交"',
+        '[node name="PlayerSpeechPreviewRequest" type="HTTPRequest"',
         '[node name="SheriffOverviewLabel" type="Label"',
         'position = Vector2(350, -285)',
         'position = Vector2(657, 41)',
@@ -11150,6 +14692,28 @@ def check_godot_ui_layout() -> None:
     for fragment in required_scene_fragments:
         if fragment not in scene_text:
             raise SmokeCheckError(f"Godot menu layout is missing: {fragment}")
+
+    llm_validation_toggle_start = scene_text.index(
+        '[node name="LLMValidationToggle" type="CheckButton"'
+    )
+    llm_validation_toggle_end = scene_text.index(
+        "\n[node ",
+        llm_validation_toggle_start + 1,
+    )
+    llm_validation_toggle_contract = scene_text[
+        llm_validation_toggle_start:llm_validation_toggle_end
+    ]
+    if (
+        "button_pressed = true" not in llm_validation_toggle_contract
+        or "disabled = true" not in llm_validation_toggle_contract
+        or "生成 1 次、校验与纠错 0 次并直接显示"
+        not in llm_validation_toggle_contract
+        or "Python 规则结算仍独立生效"
+        not in llm_validation_toggle_contract
+    ):
+        raise SmokeCheckError(
+            "Godot LLM validation toggle must default on and explain zero-validation mode"
+        )
 
     if scene_text.count('instance=ExtResource("3_npc_scene")') != 13:
         raise SmokeCheckError("Godot world should contain eleven game NPCs and two town residents")
@@ -11186,7 +14750,7 @@ def check_godot_ui_layout() -> None:
         if fragment not in scene_text:
             raise SmokeCheckError("resident scene introduction is not synchronized with its visual identity")
 
-    if scene_text.count('theme = SubResource("Theme_light_ui")') != 5:
+    if scene_text.count('theme = SubResource("Theme_light_ui")') != 6:
         raise SmokeCheckError("every light UI root should use the black-text light theme")
     light_ui_start = scene_text.index('[node name="PhaseHUD" type="Control" parent="UI"]')
     light_ui_end = scene_text.index('[node name="GameSummaryOverlay" type="Control" parent="UI"]')
@@ -11195,8 +14759,13 @@ def check_godot_ui_layout() -> None:
         if "theme_override_colors/font" in line and "Color(0, 0, 0, 1)" not in line:
             raise SmokeCheckError(f"light UI text is not black: {line.strip()}")
 
-    if 'card.custom_minimum_size = Vector2(168, 205)' not in script_text:
-        raise SmokeCheckError("Godot character cards are not using the intel drawer three-column size")
+    if (
+        '"card_min_width": 160.0' not in script_text
+        or 'card.custom_minimum_size = Vector2(_character_card_min_width, 205.0)'
+        not in script_text
+        or "func _apply_character_card_sizes() -> void:" not in script_text
+    ):
+        raise SmokeCheckError("Godot character cards must follow the active responsive profile")
     for fragment in [
         '[node name="TownBackground" type="Node2D"]',
         'z_index = -20',
@@ -11227,22 +14796,28 @@ def check_godot_ui_layout() -> None:
         '_update_world_time("", true)',
         '_update_world_time(_current_wolf_phase)',
         '@onready var wolf_scroll_container: ScrollContainer',
-        'const WOLF_MENU_WIDTH := 440.0',
+        'const RESPONSIVE_LAYOUT_SCHEMA_VERSION := "agent_town_responsive_layout.v1"',
+        'const FOCUS_NAVIGATION_SCHEMA_VERSION := "agent_town_focus_navigation.v1"',
+        'const RESPONSIVE_COMPACT_MAX_WINDOW_WIDTH := 1199',
+        'const RESPONSIVE_WIDE_MIN_WINDOW_WIDTH := 1440',
+        'const RESPONSIVE_WIDE_MIN_WINDOW_HEIGHT := 820',
         'const WOLF_MENU_MIN_EXPANDED_HEIGHT := 320.0',
         'const WOLF_MENU_MAX_EXPANDED_HEIGHT := 520.0',
-        'const INTEL_PANEL_WIDTH := 600.0',
         'const IDENTITY_PANEL_COLLAPSED_BOTTOM := 184.0',
         'const IDENTITY_PANEL_EXPANDED_BOTTOM := 500.0',
-        'viewport_height * 0.62',
+        'func _responsive_profile_name_for_window(window_size: Vector2i) -> String:',
+        'var window_size := get_window().size',
+        'get_window().size_changed.connect(_on_viewport_size_changed)',
+        'character_grid.columns = int(profile.get("intel_columns", 3))',
+        'func _apply_character_card_sizes() -> void:',
         'func _show_game_setup() -> void:',
         'game_setup_overlay.add_to_group("dialog_open")',
         'setup_status_label.text = "创建失败：后端响应缺少游戏编号。"',
-        'func _set_intel_panel_open(open: bool) -> void:',
+        'func _set_intel_panel_open(open: bool, restore_focus: bool = true) -> void:',
         'game_summary_request.cancel_request()',
         'intel_tabs.set_tab_title(0, "场上角色")',
         'wolf_panel.visible = has_game',
         'setup_toggle_button.disabled = has_game and _current_wolf_phase != "GAME_OVER"',
-        'for ui_root in [phase_hud, wolf_panel, intel_panel, game_setup_overlay]:',
         'var phase_changed := _current_wolf_phase != str(phase)',
         'call_deferred("_keep_sheriff_controls_visible")',
         'wolf_scroll_container.ensure_control_visible(sheriff_withdrawal_row)',
@@ -11253,6 +14828,73 @@ def check_godot_ui_layout() -> None:
     ]:
         if fragment not in script_text:
             raise SmokeCheckError(f"Godot compact panel behavior is missing: {fragment}")
+
+    responsive_start = script_text.index("const RESPONSIVE_LAYOUT_PROFILES := {")
+    responsive_end = script_text.index("const UI_FOCUS_SCOPE_WORLD", responsive_start)
+    responsive_contract = script_text[responsive_start:responsive_end]
+    responsive_profiles = {
+        "compact": (
+            '"wolf_menu_width": 420.0',
+            '"wolf_height_ratio": 0.66',
+            '"intel_panel_width": 520.0',
+            '"intel_columns": 2',
+        ),
+        "default": (
+            '"wolf_menu_width": 440.0',
+            '"wolf_height_ratio": 0.62',
+            '"intel_panel_width": 600.0',
+            '"intel_columns": 3',
+        ),
+        "wide": (
+            '"wolf_menu_width": 480.0',
+            '"wolf_height_ratio": 0.68',
+            '"intel_panel_width": 736.0',
+            '"intel_columns": 4',
+        ),
+    }
+    profile_names = list(responsive_profiles)
+    for profile_index, profile_name in enumerate(profile_names):
+        profile_start = responsive_contract.index(f'"{profile_name}": {{')
+        profile_end = (
+            responsive_contract.index(
+                f'"{profile_names[profile_index + 1]}": {{',
+                profile_start,
+            )
+            if profile_index + 1 < len(profile_names)
+            else len(responsive_contract)
+        )
+        profile_contract = responsive_contract[profile_start:profile_end]
+        if any(
+            marker not in profile_contract
+            for marker in responsive_profiles[profile_name]
+        ):
+            raise SmokeCheckError(
+                f"Godot responsive profile drifted: {profile_name}"
+            )
+    selector_start = script_text.index(
+        "func _responsive_profile_name_for_window(window_size: Vector2i) -> String:"
+    )
+    selector_end = script_text.index("\nfunc ", selector_start + 1)
+    selector_contract = script_text[selector_start:selector_end]
+    if (
+        "window_size.x <= RESPONSIVE_COMPACT_MAX_WINDOW_WIDTH" not in selector_contract
+        or "window_size.x >= RESPONSIVE_WIDE_MIN_WINDOW_WIDTH" not in selector_contract
+        or "window_size.y >= RESPONSIVE_WIDE_MIN_WINDOW_HEIGHT" not in selector_contract
+        or "get_visible_rect" in selector_contract
+    ):
+        raise SmokeCheckError(
+            "Godot responsive breakpoints must use the physical window dimensions"
+        )
+    for obsolete_fixed_layout in (
+        "const WOLF_MENU_WIDTH :=",
+        "const INTEL_PANEL_WIDTH :=",
+        "card.custom_minimum_size = Vector2(168, 205)",
+    ):
+        if obsolete_fixed_layout in script_text:
+            raise SmokeCheckError(
+                "obsolete fixed Godot layout contract is still present: "
+                + obsolete_fixed_layout
+            )
     for removed_fragment in [
         '[node name="Ground" type="Polygon2D" parent="."]',
         '[node name="Path" type="Polygon2D" parent="."]',
@@ -11266,7 +14908,25 @@ def check_godot_ui_layout() -> None:
         'func _render_game_summary(summary: Dictionary)',
         'func _request_game_summary()',
         'game_summary_tabs.set_tab_title(0, "角色复盘")',
+        'game_summary_tabs.set_tab_title(2, "解释复盘（赛后）")',
+        'func _format_post_game_explainable_review(review: Variant) -> String:',
+        '"post_game_explainable_review.v1"',
+        '【赛后真值已解锁】',
+        'summary.get("explainable_review", {})',
+        'func _post_game_error_category_label(category: String) -> String:',
+        '"deceived":',
+        '"deterministic_variance":',
         '"enable_llm": llm_enabled_toggle.button_pressed',
+        '@onready var llm_validation_toggle: CheckButton =',
+        'llm_enabled_toggle.toggled.connect(_on_llm_enabled_toggled)',
+        'llm_validation_toggle.toggled.connect(_on_llm_validation_toggled)',
+        'func _update_llm_validation_controls() -> void:',
+        'func _llm_validation_requested() -> bool:',
+        'return llm_enabled_toggle.button_pressed and llm_validation_toggle.button_pressed',
+        '"enable_llm_validation": _llm_validation_requested()',
+        'game_data.get("llm_validation_enabled", false)',
+        '"LLM：已启用 · 校验开启（最多5轮）"',
+        '"LLM：已启用 · 原文直出（0次校验）"',
         '"npc_count": 11',
         'func _update_hunter_controls(game_data: Dictionary)',
         'private_info.get("wolf_teammates", [])',
@@ -11284,36 +14944,494 @@ def check_godot_ui_layout() -> None:
         '"投警长并公布" if can_vote else "公布警长票型"',
         '"SHERIFF_WITHDRAWAL":',
         'func _format_combined_vote_result(vote_data: Dictionary)',
+        'const WOLF_PLAYER_SPEECH_PREVIEW_URL',
+        'func _request_player_speech_preview(kind: String, submission_body: Dictionary)',
+        'func _on_player_speech_preview_request_completed',
+        'func _on_speech_preview_confirm_button_pressed()',
+        'func _format_player_speech_preview(preview_data: Dictionary)',
+        '"preview_fingerprint"',
+        'func _prepare_idempotent_body(channel: String, operation: String, body: Dictionary)',
+        'func _complete_idempotent_command(channel: String)',
+        'func _reset_idempotency_commands()',
+        'func _restore_confirmed_speech_preview()',
+        'if not _pending_speech_submission_confirmed:',
+        'payload["idempotency_key"]',
+        '_reset_idempotency_commands()',
         '"reason": vote_reason',
         'str(_wolf_campaign_status.get(character_id, ""))',
         '"player_role": str(_get_selected_option_metadata(player_role_option, "random"))',
         'func _update_player_identity_display(game_data: Dictionary)',
         'func _update_key_public_info(game_data: Dictionary)',
+        'game_data.get("public_evidence_timeline", {})',
+        'func _public_evidence_marker(category: String) -> String:',
+        'game_data.get("public_evidence_analysis", {})',
+        'func _public_commitment_status_marker(status: String) -> String:',
+        'func _public_commitment_status_label(status: String) -> String:',
+        'func _format_public_evidence_analysis(analysis: Variant) -> Array[String]:',
+        'func _format_public_evidence_timeline(',
+        'analysis: Variant,',
+        '"public_evidence_analysis.v1"',
+        'analysis.get("commitments", [])',
+        'analysis.get("contradiction_candidates", [])',
+        '! 矛盾候选仅供核对，不代表说谎或阵营判断。',
+        '"public_evidence_timeline.v1"',
+        '"commitment", "public_commitment":',
+        '公开证据时间线 · 规则事件 #',
         'game_data.get("public_intel", [])',
         'func _set_key_info_expanded(expanded: bool, animate: bool = true)',
         'previous_count == 0 and _key_info_count > 0',
-        '"●" if str(item.get("category", "claim")) == "confirmed_action" else "◇"',
+        '_public_evidence_marker(str(item.get("category", "claim")))',
         'player_role_label.add_theme_color_override("font_color", Color(0, 0, 0, 1))',
         'label.add_theme_color_override("font_color", Color(0, 0, 0, 1))',
         'func _update_player_action_history(game_data: Dictionary)',
-        'func _configure_wolf_panel_focus()',
-        'node.focus_mode = Control.FOCUS_NONE',
-        'call_deferred("_release_wolf_panel_focus")',
+        'func _configure_ui_focus_navigation() -> void:',
+        'var phase_matches: bool = (',
+        'var next_step_id: String = str(_onboarding_pending_step_ids.pop_front())',
+        'var tab_containers: Array[TabContainer] = [intel_tabs, game_summary_tabs]',
+        'var tab_bar: TabBar = tab_container.get_tab_bar()',
+        'node.focus_mode = Control.FOCUS_ALL',
+        'const UI_FOCUS_SCOPE_WORLD := "WORLD"',
+        'const UI_FOCUS_SCOPE_PANEL := "PANEL"',
+        'const UI_FOCUS_SCOPE_TEXT_ENTRY := "TEXT_ENTRY"',
+        'const UI_FOCUS_SCOPE_MODAL := "MODAL"',
+        'func _on_ui_control_focus_entered(control: Control) -> void:',
+        'func _set_ui_focus_scope(scope: String) -> void:',
+        'func _restore_focus_after_close(',
+        'func _repair_focus_in_top_scope() -> void:',
+        'func _repair_focus_after_modal_close() -> void:',
+        'func _ensure_focused_control_visible(control: Control) -> void:',
+        'func _release_focus_to_world() -> void:',
+        'func _handle_modal_focus_direction(event: InputEvent, scope: Control) -> bool:',
+        'func _set_scroll_focus_outline(scroll: ScrollContainer, focused: bool) -> void:',
+        'player.call("set_ui_navigation_locked", scope != UI_FOCUS_SCOPE_WORLD)',
         'private_info.get("wolf_teammates", [])',
         'func _update_contextual_panel_visibility()',
         'night_action_option.visible = has_active_night_skill',
         '"temporary_nomination_target_id": null',
         'func _update_sheriff_overview()',
         'func _finish_gameplay_text_submission(input: LineEdit)',
+        '_release_focus_to_world()',
         'player_speech_input.text_submitted.connect(_on_player_speech_input_submitted)',
         'sheriff_speech_input.text_submitted.connect(_on_sheriff_speech_input_submitted)',
         'vote_reason_input.text_submitted.connect(_on_vote_reason_input_submitted)',
         'get_viewport().gui_release_focus()',
+        'const ONBOARDING_SCHEMA_VERSION := "agent_town_onboarding.v1"',
+        'const ONBOARDING_SETTINGS_PATH := "user://agent_town_onboarding.cfg"',
+        'func _evaluate_automatic_onboarding(game_data: Dictionary) -> void:',
+        'func _onboarding_step_is_eligible(step: Dictionary) -> bool:',
+        'func _show_manual_onboarding() -> void:',
+        'func _save_onboarding_preferences() -> void:',
+        'func _update_onboarding_layout() -> void:',
+        '_onboarding_seen_step_ids.has(step_id)',
+        '_onboarding_seen_step_ids[step_id] = true',
+        'func _reset_onboarding_for_game(game_id: String) -> void:',
+        '_onboarding_seen_step_ids.clear()',
+        'game_data.get("player_private_info", null)',
+        'event.keycode == KEY_F1',
+        'event.is_action_pressed("ui_focus_next")',
+        'event.is_action_pressed("ui_focus_prev")',
+        'func _move_onboarding_focus(direction: int) -> void:',
+        'onboarding_overlay.add_to_group("dialog_open")',
+        '信息范围：[仅你可见] 不会自动成为公开事实',
+        '信息范围：[全场公开 · 未验真]',
+        '信息范围：[仅赛后解锁]',
+        '原文不会自动公开，但会影响我的后续判断。',
     ]:
         if script_fragment not in script_text:
             raise SmokeCheckError(f"Godot game summary UI is missing: {script_fragment}")
-    if 'window/size/viewport_width=1280' not in project_text or 'window/size/viewport_height=720' not in project_text:
-        raise SmokeCheckError("Godot default window should be 1280x720")
+
+    if (
+        '"enable_llm_validation": llm_validation_toggle.button_pressed'
+        in script_text
+    ):
+        raise SmokeCheckError(
+            "Godot must force validation off when the per-game LLM switch is off"
+        )
+
+    for unsafe_type_inference in (
+        'var phase_matches := (',
+        'var next_step_id := _onboarding_pending_step_ids.pop_front()',
+        'for tab_container in [intel_tabs, game_summary_tabs]:\n\t\tvar tab_bar :=',
+    ):
+        if unsafe_type_inference in script_text:
+            raise SmokeCheckError(
+                "Godot 4.7 warning-as-error type inference regression is present: "
+                + unsafe_type_inference
+            )
+
+    onboarding_contract_start = script_text.index("const ONBOARDING_STEPS := [")
+    onboarding_contract_end = script_text.index(
+        "const ONBOARDING_ROLE_GUIDES := {",
+        onboarding_contract_start,
+    )
+    onboarding_contract = script_text[
+        onboarding_contract_start:onboarding_contract_end
+    ]
+    expected_onboarding_steps = {
+        "identity_and_scope",
+        "night_skill",
+        "sheriff_flow",
+        "public_speech",
+        "private_chat",
+        "exile_vote",
+        "post_game_review",
+    }
+    actual_onboarding_step_order = re.findall(
+        r'"step_id": "([a-z_]+)"',
+        onboarding_contract,
+    )
+    if actual_onboarding_step_order != [
+        "identity_and_scope",
+        "night_skill",
+        "sheriff_flow",
+        "public_speech",
+        "private_chat",
+        "exile_vote",
+        "post_game_review",
+    ]:
+        raise SmokeCheckError(
+            "Godot onboarding must keep the ordered seven-step V4.7-A contract"
+        )
+    for field in ("trigger_kind", "phases", "roles", "information_scope", "title", "body"):
+        if onboarding_contract.count(f'"{field}":') != len(expected_onboarding_steps):
+            raise SmokeCheckError(
+                f"Godot onboarding step contract is missing field: {field}"
+            )
+    expected_step_contracts = {
+        "identity_and_scope": (
+            '"trigger_kind": "full_state"',
+            '"phases": []',
+            '"roles": []',
+            '"information_scope": "player_private"',
+        ),
+        "night_skill": (
+            '"trigger_kind": "phase"',
+            '"phases": ["NIGHT"]',
+            '"roles": ["werewolf", "seer", "witch", "hunter", "guard", "villager"]',
+            '"information_scope": "player_private"',
+        ),
+        "sheriff_flow": (
+            '"trigger_kind": "phase"',
+            '"phases": ["SHERIFF_SIGNUP", "SHERIFF_SPEECH", "SHERIFF_WITHDRAWAL", "SHERIFF_VOTE", "SHERIFF_RUNOFF_SPEECH", "SHERIFF_RUNOFF_VOTE", "MEETING_ORDER", "SHERIFF_NOMINATION", "BADGE_TRANSFER"]',
+            '"roles": []',
+            '"information_scope": "public_unverified"',
+        ),
+        "public_speech": (
+            '"trigger_kind": "player_speech_turn"',
+            '"phases": ["SHERIFF_SPEECH", "SHERIFF_RUNOFF_SPEECH", "DAY_MEETING"]',
+            '"roles": []',
+            '"information_scope": "public_action"',
+        ),
+        "private_chat": (
+            '"trigger_kind": "alive_phase"',
+            '"phases": ["FREE_ACTIVITY"]',
+            '"roles": []',
+            '"information_scope": "player_private"',
+        ),
+        "exile_vote": (
+            '"trigger_kind": "alive_phase"',
+            '"phases": ["VOTE"]',
+            '"roles": []',
+            '"information_scope": "public_action"',
+        ),
+        "post_game_review": (
+            '"trigger_kind": "phase"',
+            '"phases": ["GAME_OVER"]',
+            '"roles": []',
+            '"information_scope": "post_game_truth"',
+        ),
+    }
+    for step_index, step_id in enumerate(actual_onboarding_step_order):
+        step_start = onboarding_contract.index(f'"step_id": "{step_id}"')
+        step_end = (
+            onboarding_contract.index(
+                f'"step_id": "{actual_onboarding_step_order[step_index + 1]}"',
+                step_start,
+            )
+            if step_index + 1 < len(actual_onboarding_step_order)
+            else len(onboarding_contract)
+        )
+        step_contract = onboarding_contract[step_start:step_end]
+        if any(
+            marker not in step_contract
+            for marker in expected_step_contracts[step_id]
+        ):
+            raise SmokeCheckError(
+                f"Godot onboarding trigger contract drifted: {step_id}"
+            )
+
+    role_contract_start = onboarding_contract_end
+    role_contract_end = script_text.index(
+        "const BADGE_FLOW_REVISION_REASON_OPTIONS := [",
+        role_contract_start,
+    )
+    role_contract = script_text[role_contract_start:role_contract_end]
+    for role in ("werewolf", "seer", "witch", "hunter", "guard", "villager"):
+        if f'\t"{role}": {{' not in role_contract:
+            raise SmokeCheckError(f"Godot onboarding is missing role-safe help: {role}")
+
+    start_handler_start = script_text.index("func _on_game_start_request_completed(")
+    state_handler_start = script_text.index("func _on_game_state_request_completed(")
+    night_handler_start = script_text.index("func _on_night_action_request_completed(")
+    start_handler = script_text[start_handler_start:state_handler_start]
+    state_handler = script_text[state_handler_start:night_handler_start]
+    if "_evaluate_automatic_onboarding" in start_handler:
+        raise SmokeCheckError("GameStartResponse must not trigger player-private onboarding")
+    if "_evaluate_automatic_onboarding(json.data)" not in state_handler:
+        raise SmokeCheckError("complete game state must evaluate automatic onboarding")
+    if (
+        "_onboarding_full_state_pending_after_manual" not in state_handler
+        or "_render_onboarding_step(current_manual_step)" not in state_handler
+    ):
+        raise SmokeCheckError(
+            "a complete state must refresh manual help and preserve automatic evaluation"
+        )
+
+    input_handler_start = script_text.index("func _input(event: InputEvent) -> void:")
+    unhandled_input_start = script_text.index(
+        "func _unhandled_input(event: InputEvent) -> void:"
+    )
+    input_handler = script_text[input_handler_start:unhandled_input_start]
+    if input_handler.index('event.is_action_pressed("ui_focus_prev")') > input_handler.index(
+        'event.is_action_pressed("ui_focus_next")'
+    ):
+        raise SmokeCheckError("Shift+Tab must be handled before the non-exact Tab action")
+
+    nearby_npc_start = script_text.index("func _get_nearby_npc():", unhandled_input_start)
+    unhandled_input = script_text[unhandled_input_start:nearby_npc_start]
+    if (
+        'if onboarding_overlay.visible:' not in unhandled_input
+        or 'get_viewport().set_input_as_handled()' not in unhandled_input
+        or unhandled_input.index('if onboarding_overlay.visible:')
+        > unhandled_input.index('if game_summary_overlay.visible:')
+    ):
+        raise SmokeCheckError(
+            "onboarding modal must block world interaction before other UI handlers"
+        )
+
+    def gd_function_slice(source: str, signature: str) -> str:
+        start = source.index(signature)
+        end = source.find("\nfunc ", start + 1)
+        return source[start:] if end < 0 else source[start:end]
+
+    if "node.focus_mode = Control.FOCUS_NONE" in script_text:
+        raise SmokeCheckError("Godot controls must not revert to the old mouse-only focus policy")
+    if (
+        '_is_wasd_key_event(event) and not _current_focus_is_editable_text()'
+        not in input_handler
+        or "event is InputEventMouseButton and event.pressed" not in input_handler
+        or "speech_preview_panel.get_global_rect()" not in input_handler
+        or "speech_preview_panel.is_visible_in_tree()" not in input_handler
+        or "func _handle_modal_focus_direction" not in script_text
+        or "focus_owner.scroll_vertical += 48" not in script_text
+    ):
+        raise SmokeCheckError(
+            "Godot world/panel/text/modal keyboard boundaries are incomplete"
+        )
+
+    modal_lifecycle_contracts = {
+        "setup open": (
+            gd_function_slice(script_text, "func _show_game_setup() -> void:"),
+            (
+                "_setup_focus_return = _current_focus_control()",
+                'dialog_box.call("hide_dialog", false)',
+                'game_setup_overlay.add_to_group("dialog_open")',
+                "_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)",
+                'call_deferred("_focus_control_if_available", player_name_input)',
+            ),
+        ),
+        "setup close": (
+            gd_function_slice(
+                script_text,
+                "func _hide_game_setup(restore_focus: bool = true) -> void:",
+            ),
+            (
+                'game_setup_overlay.remove_from_group("dialog_open")',
+                '"_restore_focus_after_close"',
+            ),
+        ),
+        "summary open": (
+            gd_function_slice(script_text, "func _show_game_summary() -> void:"),
+            (
+                "_summary_focus_return = _current_focus_control()",
+                "_hide_game_setup(false)",
+                "_set_intel_panel_open(false, false)",
+                'game_summary_overlay.add_to_group("dialog_open")',
+                "_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)",
+            ),
+        ),
+        "summary close": (
+            gd_function_slice(script_text, "func _hide_game_summary() -> void:"),
+            (
+                'game_summary_overlay.remove_from_group("dialog_open")',
+                '"_restore_focus_after_close"',
+                "review_game_button",
+            ),
+        ),
+        "speech preview open": (
+            gd_function_slice(
+                script_text,
+                "func _show_speech_preview_focus(preferred: Control) -> void:",
+            ),
+            (
+                "_set_wolf_menu_expanded(true)",
+                'speech_preview_panel.add_to_group("dialog_open")',
+                "_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)",
+                'call_deferred("_focus_control_if_available", preferred)',
+            ),
+        ),
+        "speech preview close": (
+            gd_function_slice(
+                script_text,
+                "func _close_speech_preview_focus(restore_focus: bool) -> void:",
+            ),
+            (
+                'speech_preview_panel.remove_from_group("dialog_open")',
+                '"_restore_focus_after_close"',
+                'call_deferred("_repair_focus_after_modal_close")',
+            ),
+        ),
+    }
+    for lifecycle_name, (function_text, markers) in modal_lifecycle_contracts.items():
+        if any(marker not in function_text for marker in markers):
+            raise SmokeCheckError(
+                f"Godot modal focus lifecycle is incomplete: {lifecycle_name}"
+            )
+
+    blur_handler = gd_function_slice(
+        script_text,
+        "func _on_ui_control_focus_exited(control: Control) -> void:",
+    )
+    if 'call_deferred("_repair_focus_after_modal_close")' not in blur_handler:
+        raise SmokeCheckError(
+            "Godot focus scope must repair itself when a control releases focus"
+        )
+
+    dialog_root_start = dialog_scene_text.index('[node name="DialogBox" type="Control"]')
+    dialog_root_end = dialog_scene_text.index("\n[node ", dialog_root_start + 1)
+    dialog_root = dialog_scene_text[dialog_root_start:dialog_root_end]
+    if "mouse_filter = 0" not in dialog_root:
+        raise SmokeCheckError("Godot dialog must stop mouse clicks from reaching the world")
+    for dialog_fragment in (
+        "signal closed",
+        "func hide_dialog(restore_focus: bool = true) -> void:",
+        "closed.emit()",
+        "func _handle_focus_direction(event: InputEvent) -> bool:",
+        "get_window().size_changed.connect(_update_responsive_layout)",
+    ):
+        if dialog_fragment not in dialog_script_text:
+            raise SmokeCheckError(
+                f"Godot dialog focus lifecycle is missing: {dialog_fragment}"
+            )
+    for player_fragment in (
+        "var _ui_navigation_locked := false",
+        "or _ui_navigation_locked",
+        "func set_ui_navigation_locked(locked: bool) -> void:",
+    ):
+        if player_fragment not in player_script_text:
+            raise SmokeCheckError(
+                f"Godot player UI navigation lock is missing: {player_fragment}"
+            )
+
+    explicit_font_sizes = [
+        int(value)
+        for source in (scene_text, dialog_scene_text)
+        for value in re.findall(r"theme_override_font_sizes/font_size = (\d+)", source)
+    ]
+    if not explicit_font_sizes or min(explicit_font_sizes) < 12:
+        raise SmokeCheckError("Godot explicit UI font sizes must stay at or above 12px")
+    for focus_fragment in (
+        '[node name="DetailsScroll" type="ScrollContainer"',
+        "focus_mode = 2",
+        '[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_dialog_focus"]',
+        'Button/styles/focus = SubResource("StyleBoxFlat_dialog_focus")',
+        'LineEdit/styles/focus = SubResource("StyleBoxFlat_dialog_focus")',
+    ):
+        if focus_fragment not in dialog_scene_text:
+            raise SmokeCheckError(
+                f"Godot dialog readable-scroll/focus styling is missing: {focus_fragment}"
+            )
+
+    save_handler_start = script_text.index("func _save_onboarding_preferences() -> void:")
+    save_handler_end = script_text.index("\nfunc ", save_handler_start + 1)
+    save_handler = script_text[save_handler_start:save_handler_end]
+    load_handler_start = script_text.index("func _load_onboarding_preferences() -> void:")
+    load_handler = script_text[load_handler_start:save_handler_start]
+    if "typeof(completed_value) != TYPE_BOOL" not in load_handler:
+        raise SmokeCheckError("onboarding preferences must reject non-boolean completion values")
+    if (
+        save_handler.count("config.set_value(") != 2
+        or '"schema_version"' not in save_handler
+        or '"automatic_guide_completed"' not in save_handler
+    ):
+        raise SmokeCheckError("onboarding preferences must keep an exact two-field allowlist")
+    for forbidden_persisted_fact in (
+        "_onboarding_game_id",
+        "_current_player_role",
+        "player_private_info",
+        "wolf_teammates",
+        "last_check_result",
+        "witch_attacked_target",
+        "action_history",
+    ):
+        if forbidden_persisted_fact in save_handler:
+            raise SmokeCheckError(
+                "onboarding preferences must not persist game facts: "
+                + forbidden_persisted_fact
+            )
+
+    close_handler_start = script_text.index("func _close_onboarding(completed: bool) -> void:")
+    close_handler_end = script_text.index("\nfunc ", close_handler_start + 1)
+    close_handler = script_text[close_handler_start:close_handler_end]
+    show_summary_start = script_text.index("func _show_game_summary() -> void:")
+    hide_summary_start = script_text.index("func _hide_game_summary() -> void:")
+    show_summary_handler = script_text[show_summary_start:hide_summary_start]
+    if (
+        "_game_summary_pending_after_onboarding" not in close_handler
+        or "_onboarding_full_state_pending_after_manual" not in close_handler
+        or "was_manual_mode" not in close_handler
+        or "not _onboarding_manual_mode" not in show_summary_handler
+        or '_onboarding_status == "active"' not in show_summary_handler
+        or "manually_viewed_step_id" not in script_text
+    ):
+        raise SmokeCheckError(
+            "automatic onboarding must coordinate summary/manual-state races explicitly"
+        )
+    if '[node name="OnboardingRequest" type="HTTPRequest"' in scene_text:
+        raise SmokeCheckError("client-only onboarding must not add an HTTP endpoint")
+    for idempotency_channel in [
+        "night_action",
+        "night_resolve",
+        "hunter_shot",
+        "player_speech",
+        "npc_speech",
+        "end_free_activity",
+        "private_chat",
+        "sheriff_action",
+        "sheriff_speech",
+        "combined_vote",
+    ]:
+        if (
+            f'_prepare_idempotent_body("{idempotency_channel}"' not in script_text
+            or f'_complete_idempotent_command("{idempotency_channel}")'
+            not in script_text
+        ):
+            raise SmokeCheckError(
+                "Godot idempotency lifecycle is incomplete for: "
+                + idempotency_channel
+            )
+    for project_fragment in (
+        "window/size/viewport_width=1280",
+        "window/size/viewport_height=720",
+        "window/size/min_width=1100",
+        "window/size/min_height=650",
+        'window/stretch/mode="canvas_items"',
+        'window/stretch/aspect="expand"',
+    ):
+        if project_fragment not in project_text:
+            raise SmokeCheckError(
+                f"Godot responsive window contract is missing: {project_fragment}"
+            )
     for dialog_fragment in [
         '[ext_resource type="FontFile" path="res://assets/fonts/NotoSansSC-Variable.ttf"',
         'theme = SubResource("Theme_dialog_cjk")',
@@ -11378,7 +15496,9 @@ def check_godot_ui_layout() -> None:
         ):
             raise SmokeCheckError(f"Godot character asset is invalid: {asset_name}")
 
-    print("[OK] Godot layered town, rule-driven day/night visuals, contextual UI, and pixel characters are present.")
+    print(
+        "[OK] Godot layered town, responsive profiles, keyboard focus scopes, contextual UI, and pixel characters are present."
+    )
 
 
 def load_json_list(path: Path, label: str) -> list[dict]:

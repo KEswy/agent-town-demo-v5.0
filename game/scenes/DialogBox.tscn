@@ -1,4 +1,4 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene load_steps=6 format=3]
 
 [ext_resource type="Script" path="res://scripts/dialog_box.gd" id="1_dialog_script"]
 [ext_resource type="FontFile" path="res://assets/fonts/NotoSansSC-Variable.ttf" id="2_dialog_font"]
@@ -15,8 +15,23 @@ corner_radius_top_right = 8
 corner_radius_bottom_right = 8
 corner_radius_bottom_left = 8
 
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_dialog_focus"]
+bg_color = Color(0.12, 0.17, 0.2, 1)
+border_width_left = 3
+border_width_top = 3
+border_width_right = 3
+border_width_bottom = 3
+border_color = Color(1, 0.78, 0.24, 1)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
+
 [sub_resource type="Theme" id="Theme_dialog_cjk"]
 default_font = ExtResource("2_dialog_font")
+default_font_size = 14
+Button/styles/focus = SubResource("StyleBoxFlat_dialog_focus")
+LineEdit/styles/focus = SubResource("StyleBoxFlat_dialog_focus")
 
 [node name="DialogBox" type="Control"]
 visible = false
@@ -26,7 +41,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
+mouse_filter = 0
 theme = SubResource("Theme_dialog_cjk")
 script = ExtResource("1_dialog_script")
 
@@ -68,14 +83,27 @@ theme_override_colors/font_color = Color(0.98, 0.84, 0.45, 1)
 theme_override_font_sizes/font_size = 18
 text = "Guide"
 
-[node name="MemoryLabel" type="Label" parent="Panel/Margin/VBox"]
+[node name="DetailsScroll" type="ScrollContainer" parent="Panel/Margin/VBox"]
+custom_minimum_size = Vector2(0, 190)
+layout_mode = 2
+size_flags_vertical = 3
+focus_mode = 2
+horizontal_scroll_mode = 0
+
+[node name="DetailsVBox" type="VBoxContainer" parent="Panel/Margin/VBox/DetailsScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 8
+
+[node name="MemoryLabel" type="Label" parent="Panel/Margin/VBox/DetailsScroll/DetailsVBox"]
 visible = false
 layout_mode = 2
 theme_override_colors/font_color = Color(0.75, 0.82, 1, 1)
 theme_override_font_sizes/font_size = 14
 text = "记忆次数：第 1 次对话\n关系阶段：初次见面"
+autowrap_mode = 3
 
-[node name="KnowledgeLabel" type="Label" parent="Panel/Margin/VBox"]
+[node name="KnowledgeLabel" type="Label" parent="Panel/Margin/VBox/DetailsScroll/DetailsVBox"]
 visible = false
 layout_mode = 2
 theme_override_colors/font_color = Color(0.66, 0.9, 0.96, 1)
@@ -83,12 +111,7 @@ theme_override_font_sizes/font_size = 14
 text = "命中知识：\n1. Godot 负责 2D 交互\n2. 玩家移动输入"
 autowrap_mode = 3
 
-[node name="TextScroll" type="ScrollContainer" parent="Panel/Margin/VBox"]
-custom_minimum_size = Vector2(0, 112)
-layout_mode = 2
-horizontal_scroll_mode = 0
-
-[node name="TextLabel" type="Label" parent="Panel/Margin/VBox/TextScroll"]
+[node name="TextLabel" type="Label" parent="Panel/Margin/VBox/DetailsScroll/DetailsVBox"]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.96, 0.96, 0.92, 1)

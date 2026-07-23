@@ -1,4 +1,4 @@
-[gd_scene load_steps=19 format=3]
+[gd_scene load_steps=20 format=3]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1_main_script"]
 [ext_resource type="PackedScene" path="res://scenes/Player.tscn" id="2_player_scene"]
@@ -159,7 +159,7 @@ corner_radius_bottom_left = 7
 
 [sub_resource type="Theme" id="Theme_light_ui"]
 default_font = ExtResource("5_main_font")
-default_font_size = 13
+default_font_size = 14
 Button/colors/font_color = Color(0, 0, 0, 1)
 Button/colors/font_disabled_color = Color(0, 0, 0, 1)
 Button/colors/font_focus_color = Color(0, 0, 0, 1)
@@ -177,6 +177,7 @@ CheckButton/colors/font_focus_color = Color(0, 0, 0, 1)
 CheckButton/colors/font_hover_color = Color(0, 0, 0, 1)
 CheckButton/colors/font_hover_pressed_color = Color(0, 0, 0, 1)
 CheckButton/colors/font_pressed_color = Color(0, 0, 0, 1)
+CheckButton/styles/focus = SubResource("StyleBoxFlat_light_control_focus")
 Label/colors/font_color = Color(0, 0, 0, 1)
 LineEdit/colors/caret_color = Color(0, 0, 0, 1)
 LineEdit/colors/font_color = Color(0, 0, 0, 1)
@@ -218,9 +219,23 @@ TextEdit/styles/focus = SubResource("StyleBoxFlat_light_control_focus")
 TextEdit/styles/normal = SubResource("StyleBoxFlat_light_control")
 TextEdit/styles/read_only = SubResource("StyleBoxFlat_light_control_disabled")
 
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_dark_focus"]
+bg_color = Color(0.1, 0.16, 0.2, 1)
+border_width_left = 3
+border_width_top = 3
+border_width_right = 3
+border_width_bottom = 3
+border_color = Color(1, 0.78, 0.24, 1)
+corner_radius_top_left = 7
+corner_radius_top_right = 7
+corner_radius_bottom_right = 7
+corner_radius_bottom_left = 7
+
 [sub_resource type="Theme" id="Theme_main_cjk"]
 default_font = ExtResource("5_main_font")
-default_font_size = 13
+default_font_size = 14
+Button/styles/focus = SubResource("StyleBoxFlat_dark_focus")
+TabBar/styles/tab_focus = SubResource("StyleBoxFlat_dark_focus")
 
 [node name="Main" type="Node2D"]
 script = ExtResource("1_main_script")
@@ -390,6 +405,12 @@ tooltip_text = "查看场上角色、公开记录和我的记录"
 disabled = true
 text = "情报"
 
+[node name="GuideButton" type="Button" parent="UI/PhaseHUD/Panel/Margin/Row"]
+custom_minimum_size = Vector2(40, 36)
+layout_mode = 2
+tooltip_text = "打开新手引导（F1）"
+text = "?"
+
 [node name="SetupToggleButton" type="Button" parent="UI/PhaseHUD/Panel/Margin/Row"]
 layout_mode = 2
 tooltip_text = "设置并开始新对局"
@@ -419,8 +440,8 @@ theme_override_constants/separation = 4
 [node name="CaptionLabel" type="Label" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0, 0, 0, 1)
-theme_override_font_sizes/font_size = 11
-text = "我的身份"
+theme_override_font_sizes/font_size = 12
+text = "仅你可见 · 我的身份"
 
 [node name="RoleLabel" type="Label" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock"]
 layout_mode = 2
@@ -434,7 +455,7 @@ visible = false
 layout_mode = 2
 theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 12
-text = "狼队友：暂无"
+text = "仅你可见 · 狼队友：暂无"
 autowrap_mode = 3
 
 [node name="KeyInfoDivider" type="HSeparator" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock"]
@@ -443,7 +464,7 @@ layout_mode = 2
 [node name="KeyInfoToggleButton" type="Button" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock"]
 custom_minimum_size = Vector2(0, 34)
 layout_mode = 2
-focus_mode = 0
+focus_mode = 2
 tooltip_text = "展开场上已经公开的身份、验人和技能声明"
 text = "关键公开信息 · 暂无  ▼"
 alignment = 0
@@ -469,13 +490,14 @@ theme_override_constants/separation = 6
 [node name="SafetyLabel" type="Label" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoContentPanel/Margin/VBox"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0, 0, 0, 1)
-theme_override_font_sizes/font_size = 10
-text = "◇ 公开说法（真假未确认） · ● 已确认公开动作"
+theme_override_font_sizes/font_size = 12
+text = "◇ 公开说法（真假未确认） · ◆ 公开承诺（未验真） · ● 已确认公开动作"
 autowrap_mode = 3
 
 [node name="ScrollContainer" type="ScrollContainer" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoContentPanel/Margin/VBox"]
 layout_mode = 2
 size_flags_vertical = 3
+focus_mode = 2
 horizontal_scroll_mode = 0
 
 [node name="KeyInfoLabel" type="Label" parent="UI/IdentityPanel/Margin/PlayerIdentityBlock/KeyInfoContentPanel/Margin/VBox/ScrollContainer"]
@@ -545,6 +567,7 @@ theme_override_styles/panel = SubResource("StyleBoxFlat_wolf_panel")
 
 [node name="ScrollContainer" type="ScrollContainer" parent="UI/WolfPanel/ContentPanel"]
 layout_mode = 2
+focus_mode = 2
 horizontal_scroll_mode = 0
 
 [node name="Margin" type="MarginContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer"]
@@ -741,7 +764,7 @@ text = "随本次发言发布"
 [node name="CurrentLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0, 0, 0, 1)
-theme_override_font_sizes/font_size = 11
+theme_override_font_sizes/font_size = 12
 text = "尚未发布警徽流。"
 autowrap_mode = 3
 
@@ -808,7 +831,7 @@ size_flags_horizontal = 3
 [node name="HintLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/BadgeFlowPanel/Margin/VBox"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0, 0, 0, 1)
-theme_override_font_sizes/font_size = 10
+theme_override_font_sizes/font_size = 12
 text = "金水分支固定把警徽交给今晚验人；查杀分支只会交给自己仍存活的公开金水，没有则撕徽。警上首次跳预言家时必须随发言发布。"
 autowrap_mode = 3
 
@@ -852,6 +875,50 @@ text = "提交发言"
 layout_mode = 2
 disabled = true
 text = "结束自由活动"
+
+[node name="SpeechPreviewPanel" type="PanelContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
+visible = false
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_light_control")
+
+[node name="Margin" type="MarginContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 8
+
+[node name="VBox" type="VBoxContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Title" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 13
+text = "提交前预览"
+
+[node name="Summary" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 12
+text = "等待 Python 解析。"
+autowrap_mode = 3
+selectable = true
+
+[node name="Actions" type="HBoxContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 2
+
+[node name="EditButton" type="Button" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel/Margin/VBox/Actions"]
+layout_mode = 2
+text = "返回修改"
+
+[node name="ConfirmButton" type="Button" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel/Margin/VBox/Actions"]
+layout_mode = 2
+disabled = true
+text = "确认提交"
 
 [node name="VoteActionLabel" type="Label" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
 layout_mode = 2
@@ -944,6 +1011,7 @@ current_tab = 0
 [node name="Roster" type="ScrollContainer" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs"]
 layout_mode = 2
 metadata/_tab_name = "场上角色"
+focus_mode = 2
 horizontal_scroll_mode = 0
 
 [node name="Margin" type="MarginContainer" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs/Roster"]
@@ -965,6 +1033,7 @@ columns = 3
 visible = false
 layout_mode = 2
 metadata/_tab_name = "公开记录"
+focus_mode = 2
 horizontal_scroll_mode = 0
 
 [node name="Margin" type="MarginContainer" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs/PublicRecords"]
@@ -980,7 +1049,7 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 14
-text = "公开日志：暂无"
+text = "公开证据时间线：暂无"
 autowrap_mode = 3
 
 [node name="MyRecords" type="MarginContainer" parent="UI/IntelPanel/Panel/Margin/VBox/Tabs"]
@@ -1007,7 +1076,7 @@ text = "仅你可见的行动记录"
 custom_minimum_size = Vector2(0, 420)
 layout_mode = 2
 size_flags_vertical = 3
-focus_mode = 0
+focus_mode = 2
 mouse_default_cursor_shape = 0
 theme_override_colors/font_readonly_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 13
@@ -1016,6 +1085,7 @@ wrap_mode = 1
 text = "暂无行动记录。"
 
 [node name="GameSetupOverlay" type="Control" parent="UI"]
+visible = false
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -1042,9 +1112,9 @@ anchor_top = 0.5
 anchor_right = 0.5
 anchor_bottom = 0.5
 offset_left = -300.0
-offset_top = -205.0
+offset_top = -225.0
 offset_right = 300.0
-offset_bottom = 205.0
+offset_bottom = 225.0
 grow_horizontal = 2
 grow_vertical = 2
 theme_override_styles/panel = SubResource("StyleBoxFlat_setup")
@@ -1080,7 +1150,7 @@ text = "×"
 layout_mode = 2
 theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 14
-text = "创建 1 名玩家与 11 名 NPC 的十二人局。测试选项不会改变正式规则。"
+text = "创建 1 名玩家与 11 名 NPC 的十二人局。完整状态同步后会按阶段显示新手引导；测试选项不会改变正式规则。"
 autowrap_mode = 3
 
 [node name="PlayerNameRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
@@ -1113,8 +1183,19 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 12
-text = "DeepSeek 未配置时自动使用规则文本"
+text = "启用 AI NPC 表达后可选；Python 规则结算始终独立生效"
 vertical_alignment = 1
+autowrap_mode = 3
+
+[node name="LLMValidationRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+
+[node name="LLMValidationToggle" type="CheckButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/LLMValidationRow"]
+layout_mode = 2
+tooltip_text = "关闭后生成 1 次、校验与纠错 0 次并直接显示；原文可能错误或越界，但 Python 规则结算仍独立生效"
+disabled = true
+button_pressed = true
+text = "启用 LLM 输出校验"
 
 [node name="PlayerRoleRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
 layout_mode = 2
@@ -1226,6 +1307,7 @@ size_flags_vertical = 3
 
 [node name="CharacterReview" type="ScrollContainer" parent="UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs"]
 layout_mode = 2
+focus_mode = 2
 horizontal_scroll_mode = 0
 
 [node name="Margin" type="MarginContainer" parent="UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs/CharacterReview"]
@@ -1242,6 +1324,7 @@ theme_override_constants/separation = 8
 
 [node name="TimelineReview" type="ScrollContainer" parent="UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs"]
 layout_mode = 2
+focus_mode = 2
 horizontal_scroll_mode = 0
 
 [node name="Margin" type="MarginContainer" parent="UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs/TimelineReview"]
@@ -1258,6 +1341,149 @@ theme_override_colors/font_color = Color(0.88, 0.91, 0.93, 1)
 theme_override_font_sizes/font_size = 14
 text = "暂无时间线。"
 autowrap_mode = 3
+
+[node name="ExplainableReview" type="ScrollContainer" parent="UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs"]
+layout_mode = 2
+focus_mode = 2
+horizontal_scroll_mode = 0
+
+[node name="Margin" type="MarginContainer" parent="UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs/ExplainableReview"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 10
+
+[node name="ReviewLabel" type="Label" parent="UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs/ExplainableReview/Margin"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.88, 0.91, 0.93, 1)
+theme_override_font_sizes/font_size = 14
+text = "仅在游戏结束后生成解释复盘。"
+autowrap_mode = 3
+
+[node name="OnboardingOverlay" type="Control" parent="UI"]
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+theme = SubResource("Theme_light_ui")
+
+[node name="Shade" type="ColorRect" parent="UI/OnboardingOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+color = Color(0.04, 0.12, 0.18, 0.7)
+
+[node name="Panel" type="PanelContainer" parent="UI/OnboardingOverlay"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -340.0
+offset_top = -250.0
+offset_right = 340.0
+offset_bottom = 250.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_setup")
+
+[node name="Margin" type="MarginContainer" parent="UI/OnboardingOverlay/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 28
+theme_override_constants/margin_top = 22
+theme_override_constants/margin_right = 28
+theme_override_constants/margin_bottom = 22
+
+[node name="VBox" type="VBoxContainer" parent="UI/OnboardingOverlay/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="HeaderRow" type="HBoxContainer" parent="UI/OnboardingOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="ProgressLabel" type="Label" parent="UI/OnboardingOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 13
+text = "新手引导"
+
+[node name="CloseButton" type="Button" parent="UI/OnboardingOverlay/Panel/Margin/VBox/HeaderRow"]
+custom_minimum_size = Vector2(42, 38)
+layout_mode = 2
+tooltip_text = "暂时关闭引导（Esc）"
+text = "×"
+
+[node name="TitleLabel" type="Label" parent="UI/OnboardingOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 25
+text = "先认清自己的身份"
+autowrap_mode = 3
+
+[node name="ScopeLabel" type="Label" parent="UI/OnboardingOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.08, 0.32, 0.45, 1)
+theme_override_font_sizes/font_size = 14
+text = "信息范围：仅你可见"
+autowrap_mode = 3
+
+[node name="BodyScroll" type="ScrollContainer" parent="UI/OnboardingOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+focus_mode = 2
+horizontal_scroll_mode = 0
+
+[node name="BodyLabel" type="Label" parent="UI/OnboardingOverlay/Panel/Margin/VBox/BodyScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 16
+text = "完整状态同步后，这里会说明你的身份、技能和当前阶段。"
+autowrap_mode = 3
+
+[node name="KeyboardHintLabel" type="Label" parent="UI/OnboardingOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.16, 0.25, 0.3, 1)
+theme_override_font_sizes/font_size = 12
+text = "键盘：Tab / Shift+Tab 切换正文和按钮，正文用 ↑ / ↓ 滚动，Enter / Space 确认，← / → 翻页，Esc 暂时关闭，F1 随时重开。"
+autowrap_mode = 3
+
+[node name="ActionRow" type="HBoxContainer" parent="UI/OnboardingOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="SkipButton" type="Button" parent="UI/OnboardingOverlay/Panel/Margin/VBox/ActionRow"]
+layout_mode = 2
+tooltip_text = "关闭后续自动引导；仍可按 F1 手动查看"
+text = "跳过全部"
+
+[node name="Spacer" type="Control" parent="UI/OnboardingOverlay/Panel/Margin/VBox/ActionRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+mouse_filter = 2
+
+[node name="BackButton" type="Button" parent="UI/OnboardingOverlay/Panel/Margin/VBox/ActionRow"]
+custom_minimum_size = Vector2(96, 40)
+layout_mode = 2
+text = "上一步"
+
+[node name="NextButton" type="Button" parent="UI/OnboardingOverlay/Panel/Margin/VBox/ActionRow"]
+custom_minimum_size = Vector2(112, 40)
+layout_mode = 2
+text = "下一步"
 
 [node name="DialogBox" parent="UI" instance=ExtResource("4_dialog_scene")]
 
@@ -1280,6 +1506,8 @@ autowrap_mode = 3
 [node name="HunterShotRequest" type="HTTPRequest" parent="."]
 
 [node name="PlayerSpeechRequest" type="HTTPRequest" parent="."]
+
+[node name="PlayerSpeechPreviewRequest" type="HTTPRequest" parent="."]
 
 [node name="NpcSpeechRequest" type="HTTPRequest" parent="."]
 

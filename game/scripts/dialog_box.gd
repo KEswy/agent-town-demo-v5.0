@@ -4,8 +4,12 @@ signal message_submitted(message: String)
 signal memory_view_requested
 signal memory_reset_requested
 signal config_reload_requested
+signal closed
 
 const MOVEMENT_ACTIONS := ["move_left", "move_right", "move_up", "move_down"]
+const DIALOG_COMPACT_MAX_WINDOW_WIDTH := 1199
+const DIALOG_WIDE_MIN_WINDOW_WIDTH := 1440
+const DIALOG_WIDE_MIN_WINDOW_HEIGHT := 820
 const PORTRAIT_PATHS := {
 	"玩家": "res://assets/characters/player.svg",
 	"梅西": "res://assets/characters/messi.svg",
@@ -23,12 +27,13 @@ const PORTRAIT_PATHS := {
 	"然然": "res://assets/characters/ranran.svg",
 }
 
+@onready var panel: PanelContainer = $Panel
 @onready var portrait: TextureRect = $Panel/Margin/VBox/Portrait
 @onready var name_label: Label = $Panel/Margin/VBox/NameLabel
-@onready var memory_label: Label = $Panel/Margin/VBox/MemoryLabel
-@onready var knowledge_label: Label = $Panel/Margin/VBox/KnowledgeLabel
-@onready var text_scroll: ScrollContainer = $Panel/Margin/VBox/TextScroll
-@onready var text_label: Label = $Panel/Margin/VBox/TextScroll/TextLabel
+@onready var text_scroll: ScrollContainer = $Panel/Margin/VBox/DetailsScroll
+@onready var memory_label: Label = $Panel/Margin/VBox/DetailsScroll/DetailsVBox/MemoryLabel
+@onready var knowledge_label: Label = $Panel/Margin/VBox/DetailsScroll/DetailsVBox/KnowledgeLabel
+@onready var text_label: Label = $Panel/Margin/VBox/DetailsScroll/DetailsVBox/TextLabel
 @onready var message_input: LineEdit = $Panel/Margin/VBox/InputRow/MessageInput
 @onready var send_button: Button = $Panel/Margin/VBox/InputRow/SendButton
 @onready var view_memory_button: Button = $Panel/Margin/VBox/ActionRow/ViewMemoryButton
@@ -40,6 +45,7 @@ const PORTRAIT_PATHS := {
 var _dialog_text_before_failure := ""
 var _validation_failure_data: Dictionary = {}
 var _showing_validation_failure := false
+var _focus_before_dialog: Control
 
 
 func _ready() -> void:
@@ -50,11 +56,24 @@ func _ready() -> void:
 	reload_config_button.pressed.connect(_on_reload_config_button_pressed)
 	validation_failure_button.pressed.connect(_on_validation_failure_button_pressed)
 	close_button.pressed.connect(hide_dialog)
+	get_window().size_changed.connect(_update_responsive_layout)
+	_configure_focus_navigation()
+	_update_responsive_layout()
 
 
 func _input(event: InputEvent) -> void:
-	if visible and event.is_action_pressed("ui_cancel"):
+	if not visible:
+		return
+	if event.is_action_pressed("ui_cancel"):
 		hide_dialog()
+		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("ui_focus_prev"):
+		_move_focus(-1)
+		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("ui_focus_next"):
+		_move_focus(1)
+		get_viewport().set_input_as_handled()
+	elif _handle_focus_direction(event):
 		get_viewport().set_input_as_handled()
 
 
@@ -63,6 +82,9 @@ func _exit_tree() -> void:
 
 
 func show_dialog(npc_name: String, dialog_text: String) -> void:
+	if not visible:
+		var focus_owner := get_viewport().gui_get_focus_owner()
+		_focus_before_dialog = focus_owner if focus_owner is Control else null
 	name_label.text = _clean_display_text(npc_name)
 	_set_portrait(npc_name)
 	text_label.text = _clean_display_text(dialog_text)
@@ -72,6 +94,7 @@ func show_dialog(npc_name: String, dialog_text: String) -> void:
 	knowledge_label.visible = false
 	visible = true
 	add_to_group("dialog_open")
+	call_deferred("_focus_dialog_primary")
 
 
 func _set_portrait(character_name: String) -> void:
@@ -200,6 +223,7 @@ func set_waiting() -> void:
 	view_memory_button.disabled = true
 	reset_memory_button.disabled = true
 	reload_config_button.disabled = true
+	call_deferred("_repair_dialog_focus")
 
 
 func set_ready_for_input() -> void:
@@ -208,9 +232,14 @@ func set_ready_for_input() -> void:
 	view_memory_button.disabled = false
 	reset_memory_button.disabled = false
 	reload_config_button.disabled = false
+	call_deferred("_focus_dialog_primary")
 
 
-func hide_dialog() -> void:
+func hide_dialog(restore_focus: bool = true) -> void:
+	if not visible:
+		return
+	var return_focus := _focus_before_dialog
+	_focus_before_dialog = null
 	visible = false
 	message_input.text = ""
 	message_input.release_focus()
@@ -219,6 +248,133 @@ func hide_dialog() -> void:
 	knowledge_label.visible = false
 	_set_validation_failure({})
 	remove_from_group("dialog_open")
+	if restore_focus:
+		call_deferred("_restore_focus_after_close", return_focus)
+	else:
+		get_viewport().gui_release_focus()
+	closed.emit()
+
+
+func _configure_focus_navigation() -> void:
+	for node in find_children("*", "BaseButton", true, false):
+		if node is Control:
+			node.focus_mode = Control.FOCUS_ALL
+	text_scroll.focus_mode = Control.FOCUS_ALL
+
+
+func _update_responsive_layout() -> void:
+	var window_size := get_window().size
+	var viewport_size := get_viewport().get_visible_rect().size
+	var profile := "default"
+	if window_size.x <= DIALOG_COMPACT_MAX_WINDOW_WIDTH:
+		profile = "compact"
+	elif (
+		window_size.x >= DIALOG_WIDE_MIN_WINDOW_WIDTH
+		and window_size.y >= DIALOG_WIDE_MIN_WINDOW_HEIGHT
+	):
+		profile = "wide"
+	var panel_width := 1120.0
+	var panel_height := 480.0
+	if profile == "compact":
+		panel_width = 1000.0
+	elif profile == "wide":
+		panel_height = 500.0
+	panel_width = minf(panel_width, maxf(320.0, viewport_size.x - 32.0))
+	panel_height = minf(panel_height, maxf(360.0, viewport_size.y - 32.0))
+	panel.anchor_left = 0.5
+	panel.anchor_top = 1.0
+	panel.anchor_right = 0.5
+	panel.anchor_bottom = 1.0
+	panel.offset_left = panel_width * -0.5
+	panel.offset_right = panel_width * 0.5
+	panel.offset_top = -panel_height - 16.0
+	panel.offset_bottom = -16.0
+
+
+func _focus_dialog_primary() -> void:
+	if not visible:
+		return
+	if message_input.editable and not message_input.is_queued_for_deletion():
+		message_input.grab_focus()
+	else:
+		close_button.grab_focus()
+
+
+func _repair_dialog_focus() -> void:
+	if not visible:
+		return
+	var focus_owner := get_viewport().gui_get_focus_owner()
+	if focus_owner is Control and is_ancestor_of(focus_owner) and _is_focus_candidate(focus_owner):
+		return
+	_focus_dialog_primary()
+
+
+func _move_focus(direction: int) -> void:
+	var focusable := _focusable_controls()
+	if focusable.is_empty():
+		return
+	var focus_owner := get_viewport().gui_get_focus_owner()
+	var current_index := focusable.find(focus_owner)
+	if current_index < 0:
+		current_index = 0 if direction >= 0 else focusable.size() - 1
+	else:
+		current_index = posmod(current_index + direction, focusable.size())
+	focusable[current_index].grab_focus()
+
+
+func _handle_focus_direction(event: InputEvent) -> bool:
+	var focus_owner := get_viewport().gui_get_focus_owner()
+	if focus_owner is TextEdit:
+		return false
+	if focus_owner is LineEdit:
+		if event.is_action_pressed("ui_left") or event.is_action_pressed("ui_right"):
+			return false
+	if focus_owner is OptionButton:
+		if event.is_action_pressed("ui_up") or event.is_action_pressed("ui_down"):
+			return false
+	if focus_owner is ScrollContainer:
+		if event.is_action_pressed("ui_up"):
+			focus_owner.scroll_vertical = maxi(0, focus_owner.scroll_vertical - 48)
+			return true
+		if event.is_action_pressed("ui_down"):
+			focus_owner.scroll_vertical += 48
+			return true
+	if event.is_action_pressed("ui_left") or event.is_action_pressed("ui_up"):
+		_move_focus(-1)
+		return true
+	if event.is_action_pressed("ui_right") or event.is_action_pressed("ui_down"):
+		_move_focus(1)
+		return true
+	return false
+
+
+func _focusable_controls() -> Array[Control]:
+	var controls: Array[Control] = []
+	for node in find_children("*", "Control", true, false):
+		if node is Control and _is_focus_candidate(node):
+			controls.append(node)
+	return controls
+
+
+func _is_focus_candidate(control: Control) -> bool:
+	if not control.is_visible_in_tree() or control.focus_mode == Control.FOCUS_NONE:
+		return false
+	if control is BaseButton and control.disabled:
+		return false
+	if control is LineEdit and not control.editable:
+		return false
+	return true
+
+
+func _restore_focus_after_close(return_focus: Control) -> void:
+	if (
+		return_focus != null
+		and is_instance_valid(return_focus)
+		and _is_focus_candidate(return_focus)
+	):
+		return_focus.grab_focus()
+		return
+	get_viewport().gui_release_focus()
 
 
 func is_open() -> bool:
