@@ -111,6 +111,8 @@ GitHub workflow 只读源码、actions 固定完整 commit SHA，测试存档使
 
 GitHub 的 `runner.temp` 上下文在 job 创建前不可用，因此临时存档与 pycache 变量必须
 位于各 smoke step 的 `env`，不能上移到 job 级；core smoke 会静态锁住这个边界。
+七段内联 Python 检查必须经 stdin 传给 `python -`，不能改回超长 `python -c` 参数；
+这是 Ubuntu 与 macOS 不同 `ARG_MAX` 下的跨平台门禁。
 
 源码交付、双平台矩阵、三尺寸手工验收、隐私、依赖记录、LICENSE 决策和未来封版命令
 见 [`docs/V4_RELEASE_CHECKLIST.md`](docs/V4_RELEASE_CHECKLIST.md)。公开开发仓库

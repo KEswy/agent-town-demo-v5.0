@@ -39,6 +39,8 @@ secret、不请求真实 LLM、不下载向量模型、不启动 FastAPI、Godot
 
 `runner.temp` 只在 runner 已启动后的两个 smoke step `env` 中解析，不能放在 job 级
 `env`；静态检查会拒绝后者，避免 workflow 在创建四个矩阵 job 之前直接失败。
+内联 Python smoke 同样统一通过 stdin 交给 `python -`，避免 Linux 较小的 `ARG_MAX`
+因超长 `python -c` 参数而在狼人杀完整契约检查启动前失败。
 
 完整源码交付、POSIX 本地存档范围、依赖记录、隐私检查和正式标签门禁见
 [`V4 封版清单`](../docs/V4_RELEASE_CHECKLIST.md)。公开开发仓库

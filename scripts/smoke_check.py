@@ -588,6 +588,7 @@ def check_ci_delivery_contracts() -> None:
         workflow = CI_WORKFLOW_FILE.read_text(encoding="utf-8")
         gitignore = GITIGNORE_FILE.read_text(encoding="utf-8")
         gitattributes = GITATTRIBUTES_FILE.read_text(encoding="utf-8")
+        smoke_source = Path(__file__).resolve().read_text(encoding="utf-8")
     except OSError as exc:
         raise SmokeCheckError(f"could not read V4.7-C delivery files: {exc}") from exc
 
@@ -631,6 +632,18 @@ def check_ci_delivery_contracts() -> None:
         raise SmokeCheckError(
             "runner.temp is only available after a job starts; both smoke steps "
             "must own their isolated temp env"
+        )
+    legacy_inline_command = '[str(python_bin), "-c", ' + "smoke_code]"
+    stdin_command = '[str(python_bin), ' + '"-"]'
+    stdin_payload = "input_text=" + "smoke_code"
+    if (
+        legacy_inline_command in smoke_source
+        or smoke_source.count(stdin_command) != 7
+        or smoke_source.count(stdin_payload) != 7
+    ):
+        raise SmokeCheckError(
+            "inline Python smoke programs must use stdin instead of argv for "
+            "Linux/macOS ARG_MAX portability"
         )
 
     action_lines = [
@@ -1568,9 +1581,10 @@ with tempfile.TemporaryDirectory(prefix="agent-town-m09a-") as temp_dir:
 print("LLM adapter and redacted observability smoke test passed")
 '''
     run_command(
-        [str(python_bin), "-c", smoke_code],
+        [str(python_bin), "-"],
         cwd=BACKEND_DIR,
         fail_message="LLM adapter smoke test failed",
+        input_text=smoke_code,
     )
     print("[OK] LLM adapter and redacted request/validation observability work.")
 
@@ -2160,9 +2174,10 @@ for label, mutate in [
 print("NPC decision contract smoke test passed")
 '''
     run_command(
-        [str(python_bin), "-c", smoke_code],
+        [str(python_bin), "-"],
         cwd=BACKEND_DIR,
         fail_message="NPC decision contract smoke test failed",
+        input_text=smoke_code,
     )
     print("[OK] NPC V1/V2/V3 decision schemas, continuity, and allowlist validation work.")
 
@@ -2340,9 +2355,10 @@ finally:
 print("NPC tuning smoke test passed")
 '''
     run_command(
-        [str(python_bin), "-c", smoke_code],
+        [str(python_bin), "-"],
         cwd=BACKEND_DIR,
         fail_message="NPC tuning config and snapshot smoke test failed",
+        input_text=smoke_code,
     )
     print("[OK] NPC tuning is strict, layered, and snapshotted per game.")
 
@@ -5691,9 +5707,10 @@ for player_strategy in PLAYER_STRATEGY_TIERS:
 print("headless simulation smoke test passed")
 '''
     run_command(
-        [str(python_bin), "-c", smoke_code],
+        [str(python_bin), "-"],
         cwd=BACKEND_DIR,
         fail_message="headless deterministic simulation smoke test failed",
+        input_text=smoke_code,
     )
     print("[OK] Simulations, V4.1-A player strategies, hidden-information matrices, and V3 balance policies are deterministic.")
 
@@ -5777,12 +5794,13 @@ if len(set(relationship_hints)) != len(relationship_hints):
 print("backend search matched", len(cases), "cases")
 """
     run_command(
-        [str(python_bin), "-c", smoke_code],
+        [str(python_bin), "-"],
         cwd=BACKEND_DIR,
         fail_message=(
             "backend search smoke test failed. "
             "If dependencies are missing, run: cd backend && source .venv/bin/activate && pip install -r requirements.txt"
         ),
+        input_text=smoke_code,
     )
     print("[OK] Backend knowledge search works.")
 
@@ -5917,9 +5935,10 @@ with tempfile.TemporaryDirectory() as temp_dir:
 print("resident chat smoke test passed")
 '''
     run_command(
-        [str(python_bin), "-c", smoke_code],
+        [str(python_bin), "-"],
         cwd=BACKEND_DIR,
         fail_message="resident DeepSeek chat and memory smoke test failed",
+        input_text=smoke_code,
     )
     print("[OK] Resident DeepSeek chat, safe fallback, and isolated long-term memory work.")
 
@@ -14508,9 +14527,10 @@ validation_temp_dir.cleanup()
 print("wolf game start smoke test passed")
 """
     run_command(
-        [str(python_bin), "-c", smoke_code],
+        [str(python_bin), "-"],
         cwd=BACKEND_DIR,
         fail_message="wolf game start smoke test failed",
+        input_text=smoke_code,
     )
     print("[OK] Wolf game meeting, natural concise speech, intelligent badge flow, private chat, role, memory, social, and vote APIs work.")
 
@@ -15540,12 +15560,14 @@ def run_command(
     cwd: Path,
     fail_message: str,
     forbidden_output: tuple[str, ...] = (),
+    input_text: str | None = None,
 ) -> None:
     result = subprocess.run(
         command,
         cwd=cwd,
         capture_output=True,
         text=True,
+        input=input_text,
         check=False,
     )
     combined_output = "\n".join([result.stdout, result.stderr])

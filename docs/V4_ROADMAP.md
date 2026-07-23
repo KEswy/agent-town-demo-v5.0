@@ -942,3 +942,6 @@ Godot 4.7 的七个 `.gd.uid` 纳入源码，`.godot/` 继续忽略；`.gitattri
 - `2026-07-23`：首次远端 Actions 发现 job 级 `env` 无法解析尚未创建的
   `runner.temp` 上下文；将隔离存档和 pycache 变量下移到两个 smoke step，并增加静态
   回归门禁。CI 的平台、工具版本、离线测试与不启动服务边界保持不变。
+- `2026-07-23`：Ubuntu core 发现超长 `python -c` 测试脚本超过 Linux `ARG_MAX`；
+  七段内联 Python smoke 统一改用 stdin + `python -`，并静态拒绝 argv 回退。测试
+  内容、工作目录和失败输出采集保持不变。

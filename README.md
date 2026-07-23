@@ -1295,6 +1295,8 @@ V4 完整任务、依赖和验收口径见 [`V4 改进与开发路线表`](docs/
   `LICENSE`，当前明确为未授予再分发许可。
 - 首次远端 Actions 暴露出 job 创建前不能解析 `runner.temp`；临时存档和 pycache
   变量已移到两个 smoke step，并加入静态回归检查，不改变测试隔离范围。
+- Ubuntu core 进一步暴露 Linux `ARG_MAX` 较小；七段内联 Python smoke 统一经 stdin
+  传给 `python -`，不再把大型测试程序塞进 `python -c` 的单个命令参数。
 
 ### 2026-07-23 V4.8-A 开局 LLM 输出校验开关
 
