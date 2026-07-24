@@ -4,11 +4,11 @@
 
 - V4 从 V3.0 封版标签 `v3.0.0` 和提交
   `7a44dd598a62739e450bebe56198a6fe1f505ebd` 开始。
-- V4 只在本地 `v4-development` 开发；开发快照只允许推送到专用
-  `v4-origin`，不向 `origin`、`v2-origin` 或 `v3-origin` 推送。
-- 公开开发仓库
+- V4 只在本地 `v4-development` 开发，并且只推送到专用 `v4-origin`；
+  `origin`、`v2-origin` 或 `v3-origin` 没有接收 V4 代码或标签。
+- 公开源码仓库
   [`KEswy/agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0)
-  已创建，但尚无 `v4.0.0` 正式封版标签。
+  已于 `2026-07-24` 以不可移动的 `v4.0.0` 标签封版；后续 V5 从该标签另开分支。
 - `READMEv1.md` 是历史设计稿；当前代码、自动化检查、本路线表和
   README 才是实现事实。
 
@@ -47,7 +47,7 @@ V4 的主题是：
 | V4.6-B | 已完成 | Prompt/配置指纹、LLM 成本与 artifact 配对 A/B | V4.6-A 质量基线 |
 | V4.7-A | 已完成 | 首局分阶段引导、角色说明和公开/私密边界提示 | 前述 schema 稳定 |
 | V4.7-B | 已完成 | 1100×650 起的三档响应式、整局键盘导航、字体与对比度 | V4.7-A |
-| V4.7-C | 已完成（待人工封版） | CI、封版清单和跨平台源码交付 | V4.7-B |
+| V4.7-C | 已完成（V4.0.0 源码封版） | CI、封版清单和跨平台源码交付 | V4.7-B |
 | V4.8-A | 已完成 | 开局选择 LLM 输出校验或 0 次校验原文直出 | V4.6-B、V4.7-C |
 
 ## V4.1-A 三档玩家策略与身份配对基准
@@ -796,7 +796,7 @@ focus 样式和只读滚动；Python API、规则状态、事件、存档、重�
 core 静态检查现要求显式类型并拒绝三种已知旧写法，Godot 4.7.1 headless profile 继续
 作为通用脚本加载门禁。本补丁不改变焦点契约或 Python 事实边界。
 
-### V4.7-C 已完成（待人工封版）：CI 与源码交付
+### V4.7-C 已完成（V4.0.0 源码封版）：CI 与源码交付
 
 新增 `.github/workflows/ci.yml`，在 Ubuntu 24.04 与 macOS 15 上各执行两个 job：
 
@@ -815,11 +815,12 @@ SHA。测试执行阶段设置 `ENABLE_LLM=false`、`LLM_PROVIDER=mock`、
 
 Godot 4.7 的七个 `.gd.uid` 纳入源码，`.godot/` 继续忽略；`.gitattributes` 固定 LF 与
 二进制字体。`docs/V4_RELEASE_CHECKLIST.md` 明确源码交付、Linux/macOS 验证、三尺寸
-手工检查、隐私/存档边界、工具与完整依赖记录、LICENSE 决策、V4 开发仓库和
-不可移动 tag/补丁策略。当前尚未封版；公开
-[`agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0) 已由
-`v4-origin` 承载开发快照，但尚未创建 `v4.0.0`。历史三个 remote 仍禁止推送，项目
-当前没有根级 `LICENSE`，明确为未授予再分发许可。
+手工检查、隐私/存档边界、工具与完整依赖记录、LICENSE 状态、V4 源码仓库和
+不可移动 tag/补丁策略。公开
+[`agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0) 只由
+`v4-origin` 承载，并以 `v4.0.0` 完成源码封版。历史三个 remote 没有接收 V4 push；
+项目没有根级 `LICENSE`，明确为未授予再分发许可。封版不包含可执行包或 Linux 图形
+人工验收声明。
 
 ### V4.8-A 已完成：开局 LLM 输出校验开关
 
@@ -945,3 +946,8 @@ Godot 4.7 的七个 `.gd.uid` 纳入源码，`.godot/` 继续忽略；`.gitattri
 - `2026-07-23`：Ubuntu core 发现超长 `python -c` 测试脚本超过 Linux `ARG_MAX`；
   七段内联 Python smoke 统一改用 stdin + `python -`，并静态拒绝 argv 回退。测试
   内容、工作目录和失败输出采集保持不变。
+- `2026-07-24`：用户批准结束 V4 并进入 V5。V4 在
+  [`KEswy/agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0)
+  以注解标签 `v4.0.0` 完成源码封版；标签创建前要求最终提交的 Ubuntu/macOS
+  core + Godot headless 四项矩阵全绿。封版继续排除 `3.0总结/`，不添加项目级
+  `LICENSE`，也不声明可执行包或 Linux 图形人工验收。

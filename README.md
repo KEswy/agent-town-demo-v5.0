@@ -6,6 +6,19 @@
 
 项目当前把两条玩法合并到同一个 Demo 中：玩家可以在扩建后的 2D 小镇里移动、随时和坏坏、然然两名常驻居民聊天，也可以通过控制面板进行一局 1 名玩家 + 11 名 NPC 的十二人狼人杀。
 
+## V4.0.0 源码封版
+
+V4 于 `2026-07-24` 归档到公开仓库
+[`KEswy/agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0)，封版标签为
+`v4.0.0`。封版只代表源码与自动化基线冻结，不包含可执行包：仓库仍没有
+`export_presets.cfg`，Linux 图形交互也没有单独的人工签署；Ubuntu 24.04 与 macOS 15
+上的 core/Godot headless 矩阵在标签创建前必须全部通过。
+
+根目录没有项目级 `LICENSE`，因此源码公开可读不代表获得开源或再分发许可；字体的
+`OFL.txt` 只覆盖对应字体。`3.0总结/` 继续作为本地历史资料排除在 V4 源码归档之外。
+`origin`、`v2-origin`、`v3-origin` 没有接收任何 V4 提交或标签，V4 只发布到
+`v4-origin`。后续 V5 必须从 `v4.0.0` 新建本地开发分支，不能继续修改或移动 V4 标签。
+
 ## V4.8-A 开局 LLM 输出校验开关
 
 狼人杀开局设置现在把“启用 AI NPC 表达”和“启用 LLM 输出校验”分开。开局请求新增
@@ -29,7 +42,7 @@
 
 ## V4.7-C CI 与封版交付
 
-V4.7-C 的交付机制已经完成，但项目尚未封版。新增的
+V4.7-C 的交付机制已经完成，并作为 `v4.0.0` 源码封版门禁。新增的
 `.github/workflows/ci.yml` 在 Ubuntu 24.04 与 macOS 15 上使用 Python 3.12，分别运行
 离线核心检查和固定 Godot 4.7.1 的 headless 检查：
 
@@ -43,12 +56,10 @@ V4.7-C 的交付机制已经完成，但项目尚未封版。新增的
 - Godot 4.7 的七个 `.gd.uid` 进入源码交付，`.godot/` import cache 继续忽略；
   `.gitattributes` 固定文本 LF，降低 Linux/macOS fresh clone 差异。
 
-完整治理、双平台、隐私、手工三尺寸、许可证选择和未来封版命令见
-[`V4 封版清单`](docs/V4_RELEASE_CHECKLIST.md)。公开开发仓库
-[`KEswy/agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0) 已创建，
-本地仅以 `v4-origin` 指向它；当前提交仍是开发快照，尚未创建 `v4.0.0` 正式封版标签，
-也没有向三个历史 remote 推送。根目录目前没有项目 `LICENSE`，因此源码公开可读不代表
-获得再分发许可。
+完整治理、双平台、隐私、手工三尺寸、许可证边界和封版记录见
+[`V4 封版清单`](docs/V4_RELEASE_CHECKLIST.md)。公开源码仓库仅由 `v4-origin` 指向，
+`v4.0.0` 是不可移动的 V4 封版标签；三个历史 remote 保持只读。根目录没有项目
+`LICENSE`，因此源码公开可读不代表获得再分发许可。
 
 ## V4.7-B 响应式布局与整局键盘导航
 
@@ -354,9 +365,10 @@ SHA-256 和上一事件摘要；修改任一已封印事件或绕过命令链修
 ## V4.1-A 三档玩家策略与身份配对基准
 
 V4 从 V3.0 封版标签 `v3.0.0`、提交
-`7a44dd598a62739e450bebe56198a6fe1f505ebd` 开始。当前开发只使用
-`v4-development`，开发快照只允许推送到专用 `v4-origin`；任何 V4 代码都不得推送到
-`origin`、`v2-origin` 或 `v3-origin`。完整计划见
+`7a44dd598a62739e450bebe56198a6fe1f505ebd` 开始。V4 开发只使用
+`v4-development`，并且只推送到专用 `v4-origin`；任何 V4 代码都没有推送到
+`origin`、`v2-origin` 或 `v3-origin`。V4 已以 `v4.0.0` 冻结，后续只保留历史读取。
+完整计划见
 [`docs/V4_ROADMAP.md`](docs/V4_ROADMAP.md)，V3 路线表
 继续作为历史实施记录保留在
 [`docs/V3_ROADMAP.md`](docs/V3_ROADMAP.md)。
@@ -1278,11 +1290,20 @@ backend/.venv/bin/python scripts/check_llm_connection.py
 
 ## V4 进度与下一阶段
 
-V3.1-A 至 V3.2-B 已完成封版；V4.1-A/B 已增加三档合法玩家策略、按身份配对基准、玩家赛后表现指标和无副作用的玩家发言结构化预览。V4.2 已增加单一追加事件链、终局导出和规则模板执行式重放；V4.3-A/B 已完成原子存档、启动恢复、外部幂等 key 和重复结算保护；V4.4-A/B 已完成统一公开证据时间线、承诺生命周期和中立矛盾候选；V4.5-A 已完成终局决定解释和五类错误归因；V4.6-A/B 已完成 NPC 公开发言质量基线、完整/生效配置指纹、脱敏 LLM Prompt/config 指纹、保守成本口径和规则 artifact 配对 A/B；V4.7-A/B 已完成首局分阶段安全引导、物理窗口三档响应式和整局键盘焦点范围；V4.7-C 已完成 Python 3.12 + Godot 4.7.1 的 Linux/macOS CI、分层 smoke、源码交付元数据和 [`封版清单`](docs/V4_RELEASE_CHECKLIST.md)；V4.8-A 已增加开局 `enable_llm_validation` 输出校验选择，支持最多 5 轮校验或生成 1 次、校验 0 次的原文直出，并保持 Python 规则结算和旧存档兼容。公开的 [`V4 开发仓库`](https://github.com/KEswy/agent-town-demo-v4.0) 已建立，但 V4 仍尚未封版，也没有 `v4.0.0` 标签；正式封版必须在人工门禁完成后再次确认。
+V3.1-A 至 V3.2-B 已完成封版；V4.1-A/B 已增加三档合法玩家策略、按身份配对基准、玩家赛后表现指标和无副作用的玩家发言结构化预览。V4.2 已增加单一追加事件链、终局导出和规则模板执行式重放；V4.3-A/B 已完成原子存档、启动恢复、外部幂等 key 和重复结算保护；V4.4-A/B 已完成统一公开证据时间线、承诺生命周期和中立矛盾候选；V4.5-A 已完成终局决定解释和五类错误归因；V4.6-A/B 已完成 NPC 公开发言质量基线、完整/生效配置指纹、脱敏 LLM Prompt/config 指纹、保守成本口径和规则 artifact 配对 A/B；V4.7-A/B 已完成首局分阶段安全引导、物理窗口三档响应式和整局键盘焦点范围；V4.7-C 已完成 Python 3.12 + Godot 4.7.1 的 Linux/macOS CI、分层 smoke、源码交付元数据和 [`封版清单`](docs/V4_RELEASE_CHECKLIST.md)；V4.8-A 已增加开局 `enable_llm_validation` 输出校验选择，支持最多 5 轮校验或生成 1 次、校验 0 次的原文直出，并保持 Python 规则结算和旧存档兼容。V4 已于 `2026-07-24` 在 [`V4 源码仓库`](https://github.com/KEswy/agent-town-demo-v4.0) 以 `v4.0.0` 封版；后续开发进入 V5。
 
 V4 完整任务、依赖和验收口径见 [`V4 改进与开发路线表`](docs/V4_ROADMAP.md)；[`V3 改进与开发路线表`](docs/V3_ROADMAP.md) 保留封版历史。身份、合法行动、投票、出局、警徽与胜负仍由 Python 决定；LLM 只接收当前角色可用的上下文，输出校验关闭时显示文本可以越界，但不能成为 Python 规则输入。
 
 ## 开发记录
+
+### 2026-07-24 V4.0.0 源码封版
+
+- 用户明确批准结束 V4 并进入 V5；V4 使用不可移动的注解标签 `v4.0.0` 归档到
+  `v4-origin`，没有向三个历史 remote 推送。
+- 封版范围是源码与自动化基线，不包含桌面可执行包；Linux 图形交互没有单独人工签署，
+  支持范围以 [`V4 封版清单`](docs/V4_RELEASE_CHECKLIST.md) 为准。
+- V4.0.0 继续采用“没有项目级 LICENSE、未授予再分发许可”的状态，并排除本地
+  `3.0总结/`。V5 应从该标签新建分支，不修改 V4 历史。
 
 ### 2026-07-23 V4 公开开发快照
 

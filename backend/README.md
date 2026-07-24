@@ -26,7 +26,7 @@ LLM 的局无论开启校验还是原文直出都保持 `replayable=false`，只
 
 ## V4.7-C CI 与后端封版边界
 
-V4.7-C 的交付机制已经完成，但项目尚未封版。新增 workflow 在 Ubuntu 24.04 与
+V4.7-C 的交付机制已经完成，并作为 `v4.0.0` 源码封版门禁。新增 workflow 在 Ubuntu 24.04 与
 macOS 15 上固定 Python 3.12，并用 `scripts/smoke_check.py --profile core` 从 fresh
 install 验证编译、规则、仿真、存档/恢复、幂等、文档和静态 Godot 契约；另以 Godot
 4.7.1 运行 `--profile godot`。默认无参数仍是完整 smoke。
@@ -42,12 +42,11 @@ secret、不请求真实 LLM、不下载向量模型、不启动 FastAPI、Godot
 内联 Python smoke 同样统一通过 stdin 交给 `python -`，避免 Linux 较小的 `ARG_MAX`
 因超长 `python -c` 参数而在狼人杀完整契约检查启动前失败。
 
-完整源码交付、POSIX 本地存档范围、依赖记录、隐私检查和正式标签门禁见
-[`V4 封版清单`](../docs/V4_RELEASE_CHECKLIST.md)。公开开发仓库
-[`KEswy/agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0) 已由专用
-`v4-origin` 承载开发快照，但尚未创建 `v4.0.0` 正式封版标签；历史 `origin`、
-`v2-origin`、`v3-origin` 仍禁止推送 V4 代码。项目当前没有根级 `LICENSE`，明确为
-未授予再分发许可。
+完整源码交付、POSIX 本地存档范围、依赖记录、隐私检查和封版记录见
+[`V4 封版清单`](../docs/V4_RELEASE_CHECKLIST.md)。公开源码仓库
+[`KEswy/agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0) 只由专用
+`v4-origin` 承载，封版标签为 `v4.0.0`；历史 `origin`、`v2-origin`、`v3-origin`
+没有接收 V4 代码或标签。项目没有根级 `LICENSE`，明确为未授予再分发许可。
 
 ## V4.7-B 客户端响应式布局与键盘焦点边界
 
@@ -798,7 +797,7 @@ V2.0 基线来自 [`Agent Town Demo V2.0`](https://github.com/KEswy/agent-town-d
 摘要和只读 artifact 对比；当前 A/B 仍只评价规则模板 artifact，不代表真实 LLM 或
 Prompt 效果，M15-B 也仍未建立自动平衡阈值。
 
-V3.1-O 已用公开票型消费者把固定 100 局好人胜场从 5 提升到 38，并通过隐藏身份互换锁住普通好人放逐和女巫用毒边界。V4.1-A/B 进一步提供三档玩家、身份配对基准和玩家发言提交前预览；V4.2 已完成规则事件链和规则模板执行式重放，V4.3-A/B 已完成原子存档、恢复和幂等重复结算保护，V4.4-A/B 已完成统一公开证据、承诺生命周期和中立矛盾候选，V4.5-A 已完成终局决定解释与五类错误归因，V4.6-A/B 已完成 NPC 公开发言质量基线、完整/生效配置指纹、保守 LLM 成本口径和规则 artifact 配对 A/B，V4.7-A/B 已完成客户端首局安全引导、`compact / default / wide` 响应式布局、整局键盘焦点、字体与对比度检查，V4.7-C 已完成 Python 3.12 + Godot 4.7.1 双平台 CI、分层 smoke 和源码封版清单，V4.8-A 已完成开局 `enable_llm_validation` 输出校验选择、5 轮校验/0 次校验原文直出、事件封印和旧存档兼容。公开开发仓库和首次开发快照已获批准，但项目仍尚未封版；最终 commit、许可证状态、`v4.0.0` tag 与正式封版 push 必须按 [`V4 封版清单`](../docs/V4_RELEASE_CHECKLIST.md) 单独批准。V4 完整拆分见 [`V4 改进与开发路线表`](../docs/V4_ROADMAP.md)，V3.1 至 V3.2-B 的封版实施状态见 [`V3 改进与开发路线表`](../docs/V3_ROADMAP.md)。
+V3.1-O 已用公开票型消费者把固定 100 局好人胜场从 5 提升到 38，并通过隐藏身份互换锁住普通好人放逐和女巫用毒边界。V4.1-A/B 进一步提供三档玩家、身份配对基准和玩家发言提交前预览；V4.2 已完成规则事件链和规则模板执行式重放，V4.3-A/B 已完成原子存档、恢复和幂等重复结算保护，V4.4-A/B 已完成统一公开证据、承诺生命周期和中立矛盾候选，V4.5-A 已完成终局决定解释与五类错误归因，V4.6-A/B 已完成 NPC 公开发言质量基线、完整/生效配置指纹、保守 LLM 成本口径和规则 artifact 配对 A/B，V4.7-A/B 已完成客户端首局安全引导、`compact / default / wide` 响应式布局、整局键盘焦点、字体与对比度检查，V4.7-C 已完成 Python 3.12 + Godot 4.7.1 双平台 CI、分层 smoke 和源码封版清单，V4.8-A 已完成开局 `enable_llm_validation` 输出校验选择、5 轮校验/0 次校验原文直出、事件封印和旧存档兼容。V4 已于 `2026-07-24` 在公开仓库以 `v4.0.0` 完成源码封版；没有项目级 LICENSE，也不声明桌面可执行包或 Linux 图形人工验收。V4 完整拆分见 [`V4 改进与开发路线表`](../docs/V4_ROADMAP.md)，V3.1 至 V3.2-B 的封版实施状态见 [`V3 改进与开发路线表`](../docs/V3_ROADMAP.md)。
 
 ## 运行
 

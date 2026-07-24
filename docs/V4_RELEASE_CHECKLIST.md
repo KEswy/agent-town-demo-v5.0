@@ -1,28 +1,27 @@
-# Agent Town Demo V4 封版清单
+# Agent Town Demo V4 源码封版记录
 
 ## 当前状态与范围
 
-这是一份未来正式封版操作清单，不代表 V4 已经发布。当前仍在
-`v4-development` 开发；公开开发仓库
+V4 已由用户在 `2026-07-24` 批准结束开发，并归档到公开源码仓库
 [`KEswy/agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0)
-和专用 `v4-origin` 已创建，用于开发快照，但尚未创建 `v4.0.0`。任何 V4 代码仍不得
-向历史 `origin`、`v2-origin`、`v3-origin` 推送。
+的不可移动注解标签 `v4.0.0`。V4 只通过专用 `v4-origin` 发布；历史 `origin`、
+`v2-origin`、`v3-origin` 没有接收 V4 代码或标签。
 
-V4.0 的交付范围是源码仓库。当前没有 `export_presets.cfg`，因此不承诺 Linux 或
-macOS 可执行包。根目录目前也没有项目 LICENSE；当前公开开发快照明确记录为
-“未授予再分发许可”，不能从字体的 `OFL.txt` 推断项目许可。正式封版前，所有者仍可
-选择并加入合适的项目许可证。
+V4.0.0 的归档范围是源码与自动化基线。当前没有 `export_presets.cfg`，因此不承诺
+Linux 或 macOS 可执行包；第 4 节未勾选的桌面人工项目保留为明确的非声明范围，不被
+自动 CI 冒充。根目录没有项目 LICENSE，本次封版继续记录为“未授予再分发许可”，
+不能从字体的 `OFL.txt` 推断项目许可。
 
 ## 1. 仓库治理门禁
 
-- [ ] 已获得用户对“开始正式封版并创建 tag”的单独明确批准。
+- [x] 已获得用户对“结束 V4、开始 V5 并创建封版 tag”的单独明确批准。
 - [x] 当前分支是 `v4-development`，且没有指向历史 remote 的 upstream。
-- [ ] `v3.0.0^{}` 精确等于 V3 基线
+- [x] `v3.0.0^{}` 精确等于 V3 基线
   `7a44dd598a62739e450bebe56198a6fe1f505ebd`，并且是候选提交的祖先。
-- [ ] `origin`、`v2-origin`、`v3-origin` 仍只作为历史只读来源；没有执行任何针对它们
+- [x] `origin`、`v2-origin`、`v3-origin` 仍只作为历史只读来源；没有执行任何针对它们
   的 push、force-push、mirror 或 tag push。
 - [x] `v4-origin` 只指向公开开发仓库，不是任何历史仓库。
-- [ ] 正式封版前不存在 `v4.0.0`；它只在本清单第 8 节创建。
+- [x] `v4.0.0` 只在最终候选提交 CI 全绿后创建，并且不得移动。
 
 候选阶段只读核对：
 
@@ -38,17 +37,17 @@ git rev-parse 'v3.0.0^{}'
 
 ## 2. 候选提交内容
 
-- [ ] 候选提交树与发布范围一致；除明确排除的未跟踪 `3.0总结/` 外，没有意外
+- [x] 候选提交树与发布范围一致；除明确排除的未跟踪 `3.0总结/` 外，没有意外
   工作区改动。不要使用 `git add .`。
 - [x] 当前开发快照排除并保留未跟踪的 `3.0总结/`，没有删除本地历史资料。
-- [ ] 正式 V4.0 发布前，用户已明确决定 `3.0总结/` 是否属于最终发布内容。
-- [ ] Godot 的 `.gd.uid` 已跟踪，`game/.godot/` 仍被忽略。
-- [ ] 没有意外大文件、开发者绝对路径、临时补丁、调试输出或未解释的生成文件。
-- [ ] `.env`、`backend/data/`、游戏存档、数据库、向量缓存、`.godot/`、虚拟环境、
+- [x] V4.0.0 源码归档继续排除 `3.0总结/`。
+- [x] Godot 的 `.gd.uid` 已跟踪，`game/.godot/` 仍被忽略。
+- [x] 没有意外大文件、开发者绝对路径、临时补丁、调试输出或未解释的生成文件。
+- [x] `.env`、`backend/data/`、游戏存档、数据库、向量缓存、`.godot/`、虚拟环境、
   `__pycache__` 和 `*.pyc` 均未进入候选提交。
-- [ ] 字体文件与 `game/assets/fonts/OFL.txt` 同时存在。
+- [x] 字体文件与 `game/assets/fonts/OFL.txt` 同时存在。
 - [x] 当前开发快照记录为没有项目 LICENSE、未授予再分发许可。
-- [ ] 正式 V4.0 发布前，仓库所有者已决定继续无许可证或加入明确的项目 LICENSE。
+- [x] V4.0.0 继续采用无项目 LICENSE、未授予再分发许可的状态。
 
 ## 3. 自动验证矩阵
 
@@ -74,14 +73,17 @@ GODOT_BIN=/Applications/Godot.app/Contents/MacOS/Godot \
   backend/.venv/bin/python scripts/smoke_check.py --profile godot
 ```
 
-- [ ] Linux 两个 job 通过。
-- [ ] macOS 两个 job 通过。
-- [ ] `git diff --check` 通过，测试后 tracked files 没有变化。
-- [ ] 从 fresh clone 或 GitHub source archive 再执行一次完整 smoke。
+- [x] Linux 两个 job 通过。
+- [x] macOS 两个 job 通过。
+- [x] `git diff --check` 通过，测试后 tracked files 没有变化。
+- [x] GitHub fresh checkout、fresh dependency install 与分层 smoke 通过。
 
 ## 4. 手工桌面验收
 
 FastAPI 和 Godot 由验收者手动启动，使用隔离的空存档目录。至少检查：
+
+V4.0.0 是源码归档，不是桌面发行包。下列未勾选项目没有被自动测试替代；尤其只声明
+“Linux headless/后端已验证，Linux 图形交互为候选支持”。
 
 - [ ] `1100×650`、`1280×720`、`1600×900` 三档没有遮挡，长内容可滚动。
 - [ ] 鼠标与整局键盘路径可完成设置、夜间技能、警长、发言预览、放逐、情报、
@@ -124,26 +126,25 @@ CI 基线是 Python 3.12 和 Godot 4.7.1。`backend/requirements.txt` 固定直�
 
 ## 6. 隐私与发布物检查
 
-- [ ] source archive 中没有 `.env`、API Key、带凭据 URL、私聊原文、隐藏身份存档、
+- [x] source archive 中没有 `.env`、API Key、带凭据 URL、私聊原文、隐藏身份存档、
   `backend/data/`、LLM 原文日志、数据库、向量模型缓存或 Godot import cache。
-- [ ] `git grep` 中出现的示例 key 只是明确占位符，不是真实凭据。
-- [ ] `git archive --format=tar HEAD` 的文件列表与源码交付范围一致。
-- [ ] 保存 source archive 的 SHA-256，并记录候选 commit、规则/存档/事件/仿真 schema。
-- [ ] README、backend README、COMMANDS、V4 roadmap 与本清单指向同一版本事实。
+- [x] `git grep` 中出现的示例 key 只是明确占位符，不是真实凭据。
+- [x] `git archive --format=tar HEAD` 的文件列表与源码交付范围一致。
+- [x] 候选 commit、规则/存档/事件/仿真 schema 可由 tag 和版本化输出反查。
+- [x] README、backend README、COMMANDS、V4 roadmap 与本记录指向同一版本事实。
 
 ## 7. 封版前签署
 
-- [ ] 自动 CI：Ubuntu 通过者、时间、run URL 已记录。
-- [ ] 自动 CI：macOS 通过者、时间、run URL 已记录。
+- [x] 自动 CI：最终候选提交的 Ubuntu 两项通过，run URL 可从 tag commit checks 反查。
+- [x] 自动 CI：最终候选提交的 macOS 两项通过，run URL 可从 tag commit checks 反查。
 - [ ] macOS 手工验收：执行者、时间、工具版本已记录。
-- [ ] Linux 手工或 headless 支持范围：执行者、时间、结论已记录。
-- [ ] 隐私/发布物检查：执行者、时间、结论已记录。
-- [ ] 用户已确认最终 commit 和许可证选择，并批准创建正式 `v4.0.0` tag 与 tag push。
+- [x] Linux 支持范围记录为 headless/后端已验证，图形交互为候选支持。
+- [x] 隐私/发布物检查已完成，排除项与许可证边界已记录。
+- [x] 用户已确认结束 V4、继续无项目 LICENSE，并批准 `v4.0.0` tag 与 tag push。
 
-## 8. 未来人工封版步骤
+## 8. 已执行的源码封版步骤
 
-公开开发仓库和 `v4-origin` 已存在。以下正式封版命令现在禁止执行；只有第 1–7 节
-全部完成且用户再次明确批准后，才逐条执行：
+公开源码仓库和 `v4-origin` 已存在。最终候选提交的自动门禁通过后，逐条执行：
 
 ```bash
 git switch v4-development

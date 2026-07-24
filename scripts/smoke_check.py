@@ -535,7 +535,9 @@ def check_release_docs() -> None:
         "--profile core",
         "--profile godot",
         "docs/V4_RELEASE_CHECKLIST.md",
-        "尚未封版",
+        "v4.0.0",
+        "源码封版",
+        "2026-07-24",
         "源码交付",
     )
     if any(
@@ -543,7 +545,7 @@ def check_release_docs() -> None:
         for marker in v47c_markers
         for document in (root_readme, backend_readme, commands, v4_roadmap)
     ):
-        raise SmokeCheckError("V4.7-C CI and source-release boundaries must stay synchronized")
+        raise SmokeCheckError("V4.0.0 source-archive boundaries must stay synchronized")
 
     v48a_markers = (
         "V4.8-A",

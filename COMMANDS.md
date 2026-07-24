@@ -88,7 +88,8 @@ curl -sS \
 
 ## 验收 V4.7-C CI 与源码交付
 
-V4.7-C 已完成交付机制，但项目尚未封版。CI 固定 Python 3.12 和 Godot 4.7.1，在
+V4.7-C 已完成交付机制，并作为 `2026-07-24` 的 `v4.0.0` 源码封版门禁。CI 固定
+Python 3.12 和 Godot 4.7.1，在
 Ubuntu 24.04 与 macOS 15 分别执行两个 profile。当前本地可运行 CI 的核心等价命令：
 
 ```bash
@@ -114,15 +115,19 @@ GitHub 的 `runner.temp` 上下文在 job 创建前不可用，因此临时存�
 七段内联 Python 检查必须经 stdin 传给 `python -`，不能改回超长 `python -c` 参数；
 这是 Ubuntu 与 macOS 不同 `ARG_MAX` 下的跨平台门禁。
 
-源码交付、双平台矩阵、三尺寸手工验收、隐私、依赖记录、LICENSE 决策和未来封版命令
-见 [`docs/V4_RELEASE_CHECKLIST.md`](docs/V4_RELEASE_CHECKLIST.md)。公开开发仓库
-[`KEswy/agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0) 已创建，
-本地专用 remote 是 `v4-origin`；开发快照只能用完整 refspec
-`git push v4-origin refs/heads/v4-development:refs/heads/main` 推送到该 remote。
-当前尚未创建 `v4.0.0`，禁止向 `origin`、`v2-origin`、`v3-origin` 推送，也禁止
-`git push --all`、`git push --tags`、mirror 或 force push。只有用户以后明确批准正式
-封版时，才执行清单中的 tag 步骤；项目当前没有根级 `LICENSE`，明确为未授予再分发
-许可。
+源码交付、双平台矩阵、三尺寸手工验收、隐私、依赖记录、LICENSE 状态和封版记录见
+[`docs/V4_RELEASE_CHECKLIST.md`](docs/V4_RELEASE_CHECKLIST.md)。公开源码仓库
+[`KEswy/agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0) 的专用
+remote 是 `v4-origin`，不可移动的封版标签是 `v4.0.0`。禁止向 `origin`、
+`v2-origin`、`v3-origin` 推送 V4，也禁止 `git push --all`、`git push --tags`、
+mirror 或 force push。项目没有根级 `LICENSE`，明确为未授予再分发许可。
+
+只读核对 V4 封版，不创建分支或启动服务：
+
+```bash
+git rev-parse 'v4.0.0^{}'
+git ls-remote v4-origin refs/heads/main refs/tags/v4.0.0 'refs/tags/v4.0.0^{}'
+```
 
 ## 验收 V4.7-B 响应式与整局键盘导航
 
