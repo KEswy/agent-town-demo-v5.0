@@ -22,6 +22,9 @@ const WOLF_SHERIFF_MEETING_ORDER_URL := "http://127.0.0.1:8000/api/sheriff/meeti
 const WOLF_SHERIFF_NOMINATE_URL := "http://127.0.0.1:8000/api/sheriff/nominate"
 const WOLF_SHERIFF_TRANSFER_URL := "http://127.0.0.1:8000/api/sheriff/transfer"
 const WOLF_COMBINED_VOTE_URL := "http://127.0.0.1:8000/api/vote/submit-and-resolve"
+const WOLF_RECOVERY_STATUS_URL := "http://127.0.0.1:8000/api/game/recovery-status"
+const SESSION_SETTINGS_PATH := "user://agent_town_session.cfg"
+const SESSION_SETTINGS_SECTION := "session"
 const PLAYER_ID := "player"
 const RESPONSIVE_LAYOUT_SCHEMA_VERSION := "agent_town_responsive_layout.v1"
 const FOCUS_NAVIGATION_SCHEMA_VERSION := "agent_town_focus_navigation.v1"
@@ -295,6 +298,8 @@ const CHARACTER_SKIN_PATHS := {
 @onready var setup_status_label: Label = $UI/GameSetupOverlay/Panel/Margin/VBox/SetupStatusLabel
 @onready var player_name_input: LineEdit = $UI/GameSetupOverlay/Panel/Margin/VBox/PlayerNameRow/PlayerNameInput
 @onready var start_game_button: Button = $UI/GameSetupOverlay/Panel/Margin/VBox/ActionRow/StartGameButton
+@onready var continue_game_button: Button = $UI/GameSetupOverlay/Panel/Margin/VBox/ActionRow/ContinueGameButton
+@onready var sound_enabled_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/SoundEnabledToggle
 @onready var player_role_option: OptionButton = $UI/GameSetupOverlay/Panel/Margin/VBox/PlayerRoleRow/PlayerRoleOption
 @onready var llm_enabled_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow/LLMEnabledToggle
 @onready var llm_settings_hint: Label = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow/LLMSettingsHint
@@ -324,6 +329,7 @@ const CHARACTER_SKIN_PATHS := {
 @onready var config_reload_request: HTTPRequest = $ConfigReloadRequest
 @onready var game_start_request: HTTPRequest = $GameStartRequest
 @onready var game_state_request: HTTPRequest = $GameStateRequest
+@onready var recovery_status_request: HTTPRequest = $RecoveryStatusRequest
 @onready var night_action_request: HTTPRequest = $NightActionRequest
 @onready var night_resolve_request: HTTPRequest = $NightResolveRequest
 @onready var hunter_shot_request: HTTPRequest = $HunterShotRequest
@@ -360,6 +366,14 @@ var _is_sheriff_speech_requesting := false
 var _is_submitting_vote := false
 var _is_loading_game_summary := false
 var _current_wolf_game_id := ""
+var _resume_pending_game := false
+var _recovered_game_ids: Array[String] = []
+var _sound_enabled := true
+var _last_night_visual := false
+var _audio_bgm_day: AudioStreamPlayer
+var _audio_bgm_night: AudioStreamPlayer
+var _audio_sfx: AudioStreamPlayer
+var _sfx_streams := {}
 var _current_wolf_phase := ""
 var _current_wolf_day := 1
 var _current_player_character_id := 0
@@ -454,6 +468,7 @@ func _reset_idempotency_commands() -> void:
 
 
 func _ready() -> void:
+	_setup_audio()
 	_update_world_time("", true)
 	for npc in get_tree().get_nodes_in_group("npc"):
 		npc.connect("dialog_requested", Callable(self, "_on_npc_dialog_requested"))
@@ -463,6 +478,7 @@ func _ready() -> void:
 	config_reload_request.request_completed.connect(_on_config_reload_request_completed)
 	game_start_request.request_completed.connect(_on_game_start_request_completed)
 	game_state_request.request_completed.connect(_on_game_state_request_completed)
+	recovery_status_request.request_completed.connect(_on_recovery_status_request_completed)
 	night_action_request.request_completed.connect(_on_night_action_request_completed)
 	night_resolve_request.request_completed.connect(_on_night_resolve_request_completed)
 	hunter_shot_request.request_completed.connect(_on_hunter_shot_request_completed)
@@ -476,6 +492,8 @@ func _ready() -> void:
 	combined_vote_request.request_completed.connect(_on_combined_vote_request_completed)
 	game_summary_request.request_completed.connect(_on_game_summary_request_completed)
 	start_game_button.pressed.connect(_on_start_game_button_pressed)
+	continue_game_button.pressed.connect(_on_continue_game_button_pressed)
+	sound_enabled_toggle.toggled.connect(_set_sound_enabled)
 	llm_enabled_toggle.toggled.connect(_on_llm_enabled_toggled)
 	llm_validation_toggle.toggled.connect(_on_llm_validation_toggled)
 	refresh_state_button.pressed.connect(_on_refresh_state_button_pressed)
@@ -532,12 +550,14 @@ func _ready() -> void:
 	_populate_player_role_options()
 	_update_llm_validation_controls()
 	_load_onboarding_preferences()
+	_load_session_preferences()
 	_update_responsive_layout()
 	_update_contextual_panel_visibility()
 	_set_wolf_menu_expanded(false, false)
 	_set_key_info_expanded(false, false)
 	_set_intel_panel_open(false)
 	_show_game_setup()
+	_request_recovery_status()
 
 
 func _on_wolf_menu_toggle_button_pressed() -> void:
@@ -558,6 +578,74 @@ func _phase_uses_night_visual(phase: String) -> bool:
 
 func _update_world_time(phase: String, immediate: bool = false) -> void:
 	town_background.call("set_night", _phase_uses_night_visual(phase), immediate)
+	var is_night := _phase_uses_night_visual(phase)
+	if is_night != _last_night_visual:
+		_last_night_visual = is_night
+		_play_sfx("night" if is_night else "day")
+	_update_bgm(is_night)
+
+
+func _setup_audio() -> void:
+	_audio_bgm_day = AudioStreamPlayer.new()
+	_audio_bgm_day.stream = load("res://assets/audio/day_bgm.wav")
+	_audio_bgm_day.volume_db = -18.0
+	_audio_bgm_day.finished.connect(_on_day_bgm_finished)
+	add_child(_audio_bgm_day)
+	_audio_bgm_night = AudioStreamPlayer.new()
+	_audio_bgm_night.stream = load("res://assets/audio/night_bgm.wav")
+	_audio_bgm_night.volume_db = -20.0
+	_audio_bgm_night.finished.connect(_on_night_bgm_finished)
+	add_child(_audio_bgm_night)
+	_audio_sfx = AudioStreamPlayer.new()
+	_audio_sfx.volume_db = -8.0
+	add_child(_audio_sfx)
+	for sfx_name in ["confirm", "cancel", "vote", "eliminate", "badge", "night", "day"]:
+		_sfx_streams[sfx_name] = load("res://assets/audio/sfx_%s.wav" % sfx_name)
+	_update_bgm(false)
+
+
+func _on_day_bgm_finished() -> void:
+	if _sound_enabled and not _last_night_visual:
+		_audio_bgm_day.play()
+
+
+func _on_night_bgm_finished() -> void:
+	if _sound_enabled and _last_night_visual:
+		_audio_bgm_night.play()
+
+
+func _update_bgm(is_night: bool) -> void:
+	if not _sound_enabled:
+		return
+	if is_night:
+		if _audio_bgm_day.playing:
+			_audio_bgm_day.stop()
+		if not _audio_bgm_night.playing:
+			_audio_bgm_night.play()
+	else:
+		if _audio_bgm_night.playing:
+			_audio_bgm_night.stop()
+		if not _audio_bgm_day.playing:
+			_audio_bgm_day.play()
+
+
+func _play_sfx(sfx_name: String) -> void:
+	if not _sound_enabled:
+		return
+	var stream: AudioStream = _sfx_streams.get(sfx_name)
+	if stream != null:
+		_audio_sfx.stream = stream
+		_audio_sfx.play()
+
+
+func _set_sound_enabled(enabled: bool) -> void:
+	_sound_enabled = enabled
+	if not enabled:
+		_audio_bgm_day.stop()
+		_audio_bgm_night.stop()
+	else:
+		_update_bgm(_last_night_visual)
+	_save_session_preferences()
 
 
 func _on_intel_close_button_pressed() -> void:
@@ -1646,6 +1734,7 @@ func _on_config_reload_requested() -> void:
 func _on_start_game_button_pressed() -> void:
 	if _is_starting_wolf_game:
 		return
+	_play_sfx("confirm")
 
 	_reset_idempotency_commands()
 	_is_starting_wolf_game = true
@@ -1798,6 +1887,7 @@ func _submit_hunter_shot(target_id: Variant) -> void:
 
 
 func _on_resolve_night_button_pressed() -> void:
+	_play_sfx("confirm")
 	if _is_resolving_night or _current_wolf_game_id.is_empty():
 		return
 
@@ -2178,6 +2268,7 @@ func _on_sheriff_speech_input_submitted(_speech: String) -> void:
 
 
 func _on_submit_vote_button_pressed() -> void:
+	_play_sfx("vote")
 	if _is_submitting_vote or _current_wolf_game_id.is_empty() or _current_player_character_id <= 0:
 		return
 
@@ -2386,6 +2477,7 @@ func _on_game_start_request_completed(result: int, response_code: int, _headers:
 
 	_render_wolf_game(json.data)
 	_current_wolf_game_id = str(json.data.get("game_id", ""))
+	_save_session_preferences()
 	refresh_state_button.disabled = _current_wolf_game_id.is_empty()
 	if not _current_wolf_game_id.is_empty():
 		_hide_game_setup()
@@ -2402,6 +2494,11 @@ func _on_game_state_request_completed(result: int, response_code: int, _headers:
 
 	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
 		_preserve_wolf_game_info_once = false
+		if _resume_pending_game:
+			_resume_pending_game = false
+			_current_wolf_game_id = ""
+			_request_recovery_status()
+			return
 		wolf_status_label.text = "后端状态：刷新状态失败"
 		return
 
@@ -2413,6 +2510,11 @@ func _on_game_state_request_completed(result: int, response_code: int, _headers:
 		return
 
 	_render_wolf_game(json.data)
+	if _resume_pending_game:
+		_resume_pending_game = false
+		_save_session_preferences()
+		_hide_game_setup()
+		_set_wolf_menu_expanded(true)
 	if onboarding_overlay.visible and _onboarding_manual_mode:
 		var current_manual_step := _find_onboarding_step(_onboarding_current_step_id)
 		if not current_manual_step.is_empty():
@@ -2423,6 +2525,97 @@ func _on_game_state_request_completed(result: int, response_code: int, _headers:
 			and not str(private_info.get("role", "")).is_empty()
 		)
 	_evaluate_automatic_onboarding(json.data)
+
+
+func _load_session_preferences() -> void:
+	var config := ConfigFile.new()
+	if config.load(SESSION_SETTINGS_PATH) != OK:
+		return
+	var last_game_id: Variant = config.get_value(SESSION_SETTINGS_SECTION, "last_game_id", "")
+	if typeof(last_game_id) == TYPE_STRING and not str(last_game_id).is_empty():
+		_current_wolf_game_id = str(last_game_id)
+	var last_player_name: Variant = config.get_value(SESSION_SETTINGS_SECTION, "player_name", "")
+	if typeof(last_player_name) == TYPE_STRING and not str(last_player_name).is_empty():
+		player_name_input.text = str(last_player_name)
+	var sound_value: Variant = config.get_value(SESSION_SETTINGS_SECTION, "sound_enabled", true)
+	_sound_enabled = true if typeof(sound_value) != TYPE_BOOL else bool(sound_value)
+	sound_enabled_toggle.button_pressed = _sound_enabled
+
+
+func _save_session_preferences() -> void:
+	var config := ConfigFile.new()
+	config.set_value(SESSION_SETTINGS_SECTION, "schema_version", "agent_town_session.v1")
+	config.set_value(SESSION_SETTINGS_SECTION, "last_game_id", _current_wolf_game_id)
+	config.set_value(SESSION_SETTINGS_SECTION, "player_name", player_name_input.text.strip_edges())
+	config.set_value(SESSION_SETTINGS_SECTION, "sound_enabled", _sound_enabled)
+	var save_error := config.save(SESSION_SETTINGS_PATH)
+	if save_error != OK:
+		push_warning("无法保存会话设置；本次运行内仍可继续上局。")
+
+
+func _request_recovery_status() -> void:
+	var error := recovery_status_request.request(
+		WOLF_RECOVERY_STATUS_URL,
+		[],
+		HTTPClient.METHOD_GET
+	)
+	if error != OK:
+		continue_game_button.disabled = false
+
+
+func _on_recovery_status_request_completed(
+	result: int,
+	response_code: int,
+	_headers: PackedStringArray,
+	body: PackedByteArray
+) -> void:
+	_recovered_game_ids.clear()
+	if (
+		result == HTTPRequest.RESULT_SUCCESS
+		and response_code >= 200
+		and response_code < 300
+	):
+		var json := JSON.new()
+		if (
+			json.parse(body.get_string_from_utf8()) == OK
+			and typeof(json.data) == TYPE_DICTIONARY
+		):
+			var ids: Variant = json.data.get("restored_game_ids", [])
+			if typeof(ids) == TYPE_ARRAY:
+				for id_value in ids:
+					if typeof(id_value) == TYPE_STRING:
+						_recovered_game_ids.append(str(id_value))
+	continue_game_button.disabled = (
+		_current_wolf_game_id.is_empty() and _recovered_game_ids.is_empty()
+	)
+	if _resume_pending_game:
+		_resume_pending_game = false
+		if _recovered_game_ids.is_empty():
+			setup_status_label.text = "没有找到可恢复的对局；请开始新一局。"
+			wolf_status_label.text = "后端状态：没有可恢复的对局"
+		else:
+			_current_wolf_game_id = _recovered_game_ids[0]
+			setup_status_label.text = "正在恢复上局..."
+			_request_wolf_game_state()
+
+
+func _on_continue_game_button_pressed() -> void:
+	if _is_starting_wolf_game or _is_loading_wolf_state:
+		return
+	_play_sfx("confirm")
+	var resume_id := _current_wolf_game_id
+	if resume_id.is_empty() and not _recovered_game_ids.is_empty():
+		resume_id = _recovered_game_ids[0]
+	if resume_id.is_empty():
+		setup_status_label.text = "没有可继续的对局；请开始新一局。"
+		return
+	_current_wolf_game_id = resume_id
+	_resume_pending_game = true
+	_reset_game_summary()
+	wolf_menu_summary_label.text = "正在恢复上局..."
+	setup_status_label.text = "正在恢复上局..."
+	wolf_status_label.text = "后端状态：正在恢复上局..."
+	_request_wolf_game_state()
 
 
 func _on_night_action_request_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
@@ -2451,6 +2644,7 @@ func _on_night_resolve_request_completed(result: int, response_code: int, _heade
 		return
 
 	_complete_idempotent_command("night_resolve")
+	_play_sfx("eliminate")
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
 	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
@@ -2738,6 +2932,7 @@ func _on_combined_vote_request_completed(result: int, response_code: int, _heade
 		return
 
 	_complete_idempotent_command("combined_vote")
+	_play_sfx("eliminate")
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
 	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
@@ -4971,6 +5166,7 @@ func _release_movement_actions() -> void:
 
 
 func _finish_gameplay_text_submission(input: LineEdit) -> void:
+	_play_sfx("confirm")
 	input.clear()
 	input.release_focus()
 	_release_focus_to_world()

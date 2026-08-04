@@ -1197,6 +1197,14 @@ disabled = true
 button_pressed = true
 text = "启用 LLM 输出校验"
 
+[node name="SoundRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+
+[node name="SoundEnabledToggle" type="CheckButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow"]
+layout_mode = 2
+button_pressed = true
+text = "启用音效与音乐"
+
 [node name="PlayerRoleRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
 layout_mode = 2
 theme_override_constants/separation = 10
@@ -1227,6 +1235,11 @@ theme_override_constants/separation = 10
 [node name="ExploreButton" type="Button" parent="UI/GameSetupOverlay/Panel/Margin/VBox/ActionRow"]
 layout_mode = 2
 text = "先逛逛"
+
+[node name="ContinueGameButton" type="Button" parent="UI/GameSetupOverlay/Panel/Margin/VBox/ActionRow"]
+custom_minimum_size = Vector2(120, 42)
+layout_mode = 2
+text = "继续上局"
 
 [node name="StartGameButton" type="Button" parent="UI/GameSetupOverlay/Panel/Margin/VBox/ActionRow"]
 custom_minimum_size = Vector2(150, 42)
@@ -1522,3 +1535,5 @@ text = "下一步"
 [node name="CombinedVoteRequest" type="HTTPRequest" parent="."]
 
 [node name="GameSummaryRequest" type="HTTPRequest" parent="."]
+
+[node name="RecoveryStatusRequest" type="HTTPRequest" parent="."]
