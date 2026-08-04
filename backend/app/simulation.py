@@ -101,6 +101,7 @@ def run_rule_simulation(
     seed: int,
     *,
     player_role: str = "random",
+    variant: str = "classic",
     player_strategy: str = DEFAULT_PLAYER_STRATEGY,
     max_days: int = DEFAULT_MAX_DAYS,
     max_steps: int = DEFAULT_MAX_STEPS,
@@ -125,6 +126,7 @@ def run_rule_simulation(
     request = rules.GameStartRequest(
         player_name="模拟玩家",
         player_role=player_role,
+        variant=variant,
         enable_llm=False,
         enable_rag=False,
         npc_policy_mode=npc_policy_mode,
@@ -233,6 +235,7 @@ def run_rule_simulation_batch(
     games: int,
     *,
     player_role: str = "random",
+    variant: str = "classic",
     player_strategy: str = DEFAULT_PLAYER_STRATEGY,
     max_days: int = DEFAULT_MAX_DAYS,
     max_steps: int = DEFAULT_MAX_STEPS,
@@ -258,6 +261,7 @@ def run_rule_simulation_batch(
         run_rule_simulation(
             start_seed + offset,
             player_role=player_role,
+            variant=variant,
             player_strategy=normalized_strategy,
             max_days=max_days,
             max_steps=max_steps,
@@ -399,6 +403,7 @@ def run_player_strategy_benchmark(
     *,
     strategies: Optional[list[str]] = None,
     player_roles: Optional[list[str]] = None,
+    variant: str = "classic",
     max_days: int = DEFAULT_MAX_DAYS,
     max_steps: int = DEFAULT_MAX_STEPS,
     capture_beliefs: bool = False,
@@ -449,6 +454,7 @@ def run_player_strategy_benchmark(
                 result = run_rule_simulation(
                     seed,
                     player_role=player_role,
+                    variant=variant,
                     player_strategy=strategy,
                     max_days=max_days,
                     max_steps=max_steps,
@@ -1097,7 +1103,11 @@ def validate_completed_simulation(game_state: rules.WolfGameState) -> None:
     }:
         raise SimulationError("simulation did not reach a valid GAME_OVER state")
     role_counts = Counter(character.role for character in game_state.characters)
-    if dict(role_counts) != rules.DEFAULT_WOLF_ROLES:
+    allowed_role_pools = {
+        tuple(sorted(pool.items()))
+        for pool in rules.GAME_VARIANTS.values()
+    }
+    if tuple(sorted(dict(role_counts).items())) not in allowed_role_pools:
         raise SimulationError(f"role pool changed during simulation: {dict(role_counts)}")
     if len({character.id for character in game_state.characters}) != 12:
         raise SimulationError("simulation character ids are not unique")

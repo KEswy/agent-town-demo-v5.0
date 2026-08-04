@@ -55,6 +55,19 @@ DEFAULT_WOLF_ROLES = {
     "guard": 1,
     "villager": 4,
 }
+IDIOT_VARIANT_ROLES = {
+    "werewolf": 4,
+    "seer": 1,
+    "witch": 1,
+    "hunter": 1,
+    "guard": 1,
+    "idiot": 1,
+    "villager": 3,
+}
+GAME_VARIANTS = {
+    "classic": DEFAULT_WOLF_ROLES,
+    "idiot": IDIOT_VARIANT_ROLES,
+}
 ROLE_LABELS = {
     "werewolf": "狼人",
     "seer": "预言家",
@@ -62,6 +75,7 @@ ROLE_LABELS = {
     "hunter": "猎人",
     "guard": "守卫",
     "villager": "村民",
+    "idiot": "白痴",
 }
 CAMP_BY_ROLE = {
     "werewolf": "werewolf",
@@ -70,6 +84,7 @@ CAMP_BY_ROLE = {
     "hunter": "good",
     "guard": "good",
     "villager": "good",
+    "idiot": "good",
 }
 GOD_ROLES = {"seer", "witch", "hunter", "guard"}
 NPC_NAMES = [

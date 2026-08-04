@@ -23,7 +23,7 @@ NPC_BELIEF_STATE_SCHEMA_VERSION = "npc_belief_state.v1"
 NPC_REASONING_SIGNAL_SCHEMA_VERSION = "npc_reasoning_signal.v1"
 NPC_REASONING_POLICY_VERSION = "actor_scoped_hypotheses.v1"
 
-ROLE_NAMES = ("werewolf", "seer", "witch", "hunter", "guard", "villager")
+ROLE_NAMES = ("werewolf", "seer", "witch", "hunter", "guard", "villager", "idiot")
 MAX_PERSISTED_POSSIBLE_WORLDS = 24
 
 
@@ -50,7 +50,7 @@ class ReasoningPlayerV1(StrictReasoningModel):
     public_pressure: int = Field(ge=0, le=100)
     public_seer_credibility: float = Field(ge=0.0, le=1.0)
     claimed_role: Optional[
-        Literal["werewolf", "seer", "witch", "hunter", "guard", "villager"]
+        Literal["werewolf", "seer", "witch", "hunter", "guard", "villager", "idiot"]
     ] = None
     sheriff_candidate: bool = False
     withdrew: bool = False
@@ -73,7 +73,7 @@ class ReasoningClaimV1(StrictReasoningModel):
     actor_id: int = Field(gt=0)
     claim_type: Literal["role", "seer_check"]
     claimed_role: Optional[
-        Literal["werewolf", "seer", "witch", "hunter", "guard", "villager"]
+        Literal["werewolf", "seer", "witch", "hunter", "guard", "villager", "idiot"]
     ] = None
     target_id: Optional[int] = Field(default=None, gt=0)
     result: Optional[Literal["good", "werewolf"]] = None
@@ -118,7 +118,7 @@ class NPCReasoningObservationV1(StrictReasoningModel):
     public_event_sequence: int = Field(ge=0)
     actor_id: int = Field(gt=0)
     actor_role: Literal[
-        "werewolf", "seer", "witch", "hunter", "guard", "villager"
+        "werewolf", "seer", "witch", "hunter", "guard", "villager", "idiot"
     ]
     actor_camp: Literal["good", "werewolf"]
     tuning: ReasoningTuningV1

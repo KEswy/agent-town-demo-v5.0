@@ -186,6 +186,11 @@ const ONBOARDING_ROLE_GUIDES := {
 		"skill": "没有主动夜间技能；夜间按界面提示等待规则结算。",
 		"private_note": "你只知道自己的村民身份，不能读取其他角色的隐藏身份。",
 	},
+	"idiot": {
+		"goal": "用自己的翻牌技能保护好人阵营的放逐轮次。",
+		"skill": "白天被投票放逐时自动翻牌免死一次；翻牌后可以继续发言，但不能再投票。",
+		"private_note": "翻牌只会在被放逐时公开触发；夜间被袭击仍会正常出局。",
+	},
 }
 const BADGE_FLOW_REVISION_REASON_OPTIONS := [
 	["目标已出局", "target_eliminated"],
@@ -338,11 +343,13 @@ const CHARACTER_SKIN_PATHS := {
 @onready var stats_body_list: VBoxContainer = $UI/StatsOverlay/Panel/Margin/VBox/BodyScroll/BodyList
 @onready var bgm_volume_slider: HSlider = $UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/BGMVolumeBox/BGMVolumeSlider
 @onready var sfx_volume_slider: HSlider = $UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/SFXVolumeBox/SFXVolumeSlider
+@onready var language_option: OptionButton = $UI/GameSetupOverlay/Panel/Margin/VBox/LanguageRow/LanguageOption
 @onready var slot_option: OptionButton = $UI/GameSetupOverlay/Panel/Margin/VBox/SlotRow/SlotOption
 @onready var tutorial_hints_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/TutorialHintRow/TutorialHintsToggle
 @onready var save_button: Button = $UI/MenuOverlay/Panel/Margin/VBox/SaveButton
 @onready var save_game_request: HTTPRequest = $SaveGameRequest
 @onready var player_role_option: OptionButton = $UI/GameSetupOverlay/Panel/Margin/VBox/PlayerRoleRow/PlayerRoleOption
+@onready var variant_option: OptionButton = $UI/GameSetupOverlay/Panel/Margin/VBox/VariantRow/VariantOption
 @onready var llm_enabled_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow/LLMEnabledToggle
 @onready var llm_settings_hint: Label = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow/LLMSettingsHint
 @onready var llm_validation_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMValidationRow/LLMValidationToggle
@@ -416,6 +423,7 @@ var _replay_events: Array = []
 var _replay_index := 0
 var _replay_playing := false
 var _tutorial_hints := true
+var _session_variant := "classic"
 var _recovered_game_ids: Array[String] = []
 var _sound_enabled := true
 var _bgm_volume := 70.0
@@ -608,6 +616,8 @@ func _ready() -> void:
 	replay_play_button.pressed.connect(_on_replay_play_pressed)
 	setup_toggle_button.pressed.connect(_on_setup_toggle_button_pressed)
 	setup_close_button.pressed.connect(_on_setup_close_button_pressed)
+	language_option.item_selected.connect(_on_language_option_selected)
+	L10n.language_changed.connect(_on_language_changed)
 	game_summary_close_button.pressed.connect(_hide_game_summary)
 	onboarding_close_button.pressed.connect(_on_onboarding_close_button_pressed)
 	onboarding_skip_button.pressed.connect(_on_onboarding_skip_button_pressed)
@@ -620,16 +630,20 @@ func _ready() -> void:
 	dialog_box.call("connect", "config_reload_requested", Callable(self, "_on_config_reload_requested"))
 	dialog_box.call("connect", "closed", Callable(self, "_on_dialog_closed"))
 	_configure_ui_focus_navigation()
-	intel_tabs.set_tab_title(0, "场上角色")
-	intel_tabs.set_tab_title(1, "公开记录")
-	intel_tabs.set_tab_title(2, "我的记录")
-	game_summary_tabs.set_tab_title(0, "角色复盘")
-	game_summary_tabs.set_tab_title(1, "对局时间线")
-	game_summary_tabs.set_tab_title(2, "解释复盘（赛后）")
-	_populate_player_role_options()
+	intel_tabs.set_tab_title(0, L10n.t("场上角色"))
+	intel_tabs.set_tab_title(1, L10n.t("公开记录"))
+	intel_tabs.set_tab_title(2, L10n.t("我的记录"))
+	game_summary_tabs.set_tab_title(0, L10n.t("角色复盘"))
+	game_summary_tabs.set_tab_title(1, L10n.t("对局时间线"))
+	game_summary_tabs.set_tab_title(2, L10n.t("解释复盘（赛后）"))
 	_update_llm_validation_controls()
 	_load_onboarding_preferences()
 	_load_session_preferences()
+	variant_option.item_selected.connect(_on_variant_option_selected)
+	_populate_variant_options()
+	_populate_player_role_options(_session_variant)
+	_sync_language_option()
+	_apply_ui_translations()
 	_update_responsive_layout()
 	_update_contextual_panel_visibility()
 	_set_wolf_menu_expanded(false, false)
@@ -758,11 +772,11 @@ func _update_llm_validation_controls() -> void:
 	var llm_requested: bool = llm_enabled_toggle.button_pressed
 	llm_validation_toggle.disabled = not llm_requested
 	if not llm_requested:
-		llm_settings_hint.text = "启用 AI NPC 表达后可选；Python 规则结算始终独立生效"
+		llm_settings_hint.text = L10n.t("启用 AI NPC 表达后可选；Python 规则结算始终独立生效")
 	elif llm_validation_toggle.button_pressed:
-		llm_settings_hint.text = "输出校验开启：不合格表达最多纠正 5 次"
+		llm_settings_hint.text = L10n.t("输出校验开启：不合格表达最多纠正 5 次")
 	else:
-		llm_settings_hint.text = "输出校验关闭：生成 1 次、校验 0 次并直出原文；Python 规则结算不变"
+		llm_settings_hint.text = L10n.t("输出校验关闭：生成 1 次、校验 0 次并直出原文；Python 规则结算不变")
 
 
 func _llm_validation_requested() -> bool:
@@ -778,16 +792,56 @@ func _show_game_setup() -> void:
 	_set_wolf_menu_expanded(false)
 	game_setup_overlay.visible = true
 	game_setup_overlay.add_to_group("dialog_open")
-	setup_status_label.text = (
+	setup_status_label.text = L10n.t(
 		"上一局已结束，可以调整设置后开始新对局。"
 		if _current_wolf_phase == "GAME_OVER"
 		else "准备好后开始游戏，也可以先关闭窗口探索小镇。"
 	)
 	if _current_wolf_game_id.is_empty():
-		setup_status_label.text += "\n提示：右上角「规则」「战绩」随时可用；「继续上局」可恢复未完成对局。"
+		setup_status_label.text += "\n" + L10n.t("提示：右上角「规则」「战绩」随时可用；「继续上局」可恢复未完成对局。")
+	_sync_language_option()
 	player.call("set_menu_safe_area", false, 0.0)
 	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
 	call_deferred("_focus_control_if_available", player_name_input)
+
+
+func _sync_language_option() -> void:
+	language_option.clear()
+	language_option.add_item("中文")
+	language_option.add_item("English")
+	language_option.select(0 if L10n.language == "zh" else 1)
+
+
+func _on_language_option_selected(index: int) -> void:
+	var language_code := "zh" if index == 0 else "en"
+	L10n.set_language(language_code)
+	_save_session_preferences()
+	_apply_ui_translations()
+
+
+func _on_language_changed(_language_code: String) -> void:
+	_sync_language_option()
+	_apply_ui_translations()
+
+
+func _apply_ui_translations() -> void:
+	_translate_control_tree($UI)
+	if not _latest_wolf_game_data.is_empty():
+		_render_wolf_game(_latest_wolf_game_data)
+	else:
+		_update_wolf_menu_summary()
+		_update_day_speech_controls_from_current_state()
+
+
+func _translate_control_tree(node: Node) -> void:
+	for child in node.get_children():
+		_translate_control_tree(child)
+	if node is LineEdit:
+		node.placeholder_text = L10n.t(node.placeholder_text)
+	elif (node is BaseButton or node is Label) and not (node is OptionButton):
+		node.text = L10n.t(node.text)
+	if node is Control and not node.tooltip_text.is_empty():
+		node.tooltip_text = L10n.t(node.tooltip_text)
 
 
 func _hide_game_setup(restore_focus: bool = true) -> void:
@@ -840,19 +894,47 @@ func _set_intel_panel_open(open: bool, restore_focus: bool = true) -> void:
 	_update_ui_safe_area()
 
 
-func _populate_player_role_options() -> void:
+func _populate_player_role_options(variant: String = "classic") -> void:
+	var previous_role := str(_get_selected_option_metadata(player_role_option, "random"))
 	player_role_option.clear()
-	for option in [
-		["随机身份", "random"],
-		["狼人（测试）", "werewolf"],
-		["预言家（测试）", "seer"],
-		["女巫（测试）", "witch"],
-		["猎人（测试）", "hunter"],
-		["守卫（测试）", "guard"],
-		["村民（测试）", "villager"],
-	]:
+	var options: Array = [
+		[L10n.t("随机身份"), "random"],
+		[L10n.t("狼人（测试）"), "werewolf"],
+		[L10n.t("预言家（测试）"), "seer"],
+		[L10n.t("女巫（测试）"), "witch"],
+		[L10n.t("猎人（测试）"), "hunter"],
+		[L10n.t("守卫（测试）"), "guard"],
+		[L10n.t("村民（测试）"), "villager"],
+	]
+	if variant == "idiot":
+		options.append([L10n.t("白痴（测试）"), "idiot"])
+	for option in options:
 		player_role_option.add_item(str(option[0]))
 		player_role_option.set_item_metadata(player_role_option.get_item_count() - 1, option[1])
+	if variant != "idiot" and previous_role == "idiot":
+		player_role_option.select(0)
+
+
+func _populate_variant_options() -> void:
+	variant_option.clear()
+	variant_option.add_item(L10n.t("经典局"))
+	variant_option.set_item_metadata(variant_option.get_item_count() - 1, "classic")
+	variant_option.add_item(L10n.t("白痴局"))
+	variant_option.set_item_metadata(variant_option.get_item_count() - 1, "idiot")
+	for i in range(variant_option.get_item_count()):
+		if str(variant_option.get_item_metadata(i)) == _session_variant:
+			variant_option.select(i)
+			break
+
+
+func _get_selected_variant() -> String:
+	return str(_get_selected_option_metadata(variant_option, "classic"))
+
+
+func _on_variant_option_selected(_index: int) -> void:
+	_session_variant = _get_selected_variant()
+	_populate_player_role_options(_session_variant)
+	_save_session_preferences()
 
 
 func _on_viewport_size_changed() -> void:
@@ -1865,6 +1947,7 @@ func _on_start_game_button_pressed() -> void:
 	var body = {
 		"player_name": player_name,
 		"npc_count": 11,
+		"variant": _get_selected_variant(),
 		"player_role": str(_get_selected_option_metadata(player_role_option, "random")),
 		"enable_llm": llm_enabled_toggle.button_pressed,
 		"enable_llm_validation": _llm_validation_requested(),
@@ -2662,6 +2745,14 @@ func _load_session_preferences() -> void:
 	var tutorial_value: Variant = config.get_value(SESSION_SETTINGS_SECTION, "tutorial_hints", true)
 	_tutorial_hints = true if typeof(tutorial_value) != TYPE_BOOL else bool(tutorial_value)
 	tutorial_hints_toggle.button_pressed = _tutorial_hints
+	var variant_value: Variant = config.get_value(SESSION_SETTINGS_SECTION, "variant", "classic")
+	_session_variant = (
+		str(variant_value)
+		if typeof(variant_value) == TYPE_STRING and str(variant_value) in ["classic", "idiot"]
+		else "classic"
+	)
+	var language_value: Variant = config.get_value(SESSION_SETTINGS_SECTION, "language", "zh")
+	L10n.set_language(str(language_value) if typeof(language_value) == TYPE_STRING else "zh")
 
 
 func _apply_session_slot(config: ConfigFile) -> void:
@@ -2710,6 +2801,8 @@ func _save_session_preferences() -> void:
 	config.set_value(SESSION_SETTINGS_SECTION, "bgm_volume", _bgm_volume)
 	config.set_value(SESSION_SETTINGS_SECTION, "sfx_volume", _sfx_volume)
 	config.set_value(SESSION_SETTINGS_SECTION, "tutorial_hints", _tutorial_hints)
+	config.set_value(SESSION_SETTINGS_SECTION, "variant", _session_variant)
+	config.set_value(SESSION_SETTINGS_SECTION, "language", L10n.language)
 	var save_error := config.save(SESSION_SETTINGS_PATH)
 	if save_error != OK:
 		push_warning("无法保存会话设置；本次运行内仍可继续上局。")
@@ -3137,12 +3230,13 @@ func _render_stats_overlay() -> void:
 
 func _role_display_name(role: String) -> String:
 	match role:
-		"seer": return "预言家"
-		"witch": return "女巫"
-		"hunter": return "猎人"
-		"guard": return "守卫"
-		"werewolf": return "狼人"
-		"villager": return "村民"
+		"seer": return L10n.t("预言家")
+		"witch": return L10n.t("女巫")
+		"hunter": return L10n.t("猎人")
+		"guard": return L10n.t("守卫")
+		"werewolf": return L10n.t("狼人")
+		"villager": return L10n.t("村民")
+		"idiot": return L10n.t("白痴")
 		_: return role
 
 
@@ -3704,7 +3798,7 @@ func _on_replay_next_pressed() -> void:
 
 func _on_replay_play_pressed() -> void:
 	_replay_playing = not _replay_playing
-	replay_play_button.text = "暂停" if _replay_playing else "播放"
+	replay_play_button.text = L10n.t("暂停") if _replay_playing else L10n.t("播放")
 	if _replay_playing:
 		_replay_autoplay_loop()
 
@@ -3716,7 +3810,7 @@ func _replay_autoplay_loop() -> void:
 			return
 		if _replay_index >= _replay_events.size() - 1:
 			_replay_playing = false
-			replay_play_button.text = "播放"
+			replay_play_button.text = L10n.t("播放")
 			return
 		_replay_index += 1
 		_render_replay_step()
@@ -3730,33 +3824,33 @@ func _on_tutorial_hints_toggled(enabled: bool) -> void:
 func _phase_tutorial_hint(phase: String) -> String:
 	match phase:
 		"NIGHT":
-			return "🌙 夜晚：按你的身份选择行动目标，然后点“结算夜晚”。"
+			return L10n.t("🌙 夜晚：按你的身份选择行动目标，然后点“结算夜晚”。")
 		"HUNTER_SHOT":
-			return "🔫 猎人触发：选择开枪目标或选择不开枪。"
+			return L10n.t("🔫 猎人触发：选择开枪目标或选择不开枪。")
 		"SHERIFF_SIGNUP":
-			return "🚨 警上报名：决定是否上警竞选警长。"
+			return L10n.t("🚨 警上报名：决定是否上警竞选警长。")
 		"SHERIFF_SPEECH":
-			return "🚨 竞选发言：轮到你在面板填写警上发言。"
+			return L10n.t("🚨 竞选发言：轮到你在面板填写警上发言。")
 		"SHERIFF_WITHDRAWAL":
-			return "🚨 退水阶段：点“继续竞选”或“退水”。"
+			return L10n.t("🚨 退水阶段：点“继续竞选”或“退水”。")
 		"SHERIFF_VOTE":
-			return "🗳 警长投票：警下玩家为候选人投票。"
+			return L10n.t("🗳 警长投票：警下玩家为候选人投票。")
 		"SHERIFF_RUNOFF_SPEECH", "SHERIFF_RUNOFF_VOTE":
-			return "⚖️ 平票 PK：候选人再次发言并重新投票。"
+			return L10n.t("⚖️ 平票 PK：候选人再次发言并重新投票。")
 		"MEETING_ORDER":
-			return "🗣 警长选择发言方向（出局左/右或警左/右）。"
+			return L10n.t("🗣 警长选择发言方向（出局左/右或警左/右）。")
 		"DAY_MEETING":
-			return "☀️ 白天会议：轮到你时在面板发言，NPC 轮到走近按 E。"
+			return L10n.t("☀️ 白天会议：轮到你时在面板发言，NPC 轮到走近按 E。")
 		"SHERIFF_NOMINATION":
-			return "🗣 警长确认暂时/最终归票。"
+			return L10n.t("🗣 警长确认暂时/最终归票。")
 		"FREE_ACTIVITY":
-			return "🚶 自由活动：走近 NPC 按 E 私聊追问，结束点“结束自由活动”。"
+			return L10n.t("🚶 自由活动：走近 NPC 按 E 私聊追问，结束点“结束自由活动”。")
 		"VOTE":
-			return "🗳 放逐投票：选择目标并写下理由后一次提交。"
+			return L10n.t("🗳 放逐投票：选择目标并写下理由后一次提交。")
 		"BADGE_TRANSFER":
-			return "🎖 警长出局：移交或撕毁警徽。"
+			return L10n.t("🎖 警长出局：移交或撕毁警徽。")
 		"GAME_OVER":
-			return "🏁 游戏结束：查看复盘与高光。"
+			return L10n.t("🏁 游戏结束：查看复盘与高光。")
 		_:
 			return ""
 
@@ -4261,19 +4355,33 @@ func _render_wolf_game(game_data: Dictionary) -> void:
 	_sync_world_npcs(characters)
 	_handle_elimination_animation(characters)
 
-	wolf_status_label.text = "后端状态：connected"
+	wolf_status_label.text = L10n.t("后端状态：") + "connected"
 	if _preserve_wolf_game_info_once:
 		_preserve_wolf_game_info_once = false
 	else:
 		var private_note := _format_player_private_state_note(game_data.get("player_private_info", {}))
-		var llm_label: String = "LLM：规则模板"
+		var llm_label: String = L10n.t("LLM：规则模板")
 		if llm_enabled:
 			llm_label = (
-				"LLM：已启用 · 校验开启（最多5轮）"
+				L10n.t("LLM：已启用 · 校验开启（最多5轮）")
 				if llm_validation_enabled
-				else "LLM：已启用 · 原文直出（0次校验）"
+				else L10n.t("LLM：已启用 · 原文直出（0次校验）")
 			)
-		wolf_game_info_label.text = "游戏 " + str(game_id) + " | 第 " + str(day) + " 天 | " + str(phase) + " | " + llm_label + "\n" + str(message) + private_note
+		wolf_game_info_label.text = (
+			L10n.t("游戏 ")
+			+ str(game_id)
+			+ " | "
+			+ L10n.t("第 ")
+			+ str(day)
+			+ L10n.t(" 天")
+			+ " | "
+			+ str(phase)
+			+ " | "
+			+ llm_label
+			+ "\n"
+			+ str(message)
+			+ private_note
+		)
 	public_log_label.text = _format_public_evidence_timeline(
 		game_data.get("public_evidence_timeline", {}),
 		game_data.get("public_evidence_analysis", {}),
@@ -4320,41 +4428,41 @@ func _render_wolf_game(game_data: Dictionary) -> void:
 
 func _update_wolf_menu_summary() -> void:
 	if _current_wolf_game_id.is_empty():
-		wolf_menu_summary_label.text = "等待开始"
+		wolf_menu_summary_label.text = L10n.t("等待开始")
 		return
 
 	match _current_wolf_phase:
 		"NIGHT":
-			wolf_menu_summary_label.text = "第 " + str(_current_wolf_day) + " 夜"
+			wolf_menu_summary_label.text = L10n.t("夜晚 ") + str(_current_wolf_day)
 		"HUNTER_SHOT":
-			wolf_menu_summary_label.text = "猎人开枪"
+			wolf_menu_summary_label.text = L10n.t("猎人开枪")
 		"SHERIFF_SIGNUP":
-			wolf_menu_summary_label.text = "警上报名"
+			wolf_menu_summary_label.text = L10n.t("警上报名")
 		"SHERIFF_SPEECH":
-			wolf_menu_summary_label.text = "警上发言"
+			wolf_menu_summary_label.text = L10n.t("警上发言")
 		"SHERIFF_WITHDRAWAL":
-			wolf_menu_summary_label.text = "退水阶段"
+			wolf_menu_summary_label.text = L10n.t("退水阶段")
 		"SHERIFF_VOTE":
-			wolf_menu_summary_label.text = "警长投票"
+			wolf_menu_summary_label.text = L10n.t("警长投票")
 		"SHERIFF_RUNOFF_SPEECH":
-			wolf_menu_summary_label.text = "警上 PK"
+			wolf_menu_summary_label.text = L10n.t("警上 PK")
 		"SHERIFF_RUNOFF_VOTE":
-			wolf_menu_summary_label.text = "PK 投票"
+			wolf_menu_summary_label.text = L10n.t("PK 投票")
 		"MEETING_ORDER":
-			wolf_menu_summary_label.text = "警长选发言侧"
+			wolf_menu_summary_label.text = L10n.t("警长选发言侧")
 		"SHERIFF_NOMINATION":
-			wolf_menu_summary_label.text = "警长归票"
+			wolf_menu_summary_label.text = L10n.t("警长归票")
 		"BADGE_TRANSFER":
-			wolf_menu_summary_label.text = "移交警徽"
+			wolf_menu_summary_label.text = L10n.t("移交警徽")
 		"DAY_MEETING":
-			var speaker_name := str(_wolf_character_names.get(_current_meeting_speaker_id, "等待发言"))
-			wolf_menu_summary_label.text = "会议 · " + speaker_name
+			var speaker_name := str(_wolf_character_names.get(_current_meeting_speaker_id, L10n.t("等待发言")))
+			wolf_menu_summary_label.text = L10n.t("会议 · ") + speaker_name
 		"FREE_ACTIVITY":
-			wolf_menu_summary_label.text = "自由活动"
+			wolf_menu_summary_label.text = L10n.t("自由活动")
 		"VOTE":
-			wolf_menu_summary_label.text = "投票阶段"
+			wolf_menu_summary_label.text = L10n.t("投票阶段")
 		"GAME_OVER":
-			wolf_menu_summary_label.text = "游戏结束"
+			wolf_menu_summary_label.text = L10n.t("游戏结束")
 		_:
 			wolf_menu_summary_label.text = _current_wolf_phase
 
@@ -4474,7 +4582,15 @@ func _update_player_identity_display(game_data: Dictionary) -> void:
 		_set_key_info_expanded(false, false)
 		return
 
-	player_role_label.text = _format_role_name(_current_player_role)
+	var role_text := _format_role_name(_current_player_role)
+	var player_private_info = game_data.get("player_private_info", {})
+	if (
+		_current_player_role == "idiot"
+		and typeof(player_private_info) == TYPE_DICTIONARY
+		and bool(player_private_info.get("idiot_flipped", false))
+	):
+		role_text += L10n.t("（已翻牌，不能投票）")
+	player_role_label.text = role_text
 	player_role_label.add_theme_color_override("font_color", Color(0, 0, 0, 1))
 
 	wolf_teammates_label.visible = _current_player_role == "werewolf"
@@ -5683,42 +5799,42 @@ func _format_player_speech_preview(preview_data: Dictionary) -> String:
 func _format_speech_tone(tone: String) -> String:
 	match tone:
 		"suspicious":
-			return "怀疑"
+			return L10n.t("怀疑")
 		"claiming":
-			return "身份声明"
+			return L10n.t("身份声明")
 		_:
-			return "中性"
+			return L10n.t("中性")
 
 
 func _format_rag_retrieval_mode(retrieval_mode: String) -> String:
-	return "向量 + 关键词" if retrieval_mode == "hybrid" else "关键词降级"
+	return L10n.t("向量 + 关键词") if retrieval_mode == "hybrid" else L10n.t("关键词降级")
 
 
 func _format_npc_speeches(speeches: Variant) -> String:
 	if typeof(speeches) != TYPE_ARRAY or speeches.is_empty():
-		return "NPC 发言：暂无可显示的发言。"
+		return L10n.t("NPC 发言：暂无可显示的发言。")
 
-	var lines: Array[String] = ["NPC 发言："]
+	var lines: Array[String] = [L10n.t("NPC 发言：")]
 	for speech in speeches:
 		if typeof(speech) != TYPE_DICTIONARY:
 			continue
 
 		var character_id = speech.get("character_id", "?")
-		var character_name = speech.get("name", "未知")
+		var character_name = speech.get("name", "")
 		var content = str(speech.get("speech", ""))
-		lines.append(str(character_id) + "号 " + str(character_name) + "：" + content)
+		lines.append(str(character_id) + L10n.t("号 ") + str(character_name) + "：" + content)
 
 	if lines.size() == 1:
-		return "NPC 发言：后端已返回，但格式暂时无法显示。"
+		return L10n.t("NPC 发言：后端已返回，但格式暂时无法显示。")
 
 	return _join_lines(lines)
 
 
 func _format_npc_vote_decisions(npc_votes: Variant) -> String:
 	if typeof(npc_votes) != TYPE_ARRAY or npc_votes.is_empty():
-		return "NPC 投票：暂无可显示的投票。"
+		return L10n.t("NPC 投票：暂无可显示的投票。")
 
-	var lines: Array[String] = ["NPC 投票："]
+	var lines: Array[String] = [L10n.t("NPC 投票：")]
 	for vote in npc_votes:
 		if typeof(vote) != TYPE_DICTIONARY:
 			continue
@@ -5726,17 +5842,17 @@ func _format_npc_vote_decisions(npc_votes: Variant) -> String:
 		var voter_id = vote.get("character_id", "?")
 		var target_id = vote.get("target_id", "?")
 		var reason = str(vote.get("reason", ""))
-		lines.append(str(voter_id) + "号 -> " + str(target_id) + "号：" + reason)
+		lines.append(str(voter_id) + L10n.t("号 ") + "-> " + str(target_id) + L10n.t("号 ") + "：" + reason)
 		var evidence_titles = vote.get("evidence_titles", [])
 		if typeof(evidence_titles) == TYPE_ARRAY and not evidence_titles.is_empty():
 			var evidence_parts: Array[String] = []
 			for title in evidence_titles:
 				evidence_parts.append(str(title))
 			var mode := _format_rag_retrieval_mode(str(vote.get("retrieval_mode", "keyword")))
-			lines.append("依据：" + _join_inline(evidence_parts) + " | " + mode)
+			lines.append(L10n.t("依据：") + _join_inline(evidence_parts) + " | " + mode)
 
 	if lines.size() == 1:
-		return "NPC 投票：后端已返回，但格式暂时无法显示。"
+		return L10n.t("NPC 投票：后端已返回，但格式暂时无法显示。")
 
 	return _join_lines(lines)
 
@@ -6811,17 +6927,19 @@ func _format_character_card_text(character: Dictionary) -> String:
 func _format_role_name(role: String) -> String:
 	match role:
 		"werewolf":
-			return "狼人"
+			return L10n.t("狼人")
 		"seer":
-			return "预言家"
+			return L10n.t("预言家")
 		"witch":
-			return "女巫"
+			return L10n.t("女巫")
 		"hunter":
-			return "猎人"
+			return L10n.t("猎人")
 		"guard":
-			return "守卫"
+			return L10n.t("守卫")
 		"villager":
-			return "村民"
+			return L10n.t("村民")
+		"idiot":
+			return L10n.t("白痴")
 		_:
 			return role
 

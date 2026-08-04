@@ -14,6 +14,7 @@ from threading import Lock, RLock
 from typing import Literal, Optional, get_type_hints
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .event_log import (
@@ -189,6 +190,7 @@ async def app_lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Agent Town Backend", lifespan=app_lifespan)
+SPECTATE_HTML_FILE = Path(__file__).resolve().parent.parent / "spectate.html"
 from .config import (
     BADGE_FLOW_REASON_LABELS,
     CAMP_BY_ROLE,
@@ -201,6 +203,7 @@ from .config import (
     FAKE_SEER_CHECK_POLICY_VERSION,
     FIXED_NPC_COUNT,
     GAME_SAVE_DIR,
+    GAME_VARIANTS,
     GOD_ROLES,
     KNOWLEDGE_BASE_FILE,
     LLM_VALIDATION_LOG_FILE,
@@ -318,6 +321,9 @@ from .schemas import (
     SheriffVoteResponse,
     SheriffWithdrawalRequest,
     SheriffWithdrawalResponse,
+    SpectateCharacter,
+    SpectateGameSummary,
+    SpectateResponse,
     SpeechState,
     SubmitAndResolveVoteResponse,
     TriggerEasterEgg,
@@ -767,6 +773,11 @@ def api_health() -> ApiHealthResponse:
     )
 
 
+@app.get("/spectate", include_in_schema=False)
+def spectate_page() -> FileResponse:
+    return FileResponse(SPECTATE_HTML_FILE, media_type="text/html; charset=utf-8")
+
+
 @app.get("/api/llm/status", response_model=LLMStatusResponse)
 def get_llm_status() -> LLMStatusResponse:
     return LLMStatusResponse(**LLM_CLIENT.status())
@@ -828,7 +839,10 @@ def create_wolf_game_state(
             detail="当前版本固定为 1 名玩家 + 11 名 NPC。",
         )
 
-    role_pool = build_role_pool(request.roles)
+    variant_roles = GAME_VARIANTS.get(request.variant.strip().lower())
+    role_pool = build_role_pool(
+        dict(variant_roles) if variant_roles is not None else request.roles
+    )
     total_character_count = request.npc_count + 1
     if len(role_pool) != total_character_count:
         raise HTTPException(
@@ -888,7 +902,15 @@ def create_wolf_game_state(
         phase="NIGHT",
         player_character_id=1,
         characters=characters,
-        public_logs=["游戏开始，12 名角色已入场。", "第 1 夜开始。"],
+        public_logs=(
+            [
+                "游戏开始，12 名角色已入场。",
+                "本局启用白痴变体：1 名白痴替换 1 名村民。",
+                "第 1 夜开始。",
+            ]
+            if request.variant.strip().lower() == "idiot"
+            else ["游戏开始，12 名角色已入场。", "第 1 夜开始。"]
+        ),
         player_private_info={},
         llm_enabled=(
             request.enable_llm
@@ -1333,6 +1355,82 @@ def get_wolf_game_state(game_id: str) -> GameStateResponse:
         llm_enabled=game_state.llm_enabled,
         llm_validation_enabled=is_llm_validation_enabled(game_state),
         npc_policy_mode=game_state.npc_policy_mode,
+    )
+
+
+@app.get("/api/spectate/active-games", response_model=list[SpectateGameSummary])
+def list_spectate_games() -> list[SpectateGameSummary]:
+    """List live (non-terminal) games for the browser spectator page."""
+
+    with GAME_LOCK:
+        live_games = [
+            game_state
+            for game_state in GAME_STORE.values()
+            if game_state.phase != "GAME_OVER"
+        ]
+    live_games.sort(
+        key=lambda game_state: str(game_state.updated_at),
+        reverse=True,
+    )
+    player = None
+    summaries = []
+    for game_state in live_games[:20]:
+        player = get_character(game_state, game_state.player_character_id)
+        summaries.append(
+            SpectateGameSummary(
+                game_id=game_state.game_id,
+                day=game_state.day,
+                phase=game_state.phase,
+                player_name=player.name,
+                updated_at=str(game_state.updated_at),
+            )
+        )
+    return summaries
+
+
+@app.get("/api/spectate/{game_id}", response_model=SpectateResponse)
+def get_spectate_view(game_id: str) -> SpectateResponse:
+    """Return a public-only live snapshot for spectator pages.
+
+    Hidden roles, private info, strategy traces, and random seeds are never
+    included; the spectator sees the same public evidence a player sees.
+    """
+
+    with GAME_LOCK:
+        game_state = GAME_STORE.get(game_id)
+
+    if game_state is None:
+        raise HTTPException(status_code=404, detail="未找到这局游戏。")
+
+    public_evidence_timeline = build_public_evidence_timeline(game_state)
+    characters = []
+    for character in game_state.characters:
+        role_claim = get_public_role_claim(game_state, character.id)
+        characters.append(
+            SpectateCharacter(
+                id=character.id,
+                name=character.name,
+                is_player=character.is_player,
+                alive=character.alive,
+                is_sheriff=game_state.sheriff_id == character.id,
+                idiot_flipped=character.idiot_flipped,
+                claimed_role=(
+                    role_claim.claimed_role if role_claim is not None else None
+                ),
+            )
+        )
+    return SpectateResponse(
+        game_id=game_state.game_id,
+        day=game_state.day,
+        phase=game_state.phase,
+        winner=game_state.winner,
+        updated_at=str(game_state.updated_at),
+        characters=characters,
+        public_logs=list(game_state.public_logs),
+        public_intel=build_public_intel_views(game_state),
+        public_evidence_timeline=public_evidence_timeline,
+        meeting=build_day_meeting_view(game_state),
+        sheriff=build_sheriff_view(game_state),
     )
 
 
@@ -2344,6 +2442,7 @@ def build_sheriff_view(game_state: WolfGameState) -> SheriffView:
     player_can_vote = (
         game_state.phase in {"SHERIFF_VOTE", "SHERIFF_RUNOFF_VOTE"}
         and player.alive
+        and not (player.role == "idiot" and player.idiot_flipped)
         and (
             election is None
             or player.id not in election.candidates
@@ -5035,7 +5134,11 @@ def submit_and_resolve_sheriff_vote(request: SheriffVoteRequest) -> SheriffVoteR
             raise HTTPException(status_code=400, detail="只能由玩家触发警长投票。")
         votes = []
         election_participants = set(election.candidates)
-        if player.alive and player.id not in election_participants:
+        if (
+            player.alive
+            and not (player.role == "idiot" and player.idiot_flipped)
+            and player.id not in election_participants
+        ):
             if request.target_id not in active_candidates:
                 raise HTTPException(status_code=400, detail="请选择仍在竞选的警长候选人。")
             votes.append(VoteState(day=game_state.day, voter_id=player.id, target_id=int(request.target_id), reason="玩家警长票。"))
@@ -5043,7 +5146,12 @@ def submit_and_resolve_sheriff_vote(request: SheriffVoteRequest) -> SheriffVoteR
             raise HTTPException(status_code=400, detail="参加过竞选的角色（含退水者）或出局玩家不能参与警长投票。")
 
         for voter in game_state.characters:
-            if voter.is_player or not voter.alive or voter.id in election_participants:
+            if (
+                voter.is_player
+                or not voter.alive
+                or voter.id in election_participants
+                or (voter.role == "idiot" and voter.idiot_flipped)
+            ):
                 continue
             target_id = choose_npc_sheriff_vote_target(game_state, voter, active_candidates)
             votes.append(VoteState(day=game_state.day, voter_id=voter.id, target_id=target_id, reason="NPC 警长票。"))
@@ -6732,6 +6840,7 @@ def build_player_private_info_dict(game_state: WolfGameState) -> dict[str, objec
     return {
         "role": player.role,
         "camp": player.camp,
+        "idiot_flipped": player.role == "idiot" and player.idiot_flipped,
         "last_check_result": (
             last_check_result if isinstance(last_check_result, dict) else None
         ),
@@ -17841,6 +17950,8 @@ def ensure_vote_phase(game_state: WolfGameState) -> None:
 def validate_vote(game_state: WolfGameState, voter: CharacterState, target_id: int) -> None:
     if not voter.alive:
         raise HTTPException(status_code=400, detail="出局角色不能投票。")
+    if voter.role == "idiot" and voter.idiot_flipped:
+        raise HTTPException(status_code=400, detail="翻牌白痴不能投票。")
 
     target = get_character(game_state, target_id)
     if not target.alive:
@@ -17868,6 +17979,9 @@ def has_vote(game_state: WolfGameState, voter_id: int) -> bool:
 def ensure_npc_vote_decisions(game_state: WolfGameState) -> list[NpcVoteDecision]:
     for voter in game_state.characters:
         if voter.is_player or not voter.alive:
+            continue
+
+        if voter.role == "idiot" and voter.idiot_flipped:
             continue
 
         if has_vote(game_state, voter.id):
@@ -19171,7 +19285,11 @@ def get_current_valid_votes(game_state: WolfGameState) -> list[VoteState]:
 
         voter = get_character(game_state, vote.voter_id)
         target = get_character(game_state, vote.target_id)
-        if voter.alive and target.alive:
+        if (
+            voter.alive
+            and target.alive
+            and not (voter.role == "idiot" and voter.idiot_flipped)
+        ):
             valid_votes.append(vote)
 
     return valid_votes
@@ -19243,19 +19361,39 @@ def finalize_current_vote(
     if not current_votes:
         raise HTTPException(status_code=400, detail="当前没有可结算的投票。")
     exiled_character_id = resolve_vote_target(game_state, current_votes)
+    idiot_flip_occurred = False
     if exiled_character_id is not None:
-        eliminate_character(
-            game_state,
-            exiled_character_id,
-            "exiled",
-            source_action="day_vote",
-            source_actor_ids=[
-                vote.voter_id
-                for vote in current_votes
-                if vote.target_id == exiled_character_id
-            ],
-            source_target_id=exiled_character_id,
-        )
+        exiled = get_character(game_state, exiled_character_id)
+        if exiled.role == "idiot" and not exiled.idiot_flipped:
+            exiled.idiot_flipped = True
+            game_state.public_claims.append(
+                PublicClaimState(
+                    day=game_state.day,
+                    character_id=exiled.id,
+                    claim_type="role",
+                    claimed_role="idiot",
+                    source="flip",
+                    phase=game_state.phase,
+                    window_day=game_state.day,
+                )
+            )
+            game_state.public_logs.append(
+                f"{format_full_character_name(exiled)}被放逐时翻牌：白痴免于出局，此后不能投票。"
+            )
+            idiot_flip_occurred = True
+        else:
+            eliminate_character(
+                game_state,
+                exiled_character_id,
+                "exiled",
+                source_action="day_vote",
+                source_actor_ids=[
+                    vote.voter_id
+                    for vote in current_votes
+                    if vote.target_id == exiled_character_id
+                ],
+                source_target_id=exiled_character_id,
+            )
 
     apply_vote_social_updates(game_state, current_votes, exiled_character_id)
     append_vote_memory_summaries(game_state, current_votes, exiled_character_id)
@@ -19263,7 +19401,9 @@ def finalize_current_vote(
     game_state.public_logs.append(public_message)
     hunter_message = handle_hunter_trigger(
         game_state,
-        [exiled_character_id] if exiled_character_id is not None else [],
+        []
+        if (exiled_character_id is None or idiot_flip_occurred)
+        else [exiled_character_id],
         trigger="vote",
         continuation="after_vote",
     )
@@ -19343,8 +19483,16 @@ def append_vote_memory_summaries(
     }
     player_vote_target_id = votes_by_voter.get(game_state.player_character_id)
     exiled_name = "无人"
+    exiled_note = "被放逐"
     if exiled_character_id is not None:
-        exiled_name = get_character(game_state, exiled_character_id).name
+        exiled_character = get_character(game_state, exiled_character_id)
+        exiled_name = exiled_character.name
+        if (
+            exiled_character.role == "idiot"
+            and exiled_character.idiot_flipped
+            and exiled_character.alive
+        ):
+            exiled_note = "被放逐但翻牌为白痴免死"
 
     for character in game_state.characters:
         if not character.alive:
@@ -19352,11 +19500,14 @@ def append_vote_memory_summaries(
 
         own_vote_target_id = votes_by_voter.get(character.id)
         if own_vote_target_id is None:
-            append_character_memory(character, f"第 {game_state.day} 天投票结束，{exiled_name} 被放逐。")
+            append_character_memory(
+                character,
+                f"第 {game_state.day} 天投票结束，{exiled_name} {exiled_note}。",
+            )
             continue
 
         own_target = get_character(game_state, own_vote_target_id)
-        detail = f"第 {game_state.day} 天我投给 {own_target.name}，最终 {exiled_name} 被放逐。"
+        detail = f"第 {game_state.day} 天我投给 {own_target.name}，最终 {exiled_name} {exiled_note}。"
         if not character.is_player and player_vote_target_id is not None:
             if player_vote_target_id == own_vote_target_id:
                 detail += " 玩家和我投票一致。"
@@ -19419,6 +19570,11 @@ def build_vote_public_message(
         return f"第 {game_state.day} 天投票结束，没有角色被放逐。"
 
     character = get_character(game_state, exiled_character_id)
+    if character.role == "idiot" and character.idiot_flipped and character.alive:
+        return (
+            f"第 {game_state.day} 天投票结束，{character.name} 被放逐但翻牌为白痴，"
+            "免于出局且此后不能投票。"
+        )
     return f"第 {game_state.day} 天投票结束，{character.name} 被放逐出局。"
 
 
@@ -19436,7 +19592,7 @@ def get_winner_result(game_state: WolfGameState) -> tuple[Optional[str], str]:
     alive_villagers = [
         character
         for character in alive_characters
-        if character.role == "villager"
+        if character.role in {"villager", "idiot"}
     ]
     alive_gods = [
         character
@@ -20983,6 +21139,7 @@ def build_character_views(game_state: WolfGameState) -> list[CharacterView]:
                 name=character.name,
                 is_player=character.is_player,
                 alive=character.alive,
+                idiot_flipped=character.idiot_flipped,
                 role_visible_to_player=(
                     character.role
                     if character.is_player

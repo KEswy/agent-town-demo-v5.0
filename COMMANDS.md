@@ -308,6 +308,19 @@ AGENT_TOWN_NPC_POLICY_MODE=local \
 “金水 + 双方继续竞选”推理例子和训练边界见
 [`docs/V5_ROADMAP.md`](docs/V5_ROADMAP.md)。
 
+白痴变体局（1 名白痴替换 1 名村民）使用 `--variant idiot`：
+
+```bash
+backend/.venv/bin/python scripts/simulate_games.py \
+  --seed 20260719 --games 30 --variant idiot \
+  --output /tmp/agent-town-idiot-variant.json
+```
+
+会议快进在客户端白天会议轮到 NPC 时点击“快进会议”；等价 API 为
+`POST /api/day/npc-speeches-batch`（可选 `idempotency_key`，与逐条生成共用事务
+guard）。实时观战在浏览器打开 `http://127.0.0.1:8000/spectate`，轮询
+`/api/spectate/active-games` 与 `/api/spectate/{game_id}` 的公开快照。
+
 狼人警上阵容由 `wolf_sheriff_campaign.v1` 在单狼悍跳、双狼辅助站边和双狼公开拉开
 距离之间确定性选择。无需新命令；正常 rule/shadow 仿真即可覆盖。双狼搭档只做公开
 发言并在发言后退水，不新增 API 或玩家操作。

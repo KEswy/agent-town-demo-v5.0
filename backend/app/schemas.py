@@ -156,6 +156,7 @@ class GameStartRequest(BaseModel):
     npc_count: int = FIXED_NPC_COUNT
     roles: dict[str, int] = Field(default_factory=lambda: dict(DEFAULT_WOLF_ROLES))
     player_role: str = "random"
+    variant: str = "classic"
     enable_llm: bool = False
     enable_llm_validation: bool = True
     enable_rag: bool = False
@@ -171,6 +172,7 @@ class CharacterState(BaseModel):
     role: str
     camp: str
     alive: bool = True
+    idiot_flipped: bool = False
     personality: dict[str, float] = Field(default_factory=dict)
     emotion: dict[str, float] = Field(default_factory=dict)
     suspicion: dict[str, int] = Field(default_factory=dict)
@@ -184,6 +186,7 @@ class CharacterView(BaseModel):
     name: str
     is_player: bool
     alive: bool
+    idiot_flipped: bool = False
     role_visible_to_player: Optional[str] = None
     suspicion_score: int = 0
     suspicion_level: str = "无"
@@ -200,6 +203,7 @@ class CharacterView(BaseModel):
 class PlayerPrivateInfo(BaseModel):
     role: str
     camp: str
+    idiot_flipped: bool = False
     last_check_result: Optional[dict[str, object]] = None
     wolf_teammates: list[dict[str, object]] = Field(default_factory=list)
     witch_attacked_target: Optional[dict[str, object]] = None
@@ -620,6 +624,42 @@ class GameStateResponse(BaseModel):
     llm_enabled: bool = False
     llm_validation_enabled: bool = False
     npc_policy_mode: Literal["rule", "shadow", "local"] = "local"
+
+
+class SpectateCharacter(BaseModel):
+    """Public-safe character projection for the live spectator page."""
+
+    id: int
+    name: str
+    is_player: bool
+    alive: bool
+    is_sheriff: bool = False
+    idiot_flipped: bool = False
+    claimed_role: Optional[str] = None
+
+
+class SpectateGameSummary(BaseModel):
+    game_id: str
+    day: int
+    phase: str
+    player_name: str = ""
+    updated_at: str = ""
+
+
+class SpectateResponse(BaseModel):
+    """Live public snapshot: no hidden roles, private info, or strategy state."""
+
+    game_id: str
+    day: int
+    phase: str
+    winner: Optional[str] = None
+    updated_at: str
+    characters: list[SpectateCharacter]
+    public_logs: list[str]
+    public_intel: list[PublicIntelView]
+    public_evidence_timeline: PublicEvidenceTimelineV1
+    meeting: DayMeetingView
+    sheriff: SheriffView
 
 
 def is_llm_validation_enabled(game_state: WolfGameState) -> bool:

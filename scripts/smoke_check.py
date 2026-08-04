@@ -7074,6 +7074,7 @@ def assert_player_role_projection(expected_role):
     expected_private_fields = {
         "role",
         "camp",
+        "idiot_flipped",
         "last_check_result",
         "wolf_teammates",
         "witch_attacked_target",
@@ -15957,7 +15958,7 @@ def check_godot_ui_layout() -> None:
         'setup_status_label.text = "创建失败：后端响应缺少游戏编号。"',
         'func _set_intel_panel_open(open: bool, restore_focus: bool = true) -> void:',
         'game_summary_request.cancel_request()',
-        'intel_tabs.set_tab_title(0, "场上角色")',
+        'intel_tabs.set_tab_title(0, L10n.t("场上角色"))',
         'wolf_panel.visible = has_game',
         'setup_toggle_button.disabled = has_game and _current_wolf_phase != "GAME_OVER"',
         'var phase_changed := _current_wolf_phase != str(phase)',
@@ -16049,8 +16050,8 @@ def check_godot_ui_layout() -> None:
     for script_fragment in [
         'func _render_game_summary(summary: Dictionary)',
         'func _request_game_summary()',
-        'game_summary_tabs.set_tab_title(0, "角色复盘")',
-        'game_summary_tabs.set_tab_title(2, "解释复盘（赛后）")',
+        'game_summary_tabs.set_tab_title(0, L10n.t("角色复盘"))',
+        'game_summary_tabs.set_tab_title(2, L10n.t("解释复盘（赛后）"))',
         'func _format_post_game_explainable_review(review: Variant) -> String:',
         '"post_game_explainable_review.v1"',
         '【赛后真值已解锁】',

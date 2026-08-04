@@ -65,6 +65,7 @@ B 为真预言家的假设因此与“B 给持续对跳者发金水”的公开�
 | V5.4-E | P1 | 已完成第一阶段 | 增加 `wolf_sheriff_campaign.v1`，支持单狼悍跳、双狼辅助站边和双狼公开拉开距离；搭档发言后退水 |
 | V5.5-A | P2 | 已完成（女巫毒保留信念路径） | 警长投票、警长归票与夜技面（狼刀/守卫/查验/猎人）均已接入独立 task+role artifact：`npc_sheriff_vote_features.v1`（855 条）、`npc_sheriff_nomination_features.v1`（734 条）、`npc_night_target_features.v1`（1323 条，27 维）；女巫毒药沿用 V5.4-A 信念路径；30 局金丝雀零回归，重放 `30/30`、零 fallback；保持 legal mask、shadow 门禁和 replay 不变 |
 | V5.5-B | P2 | 待开始 | 本地策略模型的版本升级、灰度 shadow、A/B 报告和可恢复 artifact 注册 |
+| V5.5-C | P2 | 已完成 | 四合一体验层：会议快进（`POST /api/day/npc-speeches-batch` 批量发言、快进按钮）、多语言框架（`L10n` autoload + 设置切换中/英、核心 UI 英文化）、白痴变体局（`variant=idiot`，1 名白痴替换 1 名村民，翻牌免死一次且翻牌后不能投票）、实时观战（`/spectate` 页面 + `/api/spectate/*` 公开快照，不泄漏隐藏身份/私密信息）；白痴局 30 局金丝雀 50:50，经典 6-seed 夹具零回归，local 模式兼容 |
 
 ## 当前实现契约
 

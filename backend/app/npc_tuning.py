@@ -16,11 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 NPC_TUNING_SCHEMA_VERSION = "npc_tuning.v1"
 NPCFaction = Literal["good", "werewolf"]
-NPCRole = Literal["werewolf", "seer", "witch", "hunter", "guard", "villager"]
+NPCRole = Literal["werewolf", "seer", "witch", "hunter", "guard", "villager", "idiot"]
 
 VALID_FACTIONS = frozenset({"good", "werewolf"})
 VALID_ROLES = frozenset(
-    {"werewolf", "seer", "witch", "hunter", "guard", "villager"}
+    {"werewolf", "seer", "witch", "hunter", "guard", "villager", "idiot"}
 )
 ROLE_FACTIONS: dict[str, str] = {
     "werewolf": "werewolf",
@@ -29,6 +29,7 @@ ROLE_FACTIONS: dict[str, str] = {
     "hunter": "good",
     "guard": "good",
     "villager": "good",
+    "idiot": "good",
 }
 
 
@@ -100,7 +101,7 @@ class FactionTuningV1(StrictTuningModel):
 
 
 class RoleTuningV1(StrictTuningModel):
-    """Required overrides for all six roles in the twelve-player setup."""
+    """Required overrides for the classic roles; idiot is optional."""
 
     werewolf: TuningOverrideV1
     seer: TuningOverrideV1
@@ -108,6 +109,7 @@ class RoleTuningV1(StrictTuningModel):
     hunter: TuningOverrideV1
     guard: TuningOverrideV1
     villager: TuningOverrideV1
+    idiot: Optional[TuningOverrideV1] = None
 
 
 class NPCTuningConfigV1(StrictTuningModel):
@@ -227,7 +229,11 @@ def resolve_npc_tuning(
 
     values: dict[str, object] = config.global_defaults.model_dump()
     _apply_override(values, getattr(config.factions, faction))
-    _apply_override(values, getattr(config.roles, role))
+    role_override = getattr(config.roles, role, None)
+    if role == "idiot" and role_override is None:
+        role_override = config.roles.villager
+    if role_override is not None:
+        _apply_override(values, role_override)
     npc_override = config.npcs.get(npc_name)
     if npc_override is not None:
         _apply_override(values, npc_override)

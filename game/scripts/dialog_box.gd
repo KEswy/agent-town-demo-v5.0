@@ -121,21 +121,21 @@ func show_response(
 ) -> void:
 	show_dialog(npc_name, dialog_text)
 	if memory_count > 0:
-		memory_label.text = "记忆次数：第 " + str(memory_count) + " 次对话"
+		memory_label.text = L10n.t("记忆次数：第 ") + str(memory_count) + L10n.t(" 次对话")
 		if not relationship_level.is_empty():
-			memory_label.text += "\n关系阶段：" + relationship_level
+			memory_label.text += "\n" + L10n.t("关系阶段：") + relationship_level
 		memory_label.visible = true
 
 	var source_text := _format_knowledge_sources(knowledge_titles)
 	if source_text.is_empty():
-		knowledge_label.text = "未命中知识"
+		knowledge_label.text = L10n.t("未命中知识")
 	else:
 		knowledge_label.text = source_text
 	if not retrieval_mode.is_empty():
-		knowledge_label.text += "\n检索模式：" + _format_retrieval_mode(retrieval_mode)
-	knowledge_label.text += "\n文本生成：" + _format_text_generator(llm_used, llm_provider)
+		knowledge_label.text += "\n" + L10n.t("检索模式：") + _format_retrieval_mode(retrieval_mode)
+	knowledge_label.text += "\n" + L10n.t("文本生成：") + _format_text_generator(llm_used, llm_provider)
 	if not llm_used and not llm_fallback_reason.is_empty():
-		knowledge_label.text += "\n回退原因：" + _format_llm_fallback_reason(llm_fallback_reason)
+		knowledge_label.text += "\n" + L10n.t("回退原因：") + _format_llm_fallback_reason(llm_fallback_reason)
 	knowledge_label.visible = true
 
 
@@ -184,11 +184,11 @@ func show_private_response(
 ) -> void:
 	show_private_prompt(npc_name, response_text)
 	var source_text := _format_knowledge_sources(knowledge_titles)
-	knowledge_label.text = source_text if not source_text.is_empty() else "未命中可公开的检索来源"
-	knowledge_label.text += "\n检索模式：" + _format_retrieval_mode(retrieval_mode)
-	knowledge_label.text += "\n文本生成：" + _format_text_generator(llm_used, llm_provider)
+	knowledge_label.text = source_text if not source_text.is_empty() else L10n.t("未命中可公开的检索来源")
+	knowledge_label.text += "\n" + L10n.t("检索模式：") + _format_retrieval_mode(retrieval_mode)
+	knowledge_label.text += "\n" + L10n.t("文本生成：") + _format_text_generator(llm_used, llm_provider)
 	if not llm_used and not llm_fallback_reason.is_empty():
-		knowledge_label.text += "\n回退原因：" + _format_llm_fallback_reason(llm_fallback_reason)
+		knowledge_label.text += "\n" + L10n.t("回退原因：") + _format_llm_fallback_reason(llm_fallback_reason)
 	knowledge_label.visible = true
 	_set_validation_failure(llm_validation_failure)
 
@@ -206,13 +206,13 @@ func show_public_evidence_notice(
 	show_notice(npc_name, response_text)
 	var source_text := _format_knowledge_sources(evidence_titles)
 	if source_text.is_empty():
-		knowledge_label.text = "本次未命中额外公开证据"
+		knowledge_label.text = L10n.t("本次未命中额外公开证据")
 	else:
-		knowledge_label.text = source_text.replace("命中知识：", "公开依据：")
-	knowledge_label.text += "\n检索模式：" + _format_retrieval_mode(retrieval_mode)
-	knowledge_label.text += "\n文本生成：" + _format_text_generator(llm_used, llm_provider)
+		knowledge_label.text = source_text.replace(L10n.t("命中知识："), L10n.t("公开依据："))
+	knowledge_label.text += "\n" + L10n.t("检索模式：") + _format_retrieval_mode(retrieval_mode)
+	knowledge_label.text += "\n" + L10n.t("文本生成：") + _format_text_generator(llm_used, llm_provider)
 	if not llm_used and not llm_fallback_reason.is_empty():
-		knowledge_label.text += "\n回退原因：" + _format_llm_fallback_reason(llm_fallback_reason)
+		knowledge_label.text += "\n" + L10n.t("回退原因：") + _format_llm_fallback_reason(llm_fallback_reason)
 	knowledge_label.visible = true
 	_set_validation_failure(llm_validation_failure)
 
@@ -419,7 +419,7 @@ func _format_knowledge_sources(knowledge_titles: Variant) -> String:
 		if knowledge_titles.is_empty():
 			return ""
 
-		var lines: Array[String] = ["命中知识："]
+		var lines: Array[String] = [L10n.t("命中知识：")]
 		var index := 1
 		for title in knowledge_titles:
 			var title_text := _clean_display_text(str(title)).strip_edges()
@@ -441,33 +441,33 @@ func _format_knowledge_sources(knowledge_titles: Variant) -> String:
 	var title_text := _clean_display_text(str(knowledge_titles)).strip_edges()
 	if title_text.is_empty():
 		return ""
-	return "命中知识：\n1. " + title_text
+	return L10n.t("命中知识：") + "\n1. " + title_text
 
 
 func _format_retrieval_mode(retrieval_mode: String) -> String:
-	return "向量 + 关键词" if retrieval_mode == "hybrid" else "关键词降级"
+	return L10n.t("向量 + 关键词") if retrieval_mode == "hybrid" else L10n.t("关键词降级")
 
 
 func _format_text_generator(llm_used: bool, llm_provider: String) -> String:
-	return "LLM（" + llm_provider + "）" if llm_used else "规则模板"
+	return L10n.t("LLM（") + llm_provider + ")" if llm_used else L10n.t("规则模板")
 
 
 func _format_llm_fallback_reason(reason: String) -> String:
 	var normalized := reason.to_lower()
 	if "llm is disabled" in normalized:
-		return "全局 LLM 未启用"
+		return L10n.t("全局 LLM 未启用")
 	if "mock provider" in normalized:
-		return "Mock 模式使用规则回复"
+		return L10n.t("Mock 模式使用规则回复")
 	if "disabled for this game" in normalized:
-		return "本局未启用 LLM"
+		return L10n.t("本局未启用 LLM")
 	if "not fully configured" in normalized:
-		return "LLM 配置不完整"
+		return L10n.t("LLM 配置不完整")
 	if "httpstatuserror" in normalized or "timeout" in normalized or "network" in normalized:
-		return "LLM 服务暂时不可用，重试后仍失败"
+		return L10n.t("LLM 服务暂时不可用，重试后仍失败")
 	if "json" in normalized or "token limit" in normalized:
-		return "LLM 返回格式异常，重试后仍失败"
+		return L10n.t("LLM 返回格式异常，重试后仍失败")
 	if "validation failed after 5 attempts" in normalized:
-		return "LLM 五次回答均未通过规则校验"
+		return L10n.t("LLM 五次回答均未通过规则校验")
 	if "replacement character" in normalized:
 		return "LLM 回答包含异常字符"
 	if "resident chat" in normalized:

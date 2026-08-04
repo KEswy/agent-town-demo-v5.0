@@ -1227,6 +1227,24 @@ min_value = 0.0
 max_value = 100.0
 value = 80.0
 
+[node name="LanguageRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="Label" type="Label" parent="UI/GameSetupOverlay/Panel/Margin/VBox/LanguageRow"]
+custom_minimum_size = Vector2(92, 0)
+layout_mode = 2
+text = "语言 / Language"
+vertical_alignment = 1
+
+[node name="LanguageOption" type="OptionButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/LanguageRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+item_count = 2
+selected = 0
+popup/item_0/text = "中文"
+popup/item_1/text = "English"
+
 [node name="SlotRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
 layout_mode = 2
 theme_override_constants/separation = 10
@@ -1268,6 +1286,24 @@ vertical_alignment = 1
 layout_mode = 2
 size_flags_horizontal = 3
 tooltip_text = "默认随机；指定身份仅用于测试角色技能"
+
+[node name="VariantRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="VariantLabel" type="Label" parent="UI/GameSetupOverlay/Panel/Margin/VBox/VariantRow"]
+custom_minimum_size = Vector2(92, 0)
+layout_mode = 2
+text = "对局变体"
+vertical_alignment = 1
+
+[node name="VariantOption" type="OptionButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/VariantRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+item_count = 2
+selected = 0
+popup/item_0/text = "经典局"
+popup/item_1/text = "白痴局"
 
 [node name="SetupStatusLabel" type="Label" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
 layout_mode = 2

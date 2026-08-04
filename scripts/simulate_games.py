@@ -63,6 +63,12 @@ def parse_args() -> argparse.Namespace:
         help="fixed simulated player role or random",
     )
     parser.add_argument(
+        "--variant",
+        choices=["classic", "idiot"],
+        default="classic",
+        help="role-pool variant; idiot replaces one villager with an Idiot",
+    )
+    parser.add_argument(
         "--player-strategy",
         choices=PLAYER_STRATEGY_TIERS,
         default=DEFAULT_PLAYER_STRATEGY,
@@ -148,6 +154,7 @@ def main() -> int:
         report = run_player_strategy_benchmark(
             args.seed,
             args.games,
+            variant=args.variant,
             max_days=args.max_days,
             max_steps=args.max_steps,
             capture_event_logs=args.include_event_logs,
@@ -157,6 +164,7 @@ def main() -> int:
             args.seed,
             args.games,
             player_role=args.player_role,
+            variant=args.variant,
             player_strategy=args.player_strategy,
             max_days=args.max_days,
             max_steps=args.max_steps,
