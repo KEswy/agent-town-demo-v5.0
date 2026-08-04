@@ -42,12 +42,12 @@
     "output_dim": 1
   },
   "model_file": "model.npz",
-  "model_sha256": "5d23656dc1c37b190096cfd330f3c5abaccbed91fe74062376fd7a5461dd47d6",
-  "dataset_digest": "194db719c381d3371fc35b5ac18dc46b19c0de1195b95bfa29c408a171f324f7",
+  "model_sha256": "2d3fcc83b03275698fb7a1e03c9ffb7b39fd52813b7110ac2963b21419cfd50c",
+  "dataset_digest": "8bd00d84ad9a16f1aa427d4d7175f80753ebb816a7eb9bf8bd613fe40d33202a",
   "training_seed": 20260727,
   "training_samples": 88,
   "validation_samples": 55,
-  "validation_cross_entropy": 0.6237153017844689,
-  "validation_top1_agreement": 0.8181818181818182,
-  "created_at": "2026-07-27T08:14:57.102028+00:00"
+  "validation_cross_entropy": 0.42053765328784243,
+  "validation_top1_agreement": 0.7818181818181819,
+  "created_at": "2026-08-04T06:49:55.497081+00:00"
 }
