@@ -13,7 +13,8 @@ Godot 或 pip。
 
 - 支持 64 位 Windows 10/11。
 - 默认关闭真实 LLM 与向量模型下载，使用规则文案和关键词 RAG，断网可玩。
-- 默认 NPC 策略为 `rule`。
+- 默认 NPC 策略为 `local`（夜间信念置信度门禁 + 本地模型评分，已通过 30 局金丝雀）；
+  可通过 `.env` 的 `AGENT_TOWN_NPC_POLICY_MODE` 改回 `rule`。
 - 存档、居民记忆和后端日志写入
   `%LOCALAPPDATA%\Agent Town Demo\`，不写入游戏目录。
 

@@ -35,7 +35,7 @@ def main() -> None:
     os.environ.setdefault("ENABLE_LLM", "false")
     os.environ.setdefault("LLM_PROVIDER", "mock")
     os.environ.setdefault("AGENT_TOWN_DISABLE_VECTOR_RAG", "1")
-    os.environ.setdefault("AGENT_TOWN_NPC_POLICY_MODE", "rule")
+    os.environ.setdefault("AGENT_TOWN_NPC_POLICY_MODE", "local")
     os.environ.setdefault("AGENT_TOWN_DATA_DIR", str(_default_data_dir()))
     os.environ.setdefault(
         "AGENT_TOWN_GAME_SAVE_DIR",

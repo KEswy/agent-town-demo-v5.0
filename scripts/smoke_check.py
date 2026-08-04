@@ -5257,6 +5257,7 @@ request = rules.GameStartRequest(
     player_role="villager",
     enable_llm=False,
     enable_rag=False,
+    npc_policy_mode="rule",
 )
 left = rules.create_wolf_game_state(
     request,

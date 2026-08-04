@@ -926,7 +926,7 @@ class GameStartResponse(BaseModel):
     message: str
     llm_enabled: bool = False
     llm_validation_enabled: bool = False
-    npc_policy_mode: Literal["rule", "shadow", "local"] = "rule"
+    npc_policy_mode: Literal["rule", "shadow", "local"] = "local"
 
 
 class GameStateResponse(BaseModel):
@@ -944,7 +944,7 @@ class GameStateResponse(BaseModel):
     winner: Optional[str] = None
     llm_enabled: bool = False
     llm_validation_enabled: bool = False
-    npc_policy_mode: Literal["rule", "shadow", "local"] = "rule"
+    npc_policy_mode: Literal["rule", "shadow", "local"] = "local"
 
 
 def is_llm_validation_enabled(game_state: WolfGameState) -> bool:
@@ -1589,7 +1589,7 @@ def transactional_rule_endpoint(endpoint):
 
 def build_game_config_fingerprint(
     *,
-    npc_policy_mode: Literal["rule", "shadow", "local"] = "rule",
+    npc_policy_mode: Literal["rule", "shadow", "local"] = "local",
     npc_policy_descriptors: Optional[dict[str, dict[str, str]]] = None,
 ) -> str:
     """Fingerprint config sealed by one game.

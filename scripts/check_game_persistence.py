@@ -948,7 +948,10 @@ def main() -> int:
         )
         try:
             legacy_claim_state = rules.create_wolf_game_state(
-                rules.GameStartRequest(player_role="villager"),
+                rules.GameStartRequest(
+                    player_role="villager",
+                    npc_policy_mode="rule",
+                ),
                 game_id="legacy_public_claim_provenance",
                 random_seed=20260742,
             )
@@ -1233,7 +1236,9 @@ def main() -> int:
         drifted_fingerprint = (
             "f" * 64 if frozen_fingerprint != "f" * 64 else "e" * 64
         )
-        rules.build_game_config_fingerprint = lambda: drifted_fingerprint
+        rules.build_game_config_fingerprint = (
+            lambda **_kwargs: drifted_fingerprint
+        )
         try:
             frozen_envelope = rules.build_game_save_envelope(config_drift_state)
             if frozen_envelope.config_fingerprint != frozen_fingerprint:
@@ -1299,7 +1304,7 @@ def main() -> int:
         rules.GAME_STORE.clear()
         rules.PERSISTED_GAME_IDS.clear()
         original_fingerprint_builder = rules.build_game_config_fingerprint
-        rules.build_game_config_fingerprint = lambda: "d" * 64
+        rules.build_game_config_fingerprint = lambda **_kwargs: "d" * 64
         try:
             terminal_recovery = rules.recover_unfinished_games_from_disk()
             if (

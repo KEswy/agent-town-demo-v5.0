@@ -878,7 +878,7 @@ LOCAL_POLICY_REGISTRY = LocalPolicyRegistry()
 
 
 def policy_mode_from_environment() -> NPCPolicyMode:
-    value = os.environ.get("AGENT_TOWN_NPC_POLICY_MODE", "rule").strip().lower()
+    value = os.environ.get("AGENT_TOWN_NPC_POLICY_MODE", "local").strip().lower()
     if value not in {"rule", "shadow", "local"}:
         raise ValueError(
             "AGENT_TOWN_NPC_POLICY_MODE must be rule, shadow, or local"
