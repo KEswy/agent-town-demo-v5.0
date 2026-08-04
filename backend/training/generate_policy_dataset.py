@@ -20,10 +20,11 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR))
 
 from backend.app.npc_policy import (  # noqa: E402
-    NPC_POLICY_FEATURE_SCHEMA_VERSION,
+    NPC_POLICY_TASKS,
     NPC_POLICY_OBSERVATION_SCHEMA_VERSION,
     NPC_POLICY_TRACE_SCHEMA_VERSION,
     NPCPolicyObservationV1,
+    TASK_FEATURE_SCHEMA_VERSIONS,
 )
 from backend.app.simulation import (  # noqa: E402
     DEFAULT_MAX_DAYS,
@@ -54,15 +55,24 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="JSONL destination; parent directories are created",
     )
+    parser.add_argument(
+        "--task",
+        choices=NPC_POLICY_TASKS,
+        default="exile_vote",
+        help="policy task to capture (exile_vote or sheriff_vote)",
+    )
     return parser.parse_args()
 
 
-def build_records(report: dict[str, object]) -> list[dict[str, object]]:
+def build_records(
+    report: dict[str, object],
+    task: str,
+) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
     for game_index, game in enumerate(report["games"]):
         seed = int(game["seed"])
         for trace_index, trace in enumerate(game.get("npc_policy_trace") or []):
-            if trace.get("task") != "exile_vote":
+            if trace.get("task") != task:
                 continue
             observation = NPCPolicyObservationV1.model_validate(
                 trace["observation"]
@@ -121,7 +131,7 @@ def main() -> int:
         capture_npc_policy=True,
         npc_policy_mode="rule",
     )
-    records = build_records(report)
+    records = build_records(report, args.task)
     if not records:
         raise SystemExit("no NPC policy records were generated")
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -141,9 +151,10 @@ def main() -> int:
         "record_schema_version": RECORD_SCHEMA_VERSION,
         "trace_schema_version": NPC_POLICY_TRACE_SCHEMA_VERSION,
         "observation_schema_version": NPC_POLICY_OBSERVATION_SCHEMA_VERSION,
-        "feature_schema_version": NPC_POLICY_FEATURE_SCHEMA_VERSION,
+        "feature_schema_version": TASK_FEATURE_SCHEMA_VERSIONS[args.task],
         "start_seed": args.seed,
         "games": args.games,
+        "task": args.task,
         "records": len(records),
         "output": str(args.output),
         # This is the digest of the exact canonical JSONL bytes written above,

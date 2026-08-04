@@ -2900,7 +2900,14 @@ policy_observation = NPCPolicyObservationV1(
     **policy_payload,
     observation_digest=policy_observation_digest(policy_payload),
 )
-if LOCAL_POLICY_REGISTRY.descriptors() and set(LOCAL_POLICY_REGISTRY.descriptors()) != {"good", "werewolf"}:
+expected_descriptors = {
+    f"{task}:{faction}"
+    for task in ("exile_vote", "sheriff_vote")
+    for faction in ("good", "werewolf")
+}
+if LOCAL_POLICY_REGISTRY.descriptors() and set(
+    LOCAL_POLICY_REGISTRY.descriptors()
+) != expected_descriptors:
     raise SystemExit("local artifacts must be complete when present")
 
 def build_guard_observation(

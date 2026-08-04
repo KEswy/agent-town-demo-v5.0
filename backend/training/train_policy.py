@@ -28,14 +28,16 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR))
 
 from backend.app.npc_policy import (  # noqa: E402
-    EXILE_VOTE_FEATURE_NAMES,
+    NPC_POLICY_TASK_EXILE_VOTE,
+    NPC_POLICY_TASKS,
     NPC_POLICY_ARTIFACT_SCHEMA_VERSION,
     NPC_POLICY_ARTIFACT_SCHEMA_VERSION_V2,
-    NPC_POLICY_FEATURE_SCHEMA_VERSION,
     NPC_POLICY_OBSERVATION_SCHEMA_VERSION,
     NPCPolicyArtifactManifestV1,
     NPCPolicyArtifactManifestV2,
     NPCPolicyArchitectureV2,
+    TASK_FEATURE_NAMES,
+    TASK_FEATURE_SCHEMA_VERSIONS,
     file_sha256,
 )
 from backend.app.npc_policy_data import load_policy_records  # noqa: E402
@@ -66,6 +68,12 @@ def parse_args() -> argparse.Namespace:
         help="linear keeps npc_policy_artifact.v1 compatibility; mlp writes v2",
     )
     parser.add_argument("--hidden-size", type=int, default=32)
+    parser.add_argument(
+        "--task",
+        choices=NPC_POLICY_TASKS,
+        default="exile_vote",
+        help="policy task to train (exile_vote or sheriff_vote)",
+    )
     return parser.parse_args()
 
 
@@ -149,7 +157,8 @@ def _initial_stats(
     training_records: list[dict[str, object]],
 ) -> tuple[np.ndarray, np.ndarray]:
     matrix = feature_rows(training_records)
-    if matrix.ndim != 2 or matrix.shape[1] != len(EXILE_VOTE_FEATURE_NAMES):
+    expected = len(training_records[0]["feature_names"])
+    if matrix.ndim != 2 or matrix.shape[1] != expected:
         raise ValueError("feature matrix shape is incompatible")
     mean = matrix.mean(axis=0)
     scale = matrix.std(axis=0)
@@ -188,7 +197,7 @@ def fit_linear(
     feature_mean: np.ndarray,
     feature_scale: np.ndarray,
 ) -> dict[str, object]:
-    weights = np.zeros(len(EXILE_VOTE_FEATURE_NAMES), dtype=np.float64)
+    weights = np.zeros(len(feature_mean), dtype=np.float64)
     bias = 0.0
     rng = np.random.default_rng(seed)
     for _epoch in range(max(1, epochs)):
@@ -229,7 +238,7 @@ def fit_mlp(
     if not 4 <= hidden_size <= 256:
         raise ValueError("hidden-size must be between 4 and 256")
     rng = np.random.default_rng(seed)
-    input_dim = len(EXILE_VOTE_FEATURE_NAMES)
+    input_dim = len(feature_mean)
     input_weights = rng.normal(
         0.0,
         math.sqrt(2.0 / input_dim),
@@ -384,10 +393,14 @@ def save_artifact(
     *,
     dataset_digest: str,
     training_seed: int,
+    task: str,
+    feature_names: tuple[str, ...],
+    feature_schema_version: str,
 ) -> dict[str, object]:
     faction = str(result["faction"])
     model_type = str(result["model_type"])
-    artifact_dir = output_dir / (
+    task_dir = "" if task == NPC_POLICY_TASK_EXILE_VOTE else task
+    artifact_dir = output_dir / task_dir / (
         "good_policy_v1" if faction == "good" else "wolf_policy_v1"
     )
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -402,7 +415,11 @@ def save_artifact(
         )
         manifest_payload = {
             "schema_version": NPC_POLICY_ARTIFACT_SCHEMA_VERSION,
-            "model_id": f"local_linear_{faction}_v1",
+            "model_id": (
+                f"local_linear_{faction}_v1"
+                if task == NPC_POLICY_TASK_EXILE_VOTE
+                else f"local_linear_{task}_{faction}_v1"
+            ),
         }
         manifest_cls = NPCPolicyArtifactManifestV1
     else:
@@ -417,10 +434,14 @@ def save_artifact(
         )
         manifest_payload = {
             "schema_version": NPC_POLICY_ARTIFACT_SCHEMA_VERSION_V2,
-            "model_id": f"local_mlp_{faction}_v2",
+            "model_id": (
+                f"local_mlp_{faction}_v2"
+                if task == NPC_POLICY_TASK_EXILE_VOTE
+                else f"local_mlp_{task}_{faction}_v2"
+            ),
             "model_type": "mlp",
             "architecture": {
-                "input_dim": len(EXILE_VOTE_FEATURE_NAMES),
+                "input_dim": len(feature_names),
                 "hidden_dims": [int(result["input_weights"].shape[1])],  # type: ignore[index]
                 "activation": "tanh",
                 "output_dim": 1,
@@ -431,10 +452,10 @@ def save_artifact(
     manifest_payload.update(
         {
             "faction": faction,
-            "task": "exile_vote",
+            "task": task,
             "observation_schema_version": NPC_POLICY_OBSERVATION_SCHEMA_VERSION,
-            "feature_schema_version": NPC_POLICY_FEATURE_SCHEMA_VERSION,
-            "feature_names": list(EXILE_VOTE_FEATURE_NAMES),
+            "feature_schema_version": feature_schema_version,
+            "feature_names": list(feature_names),
             "model_file": "model.npz",
             "model_sha256": model_digest,
             "dataset_digest": dataset_digest,
@@ -462,6 +483,7 @@ def _commit_staged_artifacts(
     staging_dir: Path,
     output_dir: Path,
     factions: tuple[str, ...] = ("good", "werewolf"),
+    task: str = NPC_POLICY_TASK_EXILE_VOTE,
 ) -> None:
     """Replace the two faction artifacts as one recoverable filesystem step.
 
@@ -471,6 +493,9 @@ def _commit_staged_artifacts(
     """
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    task_dir = "" if task == NPC_POLICY_TASK_EXILE_VOTE else task
+    if task_dir:
+        (output_dir / task_dir).mkdir(parents=True, exist_ok=True)
     backup_dir = Path(
         tempfile.mkdtemp(prefix=".npc-policy-backup-", dir=output_dir)
     )
@@ -479,8 +504,8 @@ def _commit_staged_artifacts(
     try:
         for faction in factions:
             name = _artifact_directory_name(faction)
-            source = staging_dir / name
-            target = output_dir / name
+            source = staging_dir / task_dir / name
+            target = output_dir / task_dir / name
             if not source.is_dir():
                 raise FileNotFoundError(f"staged artifact is missing: {source}")
             backup_target = backup_dir / name
@@ -509,6 +534,8 @@ def main() -> int:
         args.dataset,
         reject_duplicate_observations=False,
     )
+    feature_names = TASK_FEATURE_NAMES[args.task]
+    feature_schema_version = TASK_FEATURE_SCHEMA_VERSIONS[args.task]
     dataset_digest = hashlib.sha256(args.dataset.read_bytes()).hexdigest()
     manifests = []
     results = {}
@@ -554,9 +581,17 @@ def main() -> int:
                     fitted[faction],
                     dataset_digest=dataset_digest,
                     training_seed=args.seed + offset,
+                    task=args.task,
+                    feature_names=feature_names,
+                    feature_schema_version=feature_schema_version,
                 )
             )
-        _commit_staged_artifacts(staging_dir, args.output_dir, factions)
+        _commit_staged_artifacts(
+            staging_dir,
+            args.output_dir,
+            factions,
+            task=args.task,
+        )
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
     print(

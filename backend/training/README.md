@@ -266,6 +266,21 @@ local 的夜间目标（狼刀、守卫、查验、女巫毒、猎人）消费 a
 40 条好人 v2 + 59 条狼人 v1），共 379 条。32 隐层 MLP 的全量离线加权 top-1
 一致率为好人 `89.41%`、狼人 `69.23%`，合法率、覆盖率和有限输出率均为 `100%`。
 
+警长投票面（V5.5-A 第一步）独立于放逐投票：`npc_sheriff_vote_features.v1`
+26 维 actor-scoped 特征，训练集为 130 局规则仿真共 855 条 teacher
+（好人 543 / 狼人 312），产物在 `backend/policy_artifacts/sheriff_vote/`，
+好人/狼人验证 top-1 分别为 `91.9%` / `96.2%`。生成与训练命令：
+
+```bash
+backend/.venv/bin/python backend/training/generate_policy_dataset.py \
+  --seed 20260601 --games 130 --task sheriff_vote \
+  --output backend/training/datasets/sheriff_vote_teacher.jsonl
+backend/.venv/bin/python backend/training/train_policy.py \
+  --dataset backend/training/datasets/sheriff_vote_teacher.jsonl \
+  --model-type mlp --hidden-size 32 --task sheriff_vote \
+  --output-dir backend/policy_artifacts
+```
+
 当前已完成 seed `20260727–20260736` 的 10 局 shadow 和 local 金丝雀，以及
 seed `20260601–20260630` 的扩展 30 局 local 金丝雀。Shadow 有 205 条策略轨迹、
 零 fallback；原始 MLP 有 38 条会改变 teacher 首选，护栏后为 0。消融确认

@@ -96,8 +96,13 @@ from .npc_decision import (
 from .npc_policy import (
     EXILE_VOTE_FEATURE_NAMES,
     LOCAL_POLICY_REGISTRY,
+    NPC_POLICY_TASK_EXILE_VOTE,
+    NPC_POLICY_TASK_SHERIFF_VOTE,
+    NPC_POLICY_TASKS,
     NPC_POLICY_FEATURE_SCHEMA_VERSION,
     NPC_POLICY_OBSERVATION_SCHEMA_VERSION,
+    SHERIFF_VOTE_FEATURE_NAMES,
+    SHERIFF_VOTE_FEATURE_SCHEMA_VERSION,
     NPCPolicyCandidateV1,
     NPCPolicyObservationV1,
     emit_policy_trace,
@@ -858,11 +863,15 @@ def create_wolf_game_state(
     )
     if request.npc_policy_mode in {"shadow", "local"} and set(
         policy_descriptors
-    ) != {"good", "werewolf"}:
+    ) != {
+        f"{task}:{faction}"
+        for task in NPC_POLICY_TASKS
+        for faction in ("good", "werewolf")
+    }:
         raise HTTPException(
             status_code=503,
             detail=(
-                "本地NPC策略模式需要完整且摘要有效的好人、狼人模型产物。"
+                "本地NPC策略模式需要完整且摘要有效的各任务好人、狼人模型产物。"
             ),
         )
     game_state = WolfGameState(
@@ -3764,10 +3773,342 @@ def build_npc_sheriff_vote_probabilities(
                 strategy,
             )
         scores[candidate.id] = round(score, 4)
-    return build_softmax_vote_probabilities(
+    rule_probabilities = build_softmax_vote_probabilities(
         scores,
         get_character_strategy_tuning(voter),
     )
+    if not candidates:
+        return rule_probabilities
+    return _resolve_sheriff_vote_policy_probabilities(
+        game_state,
+        voter,
+        candidates,
+        rule_probabilities,
+    )
+
+
+def build_sheriff_vote_policy_observation(
+    game_state: WolfGameState,
+    voter: CharacterState,
+    candidates: list[CharacterState],
+) -> NPCPolicyObservationV1:
+    """Build actor-scoped sheriff-vote features without hidden-role truth."""
+
+    reasoning_state = get_npc_reasoning_state(
+        game_state,
+        voter,
+        enumerate_possible_worlds=True,
+    )
+    tuning = get_character_strategy_tuning(voter)
+    position = get_latest_public_position(
+        game_state,
+        voter.id,
+        current_day_only=True,
+    )
+    suspected_ids = (
+        set(position.suspected_target_ids) if position is not None else set()
+    )
+    trusted_ids = (
+        set(position.trusted_target_ids) if position is not None else set()
+    )
+    sole_consistent_ids = {
+        signal.subject_id
+        for signal in reasoning_state.reasoning_signals
+        if signal.kind == "sole_consistent_seer_claimant"
+    }
+    inconsistent_ids = {
+        signal.subject_id
+        for signal in reasoning_state.reasoning_signals
+        if signal.hypothesis_status == "inconsistent"
+    }
+    known_good_ids: set[int] = set()
+    known_wolf_ids: set[int] = set()
+    if voter.role == "seer":
+        for _day, target_id, result in get_character_seer_checks(
+            game_state,
+            voter.id,
+        ):
+            (
+                known_wolf_ids
+                if result == "werewolf"
+                else known_good_ids
+            ).add(target_id)
+    elif voter.role == "werewolf":
+        known_wolf_ids = {
+            character.id
+            for character in game_state.characters
+            if character.role == "werewolf"
+            and character.id != voter.id
+        }
+        known_good_ids.update(
+            character.id
+            for character in game_state.characters
+            if character.role != "werewolf"
+        )
+
+    day_progress = min(1.0, float(game_state.day) / 10.0)
+    feature_candidates = []
+    for candidate in sorted(candidates, key=lambda character: character.id):
+        belief = get_role_belief(reasoning_state, candidate.id)
+        role_claim = get_public_role_claim(game_state, candidate.id)
+        trust = float(
+            voter.relationships.get(str(candidate.id), {}).get(
+                "trust",
+                0.5,
+            )
+        )
+        received_claim = next(
+            (
+                claim
+                for claim in reversed(game_state.public_claims)
+                if claim.character_id == candidate.id
+                and claim.claim_type == "seer_check"
+                and claim.target_id == voter.id
+            ),
+            None,
+        )
+        received_result = (
+            received_claim.result if received_claim is not None else ""
+        )
+        feature_map = {
+            "candidate_relationship_trust": max(0.0, min(1.0, trust)),
+            "candidate_public_persuasion": max(
+                0.0,
+                min(
+                    1.0,
+                    get_public_persuasion_strength(
+                        game_state,
+                        candidate,
+                    ),
+                ),
+            ),
+            "candidate_leadership": max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        candidate.personality.get("leadership", 0.5)
+                    ),
+                ),
+            ),
+            "candidate_suspicion": max(
+                0.0,
+                min(
+                    1.0,
+                    voter.suspicion.get(str(candidate.id), 0) / 100.0,
+                ),
+            ),
+            "candidate_claimed_any_role": float(
+                role_claim is not None
+            ),
+            "candidate_claimed_seer": float(
+                role_claim is not None
+                and role_claim.claimed_role == "seer"
+            ),
+            "candidate_seer_claim_credibility": max(
+                0.0,
+                min(
+                    1.0,
+                    get_public_seer_claim_credibility(
+                        game_state,
+                        voter,
+                        candidate,
+                    ),
+                ),
+            ),
+            "candidate_seer_belief": belief.seer_probability,
+            "candidate_wolf_belief": belief.werewolf_probability,
+            "candidate_good_belief": belief.good_probability,
+            "candidate_received_gold": float(
+                received_result == "good"
+            ),
+            "candidate_received_black": float(
+                received_result == "werewolf"
+            ),
+            "candidate_sole_consistent_seer": float(
+                candidate.id in sole_consistent_ids
+            ),
+            "candidate_inconsistent_hypothesis": float(
+                candidate.id in inconsistent_ids
+            ),
+            "candidate_badge_flow_published": float(
+                get_active_badge_flow(
+                    game_state,
+                    candidate.id,
+                )
+                is not None
+            ),
+            "candidate_in_trusted_set": float(
+                candidate.id in trusted_ids
+            ),
+            "candidate_in_suspected_set": float(
+                candidate.id in suspected_ids
+            ),
+            "candidate_is_known_good": float(
+                candidate.id in known_good_ids
+            ),
+            "candidate_is_known_wolf": float(
+                candidate.id in known_wolf_ids
+            ),
+            "actor_reasoning_skill": tuning.reasoning_skill,
+            "actor_social_susceptibility": tuning.social_susceptibility,
+            "actor_deception_susceptibility": (
+                tuning.deception_susceptibility
+            ),
+            "actor_decision_variance": tuning.decision_variance,
+            "actor_plan_consistency": tuning.plan_consistency,
+            "actor_team_coordination": tuning.team_coordination,
+            "day_progress": day_progress,
+        }
+        feature_candidates.append(
+            NPCPolicyCandidateV1(
+                action_id=f"sheriff_vote:{candidate.id}",
+                action_type="sheriff_vote",
+                target_id=candidate.id,
+                feature_values=[
+                    float(feature_map[name])
+                    for name in SHERIFF_VOTE_FEATURE_NAMES
+                ],
+            )
+        )
+    base_payload = {
+        "schema_version": NPC_POLICY_OBSERVATION_SCHEMA_VERSION,
+        "feature_schema_version": SHERIFF_VOTE_FEATURE_SCHEMA_VERSION,
+        "game_id": game_state.game_id,
+        "day": game_state.day,
+        "phase": game_state.phase,
+        "task": NPC_POLICY_TASK_SHERIFF_VOTE,
+        "actor_id": voter.id,
+        "faction": voter.camp,
+        "reasoning_digest": reasoning_state.belief_digest,
+        "feature_names": list(SHERIFF_VOTE_FEATURE_NAMES),
+        "candidates": [
+            candidate.model_dump(mode="json")
+            for candidate in feature_candidates
+        ],
+    }
+    return NPCPolicyObservationV1(
+        **base_payload,
+        observation_digest=policy_observation_digest(base_payload),
+    )
+
+
+def _resolve_sheriff_vote_policy_probabilities(
+    game_state: WolfGameState,
+    voter: CharacterState,
+    candidates: list[CharacterState],
+    rule_probabilities: dict[int, float],
+) -> dict[int, float]:
+    """Apply the sealed sheriff-vote artifact in shadow/local with the guard."""
+
+    observation = build_sheriff_vote_policy_observation(
+        game_state,
+        voter,
+        candidates,
+    )
+    local_scores: dict[str, float] = {}
+    local_probabilities: dict[int, float] = {}
+    model_probabilities: dict[int, float] = {}
+    entropy_guard: dict[str, object] = {}
+    fallback_reason = ""
+    model_id = ""
+    model_digest = ""
+    try:
+        if game_state.npc_policy_mode in {"shadow", "local"}:
+            policy = LOCAL_POLICY_REGISTRY.get(  # type: ignore[arg-type]
+                NPC_POLICY_TASK_SHERIFF_VOTE,
+                voter.camp,
+            )
+            sealed = game_state.npc_policy_descriptors.get(
+                f"{NPC_POLICY_TASK_SHERIFF_VOTE}:{voter.camp}",
+                {},
+            )
+            if sealed.get("model_digest") != policy.model_digest:
+                raise ValueError("loaded sheriff policy differs from seal")
+            sealed_manifest_digest = sealed.get("manifest_sha256")
+            if sealed_manifest_digest:
+                manifest_path = (
+                    LOCAL_POLICY_REGISTRY.artifact_dir(  # type: ignore[arg-type]
+                        NPC_POLICY_TASK_SHERIFF_VOTE,
+                        voter.camp,
+                    )
+                    / "manifest.json"
+                )
+                if file_sha256(manifest_path) != sealed_manifest_digest:
+                    raise ValueError(
+                        "loaded sheriff policy manifest differs from seal"
+                    )
+            result = policy.score(observation)
+            local_scores = {
+                score.action_id: score.score for score in result.scores
+            }
+            model_probabilities = _model_scores_to_probabilities(
+                observation,
+                local_scores,
+            )
+            local_probabilities, entropy_guard = (
+                entropy_guarded_policy_blend(
+                    observation,
+                    rule_probabilities,
+                    model_probabilities,
+                    policy_blend_from_environment(),
+                )
+            )
+            model_id = result.model_id
+            model_digest = result.model_digest
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        fallback_reason = f"{type(exc).__name__}: {exc}"
+
+    effective_mode = game_state.npc_policy_mode
+    if game_state.npc_policy_mode == "shadow":
+        effective_mode = "rule"
+    elif game_state.npc_policy_mode == "local" and not local_probabilities:
+        effective_mode = "rule_fallback"
+    emit_policy_trace(
+        {
+            "game_id": game_state.game_id,
+            "day": game_state.day,
+            "phase": game_state.phase,
+            "actor_id": voter.id,
+            "faction": voter.camp,
+            "task": NPC_POLICY_TASK_SHERIFF_VOTE,
+            "requested_mode": game_state.npc_policy_mode,
+            "effective_mode": effective_mode,
+            "observation": observation.model_dump(mode="json"),
+            "rule_probabilities": {
+                str(target_id): probability
+                for target_id, probability in rule_probabilities.items()
+            },
+            "local_scores": local_scores,
+            "local_probabilities": {
+                str(target_id): probability
+                for target_id, probability in local_probabilities.items()
+            },
+            "model_probabilities": {
+                str(target_id): probability
+                for target_id, probability in model_probabilities.items()
+            },
+            "policy_blend": (
+                policy_blend_from_environment()
+                if local_probabilities
+                else None
+            ),
+            "policy_temperature": (
+                policy_temperature_from_environment()
+                if local_probabilities
+                else None
+            ),
+            "policy_entropy_guard": (
+                entropy_guard if local_probabilities else None
+            ),
+            "model_id": model_id,
+            "model_digest": model_digest,
+            "fallback_reason": fallback_reason,
+        }
+    )
+    if game_state.npc_policy_mode == "local" and local_probabilities:
+        return local_probabilities
+    return rule_probabilities
 
 
 def choose_npc_sheriff_vote_target(
@@ -17968,14 +18309,23 @@ def build_npc_exile_vote_probabilities(
     model_digest = ""
     try:
         if game_state.npc_policy_mode in {"shadow", "local"}:
-            policy = LOCAL_POLICY_REGISTRY.get(voter.camp)  # type: ignore[arg-type]
-            sealed = game_state.npc_policy_descriptors.get(voter.camp, {})
+            policy = LOCAL_POLICY_REGISTRY.get(  # type: ignore[arg-type]
+                NPC_POLICY_TASK_EXILE_VOTE,
+                voter.camp,
+            )
+            sealed = game_state.npc_policy_descriptors.get(
+                f"{NPC_POLICY_TASK_EXILE_VOTE}:{voter.camp}",
+                {},
+            )
             if sealed.get("model_digest") != policy.model_digest:
                 raise ValueError("loaded policy differs from creation seal")
             sealed_manifest_digest = sealed.get("manifest_sha256")
             if sealed_manifest_digest:
                 manifest_path = (
-                    LOCAL_POLICY_REGISTRY.artifact_dir(voter.camp)
+                    LOCAL_POLICY_REGISTRY.artifact_dir(  # type: ignore[arg-type]
+                        NPC_POLICY_TASK_EXILE_VOTE,
+                        voter.camp,
+                    )
                     / "manifest.json"
                 )
                 if file_sha256(manifest_path) != sealed_manifest_digest:

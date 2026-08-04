@@ -19,9 +19,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .npc_policy import (
     EXILE_VOTE_FEATURE_NAMES,
+    SHERIFF_VOTE_FEATURE_NAMES,
+    TASK_FEATURE_NAMES,
+    TASK_FEATURE_SCHEMA_VERSIONS,
     NPCPolicyCandidateV1,
     NPCPolicyObservationV1,
     policy_observation_digest,
+    task_for_feature_schema,
 )
 
 
@@ -71,15 +75,21 @@ class PolicyTrainingRecordV1(StrictPolicyDataModel):
     faction: Literal["good", "werewolf"]
     reasoning_digest: str = Field(pattern=_HEX64)
     observation_digest: str = Field(pattern=_HEX64)
-    feature_schema_version: Literal["npc_exile_vote_features.v1"]
+    feature_schema_version: Literal[
+        "npc_exile_vote_features.v1",
+        "npc_sheriff_vote_features.v1",
+    ]
     feature_names: list[str]
     candidates: list[NPCPolicyCandidateV1] = Field(min_length=1)
     rule_probabilities: dict[str, float]
 
     @model_validator(mode="after")
     def validate_record(self) -> "PolicyTrainingRecordV1":
-        if self.feature_names != list(EXILE_VOTE_FEATURE_NAMES):
-            raise ValueError("feature_names do not match npc_exile_vote_features.v1")
+        task = task_for_feature_schema(self.feature_schema_version)
+        if self.feature_names != list(TASK_FEATURE_NAMES[task]):
+            raise ValueError(
+                f"feature_names do not match {self.feature_schema_version}"
+            )
         candidate_ids = [candidate.action_id for candidate in self.candidates]
         target_ids = [str(candidate.target_id) for candidate in self.candidates]
         if len(candidate_ids) != len(set(candidate_ids)):
@@ -99,7 +109,7 @@ class PolicyTrainingRecordV1(StrictPolicyDataModel):
             "game_id": self.game_id,
             "day": self.day,
             "phase": self.phase,
-            "task": "exile_vote",
+            "task": task_for_feature_schema(self.feature_schema_version),
             "actor_id": self.actor_id,
             "faction": self.faction,
             "reasoning_digest": self.reasoning_digest,
@@ -137,7 +147,10 @@ class PolicyTrainingRecordV2(StrictPolicyDataModel):
     faction: Literal["good", "werewolf"]
     reasoning_digest: str = Field(pattern=_HEX64)
     observation_digest: str = Field(pattern=_HEX64)
-    feature_schema_version: Literal["npc_exile_vote_features.v1"]
+    feature_schema_version: Literal[
+        "npc_exile_vote_features.v1",
+        "npc_sheriff_vote_features.v1",
+    ]
     feature_names: list[str]
     candidates: list[NPCPolicyCandidateV1] = Field(min_length=1)
     target_distribution: dict[str, float]
@@ -155,8 +168,11 @@ class PolicyTrainingRecordV2(StrictPolicyDataModel):
 
     @model_validator(mode="after")
     def validate_record(self) -> "PolicyTrainingRecordV2":
-        if self.feature_names != list(EXILE_VOTE_FEATURE_NAMES):
-            raise ValueError("feature_names do not match npc_exile_vote_features.v1")
+        task = task_for_feature_schema(self.feature_schema_version)
+        if self.feature_names != list(TASK_FEATURE_NAMES[task]):
+            raise ValueError(
+                f"feature_names do not match {self.feature_schema_version}"
+            )
         candidate_ids = [candidate.action_id for candidate in self.candidates]
         target_ids = set(candidate_ids)
         if len(candidate_ids) != len(target_ids):
@@ -182,7 +198,7 @@ class PolicyTrainingRecordV2(StrictPolicyDataModel):
             "game_id": self.game_id,
             "day": self.day,
             "phase": self.phase,
-            "task": "exile_vote",
+            "task": task_for_feature_schema(self.feature_schema_version),
             "actor_id": self.actor_id,
             "faction": self.faction,
             "reasoning_digest": self.reasoning_digest,
@@ -307,7 +323,7 @@ def _observation_payload_from_record(
         "game_id": record.game_id,
         "day": record.day,
         "phase": record.phase,
-        "task": "exile_vote",
+        "task": task_for_feature_schema(record.feature_schema_version),
         "actor_id": record.actor_id,
         "faction": record.faction,
         "reasoning_digest": record.reasoning_digest,

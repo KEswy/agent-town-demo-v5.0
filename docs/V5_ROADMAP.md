@@ -61,7 +61,7 @@ B 为真预言家的假设因此与“B 给持续对跳者发金水”的公开�
 | V5.4-C | P1 | 已完成 | 固化 6 条高价值公开逻辑场景及生成器，覆盖对跳金水、单 claimant、退水、跨日证据、已知角色冲突和改验结果 |
 | V5.4-D | P1 | 已完成 | 280 teacher + 99 人工审阅标签（tonystark 确认）重训为 MLP V2，并增加熵/扰动护栏与夜间信念置信度门禁；消融确认放逐 MLP 在 `blend=0.10` 下尚未改变采样票，指标变化来自夜间信念消费；30 局 seed `20260601–20260630` 六项核心指标全部改善，重放 `30/30`、零 fallback，金丝雀复验通过 |
 | V5.4-E | P1 | 已完成第一阶段 | 增加 `wolf_sheriff_campaign.v1`，支持单狼悍跳、双狼辅助站边和双狼公开拉开距离；搭档发言后退水 |
-| V5.5-A | P2 | 待开始 | 扩展警长投票/归票及全部夜技为 task+role 独立 policy artifact；保持 legal mask、shadow 门禁和 replay 不变 |
+| V5.5-A | P2 | 警长投票面已完成 | 扩展警长投票/归票及全部夜技为 task+role 独立 policy artifact；警长投票已接入 `npc_sheriff_vote_features.v1` 独立产物（130 局 855 条 teacher，好人 top-1 91.9%、狼人 96.2%），30 局金丝雀零回归；归票与夜技待做；保持 legal mask、shadow 门禁和 replay 不变 |
 | V5.5-B | P2 | 待开始 | 本地策略模型的版本升级、灰度 shadow、A/B 报告和可恢复 artifact 注册 |
 
 ## 当前实现契约
@@ -144,21 +144,23 @@ V5 当前仿真输出为 `agent_town_simulation.v18` /
 显式选择。规则发言模板已加入确定性变体，模板重复率 `25.2%→13.1%`、跨角色近
 重复 `5.7%→2.2%`。
 
-### V5.5-A 实施计划（待开始）
+### V5.5-A 实施计划（警长投票面已完成，归票/夜技待做）
 
 把 `rule/shadow/local` 策略面从放逐投票扩展到警长投票、警长归票与全部夜技，每
 个任务维护独立 task+role 策略产物：
 
-1. 契约：新增 `npc_sheriff_vote_features.v1`、`npc_night_target_features.v1`
-   等特征 schema；每个任务建立 actor-scoped observation builder 与严格 validator。
-2. 数据：扩展 `generate_policy_dataset.py` 与仿真 trace，捕获警长投票/归票和各
-   夜技决策的 rule soft target；按 faction 分组切分。
-3. 训练：`train_policy.py` 按 task+role 输出独立 artifact；manifest 记录特征
-   schema、数据摘要与 SHA-256。
-4. 运行时：`main.py` 在 local 模式用对应 artifact 替换各任务的候选评分层，复用
-   `npc_policy_entropy_guard.v1` 护栏与失败回退；`shadow` 只记录不消费。
-5. 金丝雀：扩展 30 局协议覆盖新面，验证合法 mask、重放、零 fallback 与六项核心
-   指标；通过后再把默认模式维持 `local`。
+1. ✅ 契约：新增 `npc_sheriff_vote_features.v1`（26 维 actor-scoped 特征），
+   建立 `build_sheriff_vote_policy_observation` 与 task 感知的记录/产物校验；
+   `npc_night_target_features.v1` 待做。
+2. ✅ 数据：`generate_policy_dataset.py --task sheriff_vote` 产出 130 局 855 条
+   rule teacher；按 faction 分组切分。
+3. ✅ 训练：`train_policy.py --task sheriff_vote` 输出
+   `backend/policy_artifacts/sheriff_vote/` 好人/狼人产物；manifest 记录任务、
+   特征 schema、数据摘要与 SHA-256。
+4. ✅ 运行时：`main.py` 在 local 模式用 sheriff_vote artifact 替换警长票评分层，
+   复用熵/总变差护栏与失败回退；`shadow` 只记录不消费；开局封印校验覆盖全部任务。
+5. ✅ 金丝雀：30 局协议下六项核心指标与基线完全一致（零回归），重放 `30/30`、
+   零 fallback；后续归票与夜技面复用同一管线。
 
 ## 验收门槛
 

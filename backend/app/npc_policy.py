@@ -27,6 +27,10 @@ NPC_POLICY_ARTIFACT_SCHEMA_VERSION = "npc_policy_artifact.v1"
 NPC_POLICY_ARTIFACT_SCHEMA_VERSION_V2 = "npc_policy_artifact.v2"
 NPC_POLICY_TRACE_SCHEMA_VERSION = "npc_policy_trace.v2"
 NPC_POLICY_FEATURE_SCHEMA_VERSION = "npc_exile_vote_features.v1"
+NPC_POLICY_TASK_EXILE_VOTE = "exile_vote"
+NPC_POLICY_TASK_SHERIFF_VOTE = "sheriff_vote"
+NPC_POLICY_TASKS = (NPC_POLICY_TASK_EXILE_VOTE, NPC_POLICY_TASK_SHERIFF_VOTE)
+SHERIFF_VOTE_FEATURE_SCHEMA_VERSION = "npc_sheriff_vote_features.v1"
 NPC_POLICY_ENTROPY_GUARD_VERSION = "npc_policy_entropy_guard.v1"
 
 GOOD_DEFAULT_ENTROPY_ALLOWANCE = 0.01
@@ -167,7 +171,7 @@ def entropy_guarded_policy_blend(
         raise ValueError("rule and model policy actions must match")
     candidate_features = {
         candidate.target_id: dict(
-            zip(EXILE_VOTE_FEATURE_NAMES, candidate.feature_values)
+            zip(observation.feature_names, candidate.feature_values)
         )
         for candidate in observation.candidates
     }
@@ -176,12 +180,12 @@ def entropy_guarded_policy_blend(
     conflict_ids = {
         target_id
         for target_id, features in candidate_features.items()
-        if features["candidate_logic_conflict"] > 0.0
+        if features.get("candidate_logic_conflict", 0.0) > 0.0
     }
     sole_seer_ids = {
         target_id
         for target_id, features in candidate_features.items()
-        if features["candidate_sole_consistent_seer"] > 0.0
+        if features.get("candidate_sole_consistent_seer", 0.0) > 0.0
     }
     hard_public_logic = bool(conflict_ids or sole_seer_ids)
     if observation.faction == "good":
@@ -331,6 +335,53 @@ EXILE_VOTE_FEATURE_NAMES = (
     "alive_ratio",
 )
 
+SHERIFF_VOTE_FEATURE_NAMES = (
+    "candidate_relationship_trust",
+    "candidate_public_persuasion",
+    "candidate_leadership",
+    "candidate_suspicion",
+    "candidate_claimed_any_role",
+    "candidate_claimed_seer",
+    "candidate_seer_claim_credibility",
+    "candidate_seer_belief",
+    "candidate_wolf_belief",
+    "candidate_good_belief",
+    "candidate_received_gold",
+    "candidate_received_black",
+    "candidate_sole_consistent_seer",
+    "candidate_inconsistent_hypothesis",
+    "candidate_badge_flow_published",
+    "candidate_in_trusted_set",
+    "candidate_in_suspected_set",
+    "candidate_is_known_good",
+    "candidate_is_known_wolf",
+    "actor_reasoning_skill",
+    "actor_social_susceptibility",
+    "actor_deception_susceptibility",
+    "actor_decision_variance",
+    "actor_plan_consistency",
+    "actor_team_coordination",
+    "day_progress",
+)
+
+TASK_FEATURE_SCHEMA_VERSIONS: dict[str, str] = {
+    NPC_POLICY_TASK_EXILE_VOTE: NPC_POLICY_FEATURE_SCHEMA_VERSION,
+    NPC_POLICY_TASK_SHERIFF_VOTE: SHERIFF_VOTE_FEATURE_SCHEMA_VERSION,
+}
+TASK_FEATURE_NAMES: dict[str, tuple[str, ...]] = {
+    NPC_POLICY_TASK_EXILE_VOTE: EXILE_VOTE_FEATURE_NAMES,
+    NPC_POLICY_TASK_SHERIFF_VOTE: SHERIFF_VOTE_FEATURE_NAMES,
+}
+
+
+def task_for_feature_schema(feature_schema_version: str) -> str:
+    """Map a feature schema version back to its policy task."""
+
+    for task, schema_version in TASK_FEATURE_SCHEMA_VERSIONS.items():
+        if schema_version == feature_schema_version:
+            return task
+    raise ValueError(f"unknown feature schema version: {feature_schema_version}")
+
 
 class StrictPolicyModel(BaseModel):
     model_config = ConfigDict(
@@ -342,17 +393,12 @@ class StrictPolicyModel(BaseModel):
 
 class NPCPolicyCandidateV1(StrictPolicyModel):
     action_id: str = Field(pattern=r"^[a-z_]+:[0-9]+$")
-    action_type: Literal["exile_vote"]
+    action_type: Literal["exile_vote", "sheriff_vote"]
     target_id: int = Field(gt=0)
     feature_values: list[float]
 
     @model_validator(mode="after")
     def validate_features(self) -> "NPCPolicyCandidateV1":
-        if len(self.feature_values) != len(EXILE_VOTE_FEATURE_NAMES):
-            raise ValueError(
-                "policy candidate feature length is incompatible with "
-                "npc_exile_vote_features.v1"
-            )
         if any(not math.isfinite(value) for value in self.feature_values):
             raise ValueError("policy candidate features must be finite")
         return self
@@ -362,13 +408,14 @@ class NPCPolicyObservationV1(StrictPolicyModel):
     schema_version: Literal["npc_policy_observation.v1"] = (
         NPC_POLICY_OBSERVATION_SCHEMA_VERSION
     )
-    feature_schema_version: Literal["npc_exile_vote_features.v1"] = (
-        NPC_POLICY_FEATURE_SCHEMA_VERSION
-    )
+    feature_schema_version: Literal[
+        "npc_exile_vote_features.v1",
+        "npc_sheriff_vote_features.v1",
+    ]
     game_id: str = Field(min_length=1)
     day: int = Field(ge=1)
     phase: str = Field(min_length=1)
-    task: Literal["exile_vote"]
+    task: Literal["exile_vote", "sheriff_vote"]
     actor_id: int = Field(gt=0)
     faction: NPCPolicyFaction
     reasoning_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -378,8 +425,11 @@ class NPCPolicyObservationV1(StrictPolicyModel):
 
     @model_validator(mode="after")
     def validate_contract(self) -> "NPCPolicyObservationV1":
-        if self.feature_names != list(EXILE_VOTE_FEATURE_NAMES):
+        task = task_for_feature_schema(self.feature_schema_version)
+        if self.feature_names != list(TASK_FEATURE_NAMES[task]):
             raise ValueError("policy feature order is incompatible")
+        if self.task != task:
+            raise ValueError("policy task does not match its feature schema")
         action_ids = [candidate.action_id for candidate in self.candidates]
         target_ids = [candidate.target_id for candidate in self.candidates]
         if len(action_ids) != len(set(action_ids)):
@@ -424,13 +474,14 @@ class NPCPolicyArtifactManifestV1(StrictPolicyModel):
     )
     model_id: str = Field(min_length=1)
     faction: NPCPolicyFaction
-    task: Literal["exile_vote"]
+    task: Literal["exile_vote", "sheriff_vote"]
     observation_schema_version: Literal["npc_policy_observation.v1"] = (
         NPC_POLICY_OBSERVATION_SCHEMA_VERSION
     )
-    feature_schema_version: Literal["npc_exile_vote_features.v1"] = (
-        NPC_POLICY_FEATURE_SCHEMA_VERSION
-    )
+    feature_schema_version: Literal[
+        "npc_exile_vote_features.v1",
+        "npc_sheriff_vote_features.v1",
+    ] = NPC_POLICY_FEATURE_SCHEMA_VERSION
     feature_names: list[str]
     model_file: Literal["model.npz"] = "model.npz"
     model_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -444,8 +495,10 @@ class NPCPolicyArtifactManifestV1(StrictPolicyModel):
 
     @model_validator(mode="after")
     def validate_features(self) -> "NPCPolicyArtifactManifestV1":
-        if self.feature_names != list(EXILE_VOTE_FEATURE_NAMES):
+        if self.feature_names != list(TASK_FEATURE_NAMES[self.task]):
             raise ValueError("artifact feature order is incompatible")
+        if task_for_feature_schema(self.feature_schema_version) != self.task:
+            raise ValueError("artifact task does not match its feature schema")
         return self
 
 
@@ -457,8 +510,6 @@ class NPCPolicyArchitectureV2(StrictPolicyModel):
 
     @model_validator(mode="after")
     def validate_architecture(self) -> "NPCPolicyArchitectureV2":
-        if self.input_dim != len(EXILE_VOTE_FEATURE_NAMES):
-            raise ValueError("policy architecture input_dim is incompatible")
         if not 4 <= self.hidden_dims[0] <= 256:
             raise ValueError("policy hidden dimension must be between 4 and 256")
         return self
@@ -471,13 +522,14 @@ class NPCPolicyArtifactManifestV2(StrictPolicyModel):
     model_id: str = Field(min_length=1)
     model_type: Literal["mlp"]
     faction: NPCPolicyFaction
-    task: Literal["exile_vote"]
+    task: Literal["exile_vote", "sheriff_vote"]
     observation_schema_version: Literal["npc_policy_observation.v1"] = (
         NPC_POLICY_OBSERVATION_SCHEMA_VERSION
     )
-    feature_schema_version: Literal["npc_exile_vote_features.v1"] = (
-        NPC_POLICY_FEATURE_SCHEMA_VERSION
-    )
+    feature_schema_version: Literal[
+        "npc_exile_vote_features.v1",
+        "npc_sheriff_vote_features.v1",
+    ] = NPC_POLICY_FEATURE_SCHEMA_VERSION
     feature_names: list[str]
     architecture: NPCPolicyArchitectureV2
     model_file: str = Field(pattern=r"^[A-Za-z0-9_.-]+$")
@@ -492,8 +544,12 @@ class NPCPolicyArtifactManifestV2(StrictPolicyModel):
 
     @model_validator(mode="after")
     def validate_features(self) -> "NPCPolicyArtifactManifestV2":
-        if self.feature_names != list(EXILE_VOTE_FEATURE_NAMES):
+        if self.feature_names != list(TASK_FEATURE_NAMES[self.task]):
             raise ValueError("artifact feature order is incompatible")
+        if task_for_feature_schema(self.feature_schema_version) != self.task:
+            raise ValueError("artifact task does not match its feature schema")
+        if self.architecture.input_dim != len(self.feature_names):
+            raise ValueError("policy architecture input_dim is incompatible")
         return self
 
 
@@ -577,7 +633,7 @@ class LocalLinearPolicy:
         feature_scale: np.ndarray,
         model_digest: str,
     ) -> None:
-        feature_count = len(EXILE_VOTE_FEATURE_NAMES)
+        feature_count = len(manifest.feature_names)
         expected_shape = (feature_count,)
         for name, value in {
             "weights": weights,
@@ -685,12 +741,13 @@ class LocalMLPPolicy:
         model_digest: str,
     ) -> None:
         hidden_size = manifest.architecture.hidden_dims[0]
+        feature_count = len(manifest.feature_names)
         expected = {
-            "input_weights": (len(EXILE_VOTE_FEATURE_NAMES), hidden_size),
+            "input_weights": (feature_count, hidden_size),
             "hidden_bias": (hidden_size,),
             "output_weights": (hidden_size,),
-            "feature_mean": (len(EXILE_VOTE_FEATURE_NAMES),),
-            "feature_scale": (len(EXILE_VOTE_FEATURE_NAMES),),
+            "feature_mean": (feature_count,),
+            "feature_scale": (feature_count,),
         }
         arrays = {
             "input_weights": input_weights,
@@ -827,10 +884,10 @@ def validate_policy_scores(
 class LocalPolicyRegistry:
     def __init__(self) -> None:
         self._cache: dict[
-            tuple[str, str], LocalLinearPolicy | LocalMLPPolicy
+            tuple[str, str, str], LocalLinearPolicy | LocalMLPPolicy
         ] = {}
 
-    def artifact_dir(self, faction: NPCPolicyFaction) -> Path:
+    def artifact_dir(self, task: str, faction: NPCPolicyFaction) -> Path:
         project_backend = Path(__file__).resolve().parents[1]
         configured_root = Path(
             os.environ.get(
@@ -838,13 +895,20 @@ class LocalPolicyRegistry:
                 str(project_backend / "policy_artifacts"),
             )
         )
-        return configured_root / (
+        faction_dir = (
             "good_policy_v1" if faction == "good" else "wolf_policy_v1"
         )
+        if task == NPC_POLICY_TASK_EXILE_VOTE:
+            return configured_root / faction_dir
+        return configured_root / task / faction_dir
 
-    def get(self, faction: NPCPolicyFaction) -> LocalLinearPolicy | LocalMLPPolicy:
-        artifact_dir = self.artifact_dir(faction).resolve()
-        cache_key = (faction, str(artifact_dir))
+    def get(
+        self,
+        task: str,
+        faction: NPCPolicyFaction,
+    ) -> LocalLinearPolicy | LocalMLPPolicy:
+        artifact_dir = self.artifact_dir(task, faction).resolve()
+        cache_key = (task, faction, str(artifact_dir))
         if cache_key not in self._cache:
             self._cache[cache_key] = load_local_policy(artifact_dir)
         return self._cache[cache_key]
@@ -854,23 +918,26 @@ class LocalPolicyRegistry:
 
     def descriptors(self) -> dict[str, dict[str, str]]:
         descriptors: dict[str, dict[str, str]] = {}
-        for faction in ("good", "werewolf"):
-            try:
-                policy = self.get(faction)
-            except (FileNotFoundError, OSError, ValueError):
-                continue
-            descriptors[faction] = {
-                "model_id": policy.manifest.model_id,
-                "model_digest": policy.model_digest,
-                "manifest_sha256": file_sha256(
-                    self.artifact_dir(faction) / "manifest.json"
-                ),
-                "dataset_digest": policy.manifest.dataset_digest,
-                "artifact_schema_version": policy.manifest.schema_version,
-                "feature_schema_version": (
-                    policy.manifest.feature_schema_version
-                ),
-            }
+        for task in NPC_POLICY_TASKS:
+            for faction in ("good", "werewolf"):
+                try:
+                    policy = self.get(task, faction)  # type: ignore[arg-type]
+                except (FileNotFoundError, OSError, ValueError):
+                    continue
+                descriptors[f"{task}:{faction}"] = {
+                    "task": task,
+                    "model_id": policy.manifest.model_id,
+                    "model_digest": policy.model_digest,
+                    "manifest_sha256": file_sha256(
+                        self.artifact_dir(task, faction)  # type: ignore[arg-type]
+                        / "manifest.json"
+                    ),
+                    "dataset_digest": policy.manifest.dataset_digest,
+                    "artifact_schema_version": policy.manifest.schema_version,
+                    "feature_schema_version": (
+                        policy.manifest.feature_schema_version
+                    ),
+                }
         return descriptors
 
 
