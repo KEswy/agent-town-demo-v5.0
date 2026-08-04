@@ -1,0 +1,53 @@
+{
+  "schema_version": "npc_policy_artifact.v2",
+  "model_id": "local_mlp_werewolf_v2",
+  "model_type": "mlp",
+  "faction": "werewolf",
+  "task": "exile_vote",
+  "observation_schema_version": "npc_policy_observation.v1",
+  "feature_schema_version": "npc_exile_vote_features.v1",
+  "feature_names": [
+    "candidate_suspicion",
+    "candidate_public_pressure",
+    "candidate_distrust",
+    "candidate_wolf_belief",
+    "candidate_good_belief",
+    "candidate_seer_belief",
+    "candidate_reasoning_confidence",
+    "candidate_claimed_seer",
+    "candidate_logic_conflict",
+    "candidate_sole_consistent_seer",
+    "candidate_is_sheriff_nomination",
+    "candidate_is_provisional_vote",
+    "candidate_in_suspected_set",
+    "candidate_in_trusted_set",
+    "candidate_is_sheriff",
+    "candidate_is_known_good",
+    "candidate_is_known_wolf",
+    "candidate_is_wolf_teammate",
+    "actor_reasoning_skill",
+    "actor_social_susceptibility",
+    "actor_deception_susceptibility",
+    "actor_plan_consistency",
+    "actor_team_coordination",
+    "day_progress",
+    "alive_ratio"
+  ],
+  "architecture": {
+    "input_dim": 25,
+    "hidden_dims": [
+      32
+    ],
+    "activation": "tanh",
+    "output_dim": 1
+  },
+  "model_file": "model.npz",
+  "model_sha256": "5d23656dc1c37b190096cfd330f3c5abaccbed91fe74062376fd7a5461dd47d6",
+  "dataset_digest": "194db719c381d3371fc35b5ac18dc46b19c0de1195b95bfa29c408a171f324f7",
+  "training_seed": 20260727,
+  "training_samples": 88,
+  "validation_samples": 55,
+  "validation_cross_entropy": 0.6237153017844689,
+  "validation_top1_agreement": 0.8181818181818182,
+  "created_at": "2026-07-27T08:14:57.102028+00:00"
+}

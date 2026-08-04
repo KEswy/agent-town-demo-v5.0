@@ -144,6 +144,33 @@ def normalized_rule_state_payload(game_state: BaseModel) -> dict[str, object]:
     payload.pop("rule_events", None)
     payload.pop("command_results", None)
     payload.pop("recovery_config_fingerprint", None)
+    # NPC reasoning is a derived, actor-scoped cache. It is recomputed from
+    # lawful public/private facts and must not create an unlogged state change
+    # between two authoritative rule commands.
+    payload.pop("npc_reasoning_states", None)
+    # V4 saves did not carry policy-mode fields.  The default rule mode has no
+    # model artifact as an authority input, so omitting its empty defaults keeps
+    # the V4 state digest stable while still sealing descriptors for shadow or
+    # local games where they can affect later actions.
+    if payload.get("npc_policy_mode", "rule") == "rule":
+        payload.pop("npc_policy_mode", None)
+        payload.pop("npc_policy_descriptors", None)
+    # V4 public claims predate V5.4 sheriff-window provenance.  Pydantic fills
+    # those three fields with inert defaults when an old snapshot is restored.
+    # Omitting only the exact all-default triple keeps the historic rule digest
+    # and event-chain boundary stable; any real provenance remains sealed.
+    public_claims = payload.get("public_claims")
+    if isinstance(public_claims, list):
+        for claim in public_claims:
+            if (
+                isinstance(claim, dict)
+                and claim.get("phase") == ""
+                and claim.get("window_day") is None
+                and claim.get("event_sequence") == 0
+            ):
+                claim.pop("phase", None)
+                claim.pop("window_day", None)
+                claim.pop("event_sequence", None)
     return payload
 
 

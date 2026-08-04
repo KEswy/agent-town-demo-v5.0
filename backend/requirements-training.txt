@@ -1,0 +1,3 @@
+# Offline NPC policy dataset generation/training.
+# Install the normal backend requirements first when using the simulator.
+numpy==2.0.2

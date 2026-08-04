@@ -2,8 +2,10 @@
 .env
 backend/.env
 game/.godot/
+dist/
 backend/.venv/
 backend/data/
+backend/training/inbox/
 *.sqlite3
 *.db
 chroma_db/

@@ -22,6 +22,7 @@ from backend.app.simulation import (  # noqa: E402
     DEFAULT_MAX_STEPS,
     PLAYER_BENCHMARK_SCHEMA_VERSION,
     PLAYER_STRATEGY_TIERS,
+    NPC_POLICY_MODES,
     run_player_strategy_benchmark,
     run_rule_simulation_batch,
 )
@@ -75,6 +76,24 @@ def parse_args() -> argparse.Namespace:
             "roles; detailed belief/stance/vote traces are disabled"
         ),
     )
+    parser.add_argument(
+        "--npc-policy-mode",
+        choices=NPC_POLICY_MODES,
+        default="rule",
+        help=(
+            "NPC exile-decision mode: rule uses the current scorer, shadow "
+            "also scores a local model but acts by rule, local acts by the "
+            "sealed local model with rule fallback"
+        ),
+    )
+    parser.add_argument(
+        "--include-policy-traces",
+        action="store_true",
+        help=(
+            "include actor-scoped candidate features, rule targets, and "
+            "local scores for offline policy training/evaluation"
+        ),
+    )
     parser.add_argument("--max-days", type=int, default=DEFAULT_MAX_DAYS)
     parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS)
     parser.add_argument(
@@ -121,6 +140,11 @@ def main() -> int:
                 "--player-strategy cannot be combined with "
                 "--benchmark-player-strategies"
             )
+        if args.npc_policy_mode != "rule" or args.include_policy_traces:
+            raise SystemExit(
+                "--benchmark-player-strategies cannot be combined with "
+                "--npc-policy-mode or --include-policy-traces"
+            )
         report = run_player_strategy_benchmark(
             args.seed,
             args.games,
@@ -143,6 +167,8 @@ def main() -> int:
             ),
             capture_vote_calibration=not args.no_vote_calibration_trace,
             capture_event_logs=args.include_event_logs,
+            capture_npc_policy=args.include_policy_traces,
+            npc_policy_mode=args.npc_policy_mode,
         )
     rendered = json.dumps(
         report,
@@ -194,7 +220,7 @@ def main() -> int:
             f"{experiment_fingerprint['configuration_fingerprint'][:12]}; "
             "effective="
             f"{experiment_fingerprint['effective_fingerprint'][:12]}; "
-            "llm_requests=0"
+            f"llm_requests=0; npc_policy={report['npc_policy_mode']}"
         )
         summary = report["summary"]
         metrics = report["metrics"]

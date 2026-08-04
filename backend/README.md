@@ -2,6 +2,176 @@
 
 Agent Town Demo 的 Python FastAPI 后端，负责小镇 NPC 对话、知识检索、长期记忆，以及狼人杀规则和对局内 NPC 状态。
 
+## 桌面发布包中的后端
+
+`scripts/package_macos.sh` 使用 `packaging/backend_entry.py` 和 PyInstaller 把
+FastAPI 打成 arm64 独立目录，并只携带运行所需的 `config/` 与
+`policy_artifacts/`。`scripts/package_windows.sh` 则把官方 Python 3.12.10
+embeddable runtime 与锁定的 Windows x64 wheels 放入便携包。两种发布包默认关闭真实
+LLM 和向量模型下载，但关键词 RAG、规则文案、狼人杀状态机和本地策略产物仍可用。
+
+发布启动器设置 `AGENT_TOWN_DATA_DIR`，把 `memory.json`、存档和日志放到
+macOS 的 `~/Library/Application Support/Agent Town Demo/` 或 Windows 的
+`%LOCALAPPDATA%\Agent Town Demo\`，避免向应用包和便携 runtime 内部写入。开发环境
+不设置该变量时仍使用原来的 `backend/data/`。构建不会复制 `backend/.env`、
+`backend/data/` 或任何 API Key。
+
+## V5 actor-scoped NPC reasoning 与本地策略
+
+V5 的决策链是 `合法 observation → 每 NPC 独立 hypothesis/belief → 候选 action score →
+Python 确定性采样与规则执行`。`app/npc_reasoning.py` 不接收完整
+`WolfGameState`，而是由 `main.py` 按角色投影合法视野；好人不会获得其他角色的隐藏
+`role/camp`，狼人只获得队友/非队友阵营，预言家只获得自己的查验事实。
+
+`app/npc_policy.py` 的 25 个放逐候选特征只能给现有候选打分，不能创建行动或提交结果：
+
+- `rule`：现有 Python 评分和推理调整；
+- `shadow`：额外加载本地 artifact、记录本地分数，但实际行动仍使用规则分布；
+- `local`：使用通过 manifest、SHA-256、schema、faction 和开局摘要校验的本地分数；
+- 缺少 artifact、摘要过期、模型输出非有限或候选契约不匹配时回退 `rule`。
+
+`rule/shadow/local` 和离线 reasoning scenario 会在固定角色数量约束下枚举完整的合法
+`possible_worlds` 用于概率边际（仅保留阵营组合和预言家 claimant，不保存完整隐藏角色
+排列）；持久化展示只保留 top worlds，不把展示截断当作硬约束。同一警上窗口有完整对跳
+且至少一方退水或双方持续时，退水/金水约束才会成为硬约束；单个 claimant 不会删除
+“真预言家尚未公开跳”的世界，会后补跳不会倒灌旧窗口，已完成窗口的结论可以跨日保留。
+`world_entropy` 和
+`unsatisfiable_constraints` 只用于解释和安全回退，不改变 Python 权威状态。
+
+警上退水窗口关闭时，规则引擎现在为每个仍在候选中的人写入
+`continue_campaign`。因此 A/B 都跳预言家、B 给 A 金水且双方不退水时，公共时序和
+actor-scoped reasoning 都能产生“B 的假设不一致、A 是唯一一致候选”的结构化信号；
+这仍然是推理和公开矛盾候选，不是未经 Python 结算的身份改写。
+
+离线训练只使用规则分布作为 soft teacher，不调用 HTTP/DeepSeek/RAG：
+
+```bash
+backend/.venv/bin/python backend/training/generate_policy_dataset.py \
+  --seed 20260701 --games 10 \
+  --output backend/training/datasets/npc_policy_v1.jsonl
+backend/.venv/bin/python backend/training/train_policy.py \
+  --dataset backend/training/datasets/npc_policy_v1.jsonl \
+  --output-dir backend/policy_artifacts
+```
+
+外部数据不要直接改 25 维特征，推荐先验证 observation，再用独立标签按摘要合并：
+
+```bash
+backend/.venv/bin/python backend/training/validate_policy_dataset.py \
+  --input my_observations.jsonl \
+  --output /tmp/my_observations.normalized.jsonl
+backend/.venv/bin/python backend/training/merge_policy_labels.py \
+  --observations /tmp/my_observations.normalized.jsonl \
+  --labels my_labels.jsonl \
+  --output /tmp/my_policy_labeled.jsonl
+backend/.venv/bin/python backend/training/train_policy.py \
+  --dataset /tmp/my_policy_labeled.jsonl \
+  --model-type mlp --hidden-size 32 \
+  --output-dir backend/policy_artifacts
+backend/.venv/bin/python backend/training/evaluate_policy.py \
+  --dataset /tmp/my_policy_labeled.jsonl \
+  --artifact-dir backend/policy_artifacts \
+  --output /tmp/my_policy_evaluation.json
+```
+
+一行一条决策的完整字段和 `npc_policy_label.v1` 示例见
+[`training/README.md`](training/README.md) 与 `training/examples/`。validator 严格校验
+候选集合、有限数值、概率归一、摘要、整局去重和未知字段；验证失败不产出文件。好人
+侧 observation 禁止写入真实角色、完整 role assignment、winner 或其他终局真值。
+
+`train_policy.py --model-type linear` 生成可回读的 `npc_policy_artifact.v1`；`mlp` 生成
+带 `architecture`、SHA-256 和特征封印的 `npc_policy_artifact.v2`。MLP 仍只对 Python
+传入的合法候选打分。建议先跑 `shadow` 与
+`backend/training/reasoning_scenarios.py --input ...` 的离线场景，再切换 `local`。
+当前正式数据集把 280 条规则 teacher 与 99 条阵营审计标签一起保留为 379 条记录；
+32 隐层 MLP 全量离线 top-1 一致率为好人 `90.68%`、狼人 `70.63%`，候选覆盖、
+有限输出和合法率均为 `100%`。
+
+仓库内的高价值推理场景可重新生成并评测：
+
+```bash
+backend/.venv/bin/python backend/training/generate_reasoning_scenarios.py
+backend/.venv/bin/python backend/training/reasoning_scenarios.py \
+  --input backend/training/examples/reasoning_scenarios.v1.jsonl \
+  --output /tmp/reasoning_scenarios_report.json
+```
+
+场景只验证公开事实推理，不写入规则真值。
+
+若要把逻辑冲突转成人工策略标签，可先生成审阅队列，再由审阅者填写首选合法动作：
+
+```bash
+backend/.venv/bin/python backend/training/generate_policy_review_queue.py \
+  --input backend/training/datasets/npc_policy_v1.jsonl \
+  --output /tmp/logic_review_queue.jsonl
+backend/.venv/bin/python backend/training/convert_policy_review_queue.py \
+  --queue /tmp/logic_review_queue.jsonl \
+  --observations backend/training/datasets/npc_policy_v1.jsonl \
+  --output /tmp/logic_labels.jsonl
+```
+
+多名审阅者应使用不同 `source_id`，然后运行 `consensus_policy_labels.py`。默认至少两名
+审阅者且最高动作一致率达到 0.67 才进入训练标签，冲突会单独输出报告。
+如需仅验证转换链路，可运行 `fill_policy_review_queue.py`；其输出标记为
+`imported/needs_human_review`，不能直接用来评价模型优劣。
+训练前可用 `compare_teacher_labels.py` 检查标签相对 Python teacher 的偏离；该指标不是
+胜率或平衡指标。
+审阅时可运行 `review_dashboard.py` 生成本地 HTML；页面不联网、不启动 FastAPI，草稿仅保存在
+浏览器 localStorage，导出的 JSONL 仍需经过严格转换器。
+如需生成阵营分离的离线审计标签，可运行 `audit_policy_review_queue.py`。好人使用
+`codex_smart_good_audit_v2`：默认逐项复制 rule teacher，只有公开硬冲突或由其推出的
+唯一一致预言家信号出现时，才用 15% 纠偏质量保护唯一一致预言家、集中到冲突对象或
+已有归票锚点；狼人继续使用 `codex_smart_audit_v1` 的原公式、温度和标签，不随好人
+rubric 改动。
+模型温度必须先用 `calibrate_policy_temperature.py` 离线扫描，再经过 shadow 验证后才能封入
+游戏配置；当前不会自动改变运行时温度。
+显式温度通过 `AGENT_TOWN_NPC_POLICY_TEMPERATURE` 设置（范围 `0.25–2.0`），会进入 policy
+trace 和 shadow/local 配置指纹；rule 模式忽略该变量并固定使用 `1.0`。
+`AGENT_TOWN_NPC_POLICY_BLEND` 可在 `0.0–1.0` 间混合 rule/model 概率，默认 `1.0`；它同样
+进入 shadow/local 配置指纹，不能绕过合法候选和 Python 采样。
+`npc_policy_entropy_guard.v1` 会在确定性采样前审查混合结果。普通好人直接返回
+teacher；硬公开逻辑只有在模型增加冲突对象票仓、且不增加唯一一致预言家票仓时才
+放行，并继续限制归一化熵和总变差。`npc_policy_trace.v2` 同时记录原始模型概率、
+护栏后概率、方向判定与有效混合比例。
+当前 379 条 MLP 的 10 局 local 金丝雀使用 `temperature=0.65`、请求 `blend=0.10`。
+重放 `10/10`、fallback 为 0，好人胜场 `2→4`、误投 `62.0%→57.4%`、投狼概率质量
+`38.3%→44.7%`；但同 seed 放逐熵 `25.8%→26.6%`、跨日正确票保持
+`80.6%→78.0%`，因此仍保持默认 `rule`，不扩大 local 样本。
+批量 shadow 后可用 `extract_policy_disagreements.py` 按 KL 偏离提取 actor-scoped 重点样本，
+再回到审计队列复核。
+随后可用 `analyze_policy_disagreements.py` 检查狼人是否压制稳定核心且避免投狼队友；该分析
+只做策略不变量审计，不读取赛后真值。
+
+`wolf_sheriff_campaign.v1` 在既有假预言家选择之上增加警上阵容策略：
+
+- `solo_fake_seer`：仅假预言家上警，保持原悍跳路径；
+- `double_support`：第二只 NPC 狼同时上警，以当时公开的查验链/警徽流为理由辅助站边；
+- `double_distance`：第二只 NPC 狼公开质疑悍跳狼，给后续倒钩或切割保留一致故事。
+
+第二只狼不新增身份声明、不读取公开文本之外的好人私密信息，发言后由 Python 固定退水，
+把最终警长票仓还给持续竞选者。策略选择和搭档选择由本局 seed、NPC tuning 与合法狼队
+知识确定；客户端只看到普通报名、发言和退水，不会收到隐藏策略名。
+
+运行仿真时可以选择：
+
+```bash
+AGENT_TOWN_NPC_POLICY_MODE=rule \
+  backend/.venv/bin/python scripts/simulate_games.py \
+  --seed 1 --games 10 --include-policy-traces \
+  --output /tmp/agent-town-policy-report.json
+```
+
+实时或离线创建对局时也可在请求/环境中使用 `npc_policy_mode`：
+`rule`、`shadow`、`local`。策略模式和产物摘要会封印在
+`game_created`，并参与配置指纹；旧存档缺少该字段时按 `rule` 兼容。
+
+V5 当前离线仿真输出 `agent_town_simulation.v18` /
+`agent_town_simulation_batch.v18`，游戏摘要使用
+`gameplay_digest_projection_version=agent_town_simulation.v15`；V4 的 v17/v14 仍是历史
+artifact 口径。
+
+V5 完整路线见 [`../docs/V5_ROADMAP.md`](../docs/V5_ROADMAP.md)。
+
 ## V4.8-A 开局 LLM 输出校验开关
 
 `GameStartRequest` 新增 `enable_llm_validation: bool = true`。旧客户端省略该字段时继续
@@ -371,7 +541,11 @@ save/restore 和 replay 也不属于这 20 条命令。无 key 请求保持兼�
 - 恢复兼容一类早期 V4.3-A 快照：原始 `snapshot_digest` 必须先通过，归一化后的
   唯一差异必须是缺少默认空 `command_results`，且事件链中不得有任何
   `idempotency_key`。读取/启动恢复只在内存补空台账，不改原文件；下次正常持久化
-  才升级。任何其他 round-trip 差异、缺失非空台账或带 key 事件仍 fail closed。
+  才升级。
+- V4 的 `PublicClaimState` 早于 V5.4 的来源字段。旧 V4 存档缺少 `phase`、
+  `window_day`、`event_sequence` 时，只允许归一成 `"" / null / 0`；这组惰性默认值
+  不进入规则摘要，因此旧事件链可以继续。读取不改盘，下次正常保存才写入字段。
+  任何非默认 round-trip 差异、缺失非空台账或带 key 事件仍 fail closed。
 
 默认目录为 `data/games/`，也可在 `.env` 设置
 `AGENT_TOWN_GAME_SAVE_DIR=data/games`。文件包含隐藏身份、seed、夜间行动和私聊，
@@ -1159,9 +1333,10 @@ GODOT_BIN=/Applications/Godot.app/Contents/MacOS/Godot \
 V4.3-A/B 检查覆盖原子替换、`0700/0600` 权限、旧文件保护、任意
 pre-commit helper 异常回滚、同 key 顺序/并发去重、跨端点和 payload 冲突、带 key
 写盘失败回滚、响应丢失后重启恢复、结果台账篡改、无 key 兼容、固定身份池顺序，
-以及带 key replay 零落盘。V4.4–V4.6 的公开证据、赛后解释、表达质量、指纹与成本
-契约继续回归；V4.7-A 还静态检查七步引导、完整状态入口、六身份隐私投影、弹窗输入
-边界和本地偏好 allowlist。V4.7-B 新增对 `agent_town_responsive_layout.v1`、
+旧空台账与旧 `phase / window_day / event_sequence` 默认来源的只读内存迁移，以及
+带 key replay 零落盘。V4.4–V4.6 的公开证据、赛后解释、表达质量、指纹与成本契约
+继续回归；V4.7-A 还静态检查七步引导、完整状态入口、六身份隐私投影、弹窗输入边界
+和本地偏好 allowlist。V4.7-B 新增对 `agent_town_responsive_layout.v1`、
 `agent_town_focus_navigation.v1`、`compact / default / wide` 物理窗口断点、
 `1100×650 / 1280×720 / 1600×900` 三档布局、项目最小窗口、动态卡片列数、长文本滚动、
 可见焦点样式、玩家移动锁、modal 焦点圈定与关闭后归还的静态回归；同时锁定本轮没有

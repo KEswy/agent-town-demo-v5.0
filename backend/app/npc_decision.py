@@ -178,6 +178,8 @@ class DecisionSignalV1(StrictDecisionModel):
         "badge_flow_consistency",
         "public_position",
         "seer_check_claim",
+        "seer_claim_logic_conflict",
+        "seer_claim_logic_support",
         "exile_vote",
         "public_elimination",
         "low_information_speech",

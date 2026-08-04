@@ -6,6 +6,306 @@
 cd "<project-root>"
 ```
 
+## 打包 macOS 试玩版
+
+要求本机使用 Godot `4.7.stable` 并安装匹配的 Export Templates。可在 Godot 菜单
+`Editor → Manage Export Templates` 安装；然后安装固定的打包依赖并构建：
+
+```bash
+backend/.venv/bin/pip install -r backend/requirements-packaging.txt
+scripts/package_macos.sh
+```
+
+成功后生成：
+
+```text
+dist/AgentTownDemo-V5-macOS-arm64/
+dist/AgentTownDemo-V5-macOS-arm64.zip
+dist/AgentTownDemo-V5-macOS-arm64.zip.sha256
+```
+
+文件夹内双击 `启动 Agent Town Demo.command`。启动器先启动独立 FastAPI 后端并等待
+`/api/health`，再运行 Godot `.app`，退出游戏后清理由它创建的后端进程。默认
+`ENABLE_LLM=false`、`AGENT_TOWN_DISABLE_VECTOR_RAG=1`、NPC policy 为 `rule`；
+存档和日志位于 `~/Library/Application Support/Agent Town Demo/`。
+
+包内 `配置示例.env` 不含 secret。如需 DeepSeek，复制为 `.env` 后在本机填写，绝不能
+把填写后的 `.env` 再打进 zip。当前构建为 Universal 2 Godot 客户端 + arm64 后端，
+使用 ad-hoc 签名且未公证，适合本机/开发测试；公开分发前需要 Apple Developer ID
+签名、公证和一次真实图形交互验收。
+
+## 打包 Windows x64 试玩版
+
+要求构建机安装 Godot `4.7.stable` 的 Windows x86_64 Export Templates。脚本会校验并
+使用官方 Python 3.12.10 embeddable runtime，再按锁定版本安装 Windows wheels：
+
+```bash
+scripts/package_windows.sh
+```
+
+成功后生成：
+
+```text
+dist/AgentTownDemo-V5-Windows-x64/
+dist/AgentTownDemo-V5-Windows-x64.zip
+dist/AgentTownDemo-V5-Windows-x64.zip.sha256
+```
+
+玩家在 Windows 10/11 x64 上解压完整 ZIP，双击 `Start Agent Town Demo.bat`。启动器
+先运行包内 Python/FastAPI、等待 `/api/health`，再打开 Godot EXE，游戏退出后只清理
+本次创建的后端进程。默认断网可玩，存档和日志位于
+`%LOCALAPPDATA%\Agent Town Demo\`，无需另装 Python、Godot 或 pip。
+
+包内 `配置示例.env` 的 `LLM_API_KEY` 为空；可复制成 `.env` 配置 DeepSeek，但绝不能
+分享填写过密钥的文件。当前 EXE 未做 Authenticode 签名，可能触发 SmartScreen。
+macOS 构建机只能完成跨平台导出、PE 架构、秘密扫描、ZIP 和 SHA-256 验证；对外发送前
+还需在真实 Windows 10/11 上双击启动并完成一局图形交互验收。
+
+## V5 NPC 独立推理与本地策略
+
+V5 的离线训练不会启动 FastAPI、Godot、DeepSeek 或向量 RAG。规则 Python 先生成合法
+候选和 soft teacher 分布，再训练只负责候选评分的 NumPy 小模型：
+
+```bash
+backend/.venv/bin/python backend/training/generate_policy_dataset.py \
+  --seed 20260701 --games 10 \
+  --output backend/training/datasets/npc_policy_v1.jsonl
+
+backend/.venv/bin/python backend/training/train_policy.py \
+  --dataset backend/training/datasets/npc_policy_v1.jsonl \
+  --output-dir backend/policy_artifacts
+```
+
+### 外部数据喂入（推荐观察/标签分离）
+
+规则仿真导出的 observation 先经过严格规范化；人工或专家只提交
+`observation_digest` + 合法动作偏好，不手写隐藏身份或整局状态：
+
+```bash
+backend/.venv/bin/python backend/training/validate_policy_dataset.py \
+  --input my_observations.jsonl \
+  --output /tmp/my_observations.normalized.jsonl
+
+backend/.venv/bin/python backend/training/merge_policy_labels.py \
+  --observations /tmp/my_observations.normalized.jsonl \
+  --labels my_labels.jsonl \
+  --output /tmp/my_policy_labeled.jsonl
+
+backend/.venv/bin/python backend/training/train_policy.py \
+  --dataset /tmp/my_policy_labeled.jsonl \
+  --model-type mlp --hidden-size 32 \
+  --output-dir backend/policy_artifacts
+
+backend/.venv/bin/python backend/training/evaluate_policy.py \
+  --dataset /tmp/my_policy_labeled.jsonl \
+  --artifact-dir backend/policy_artifacts \
+  --output /tmp/my_policy_evaluation.json
+```
+
+标签格式：
+
+```json
+{"schema_version":"npc_policy_label.v1","observation_digest":"64位摘要","preferred_action_id":"exile_vote:9","label_type":"human_preference","confidence":1.0,"weight":1.0,"source_id":"reviewer_001","rationale":"可选审计说明","tags":["logic_conflict"]}
+```
+
+也可用 `target_distribution` 替代 `preferred_action_id`，但不能同时提供。完整
+字段、25 个特征顺序、错误示例和隐私边界见
+[`backend/training/README.md`](backend/training/README.md)。
+
+### 本地模型类型与推理场景
+
+`--model-type linear` 保持 `npc_policy_artifact.v1` 兼容；`--model-type mlp` 写入
+带架构和 SHA-256 的 `npc_policy_artifact.v2`。离线推理场景可用：
+
+```bash
+backend/.venv/bin/python backend/training/reasoning_scenarios.py \
+  --input my_reasoning_scenarios.jsonl \
+  --output /tmp/reasoning_report.json
+```
+
+场景期望字段包括必需/禁止 signal、支持的预言家 claimant、隐藏世界是否仍一致以及
+概率上下界；场景只评估 actor-scoped observation，不改变对局。
+
+生成仓库内的高价值推理场景并运行回归：
+
+```bash
+backend/.venv/bin/python backend/training/generate_reasoning_scenarios.py
+backend/.venv/bin/python backend/training/reasoning_scenarios.py \
+  --input backend/training/examples/reasoning_scenarios.v1.jsonl \
+  --output /tmp/reasoning_scenarios_report.json
+```
+
+当前场景覆盖同窗对跳金水、单 claimant、退水、跨日证据、已知角色冲突和改验结果。
+
+从规则教师记录筛选逻辑冲突决策，生成可人工填写的标签队列：
+
+```bash
+backend/.venv/bin/python backend/training/generate_policy_review_queue.py \
+  --input backend/training/datasets/npc_policy_v1.jsonl \
+  --output /tmp/logic_review_queue.jsonl
+backend/.venv/bin/python backend/training/convert_policy_review_queue.py \
+  --queue /tmp/logic_review_queue.jsonl \
+  --observations backend/training/datasets/npc_policy_v1.jsonl \
+  --output /tmp/logic_labels.jsonl
+```
+
+队列只包含合法候选和公开逻辑特征；审阅者只能选择已有候选，不能填入隐藏身份或终局真值。
+
+仅用于管线回归的启发式填写（不是人工金标准）：
+
+```bash
+backend/.venv/bin/python backend/training/fill_policy_review_queue.py \
+  --input backend/training/inbox/logic_review_queue.jsonl \
+  --output backend/training/inbox/codex_logic_review.jsonl
+```
+
+多审阅者标签生成共识：
+
+```bash
+backend/.venv/bin/python backend/training/consensus_policy_labels.py \
+  --observations backend/training/datasets/npc_policy_v1.jsonl \
+  --labels reviewer_a.jsonl reviewer_b.jsonl \
+  --output /tmp/consensus_labels.jsonl \
+  --report /tmp/consensus_report.json
+```
+
+比较审阅标签与规则 teacher 的差异：
+
+```bash
+backend/.venv/bin/python backend/training/compare_teacher_labels.py \
+  --observations backend/training/datasets/npc_policy_v1.jsonl \
+  --dataset backend/training/datasets/logic_policy_labeled.jsonl \
+  --output /tmp/teacher_label_comparison.json
+```
+
+生成可视化审计台：
+
+```bash
+backend/.venv/bin/python backend/training/review_dashboard.py \
+  --input backend/training/inbox/logic_review_queue.jsonl \
+  --output backend/training/inbox/review_dashboard.html
+open backend/training/inbox/review_dashboard.html
+```
+
+审计台只读入 actor-scoped 合法候选，支持筛选、候选信号对比、概率/置信度/理由填写和
+JSONL 导出；导出后仍必须运行 `convert_policy_review_queue.py`。
+
+按 teacher-anchored 聪明好人 v2 / 原聪明狼人 v1 生成可解释审计：
+
+```bash
+backend/.venv/bin/python backend/training/audit_policy_review_queue.py \
+  --queue backend/training/inbox/logic_review_queue.jsonl \
+  --observations backend/training/datasets/npc_policy_v1.jsonl \
+  --output backend/training/inbox/codex_smart_audit.jsonl \
+  --report backend/training/inbox/codex_smart_audit_report.json
+```
+
+好人无硬公开逻辑冲突时逐项保持 teacher；有冲突时才保护唯一一致预言家并收拢票型。
+狼人继续使用 `codex_smart_audit_v1`，自动化自检会重新计算并核对每条狼人分布。
+
+转换、合并并重新训练两份模型：
+
+```bash
+backend/.venv/bin/python backend/training/convert_policy_review_queue.py \
+  --queue backend/training/inbox/codex_smart_audit.jsonl \
+  --observations backend/training/datasets/npc_policy_v1.jsonl \
+  --output backend/training/inbox/codex_smart_labels.jsonl
+backend/.venv/bin/python backend/training/merge_policy_labels.py \
+  --observations backend/training/datasets/npc_policy_v1.jsonl \
+  --labels backend/training/inbox/codex_smart_labels.jsonl \
+  --include-teacher-records \
+  --output backend/training/datasets/codex_smart_policy_labeled.jsonl
+backend/.venv/bin/python backend/training/train_policy.py \
+  --dataset backend/training/datasets/codex_smart_policy_labeled.jsonl \
+  --model-type mlp --hidden-size 32 \
+  --output-dir backend/policy_artifacts
+```
+
+扫描模型概率温度（仅生成报告，不改变运行时）：
+
+```bash
+backend/.venv/bin/python backend/training/calibrate_policy_temperature.py \
+  --input /tmp/smart_shadow_50.json \
+  --output /tmp/smart_temperature_calibration.json
+```
+
+使用校准温度运行 shadow：
+
+```bash
+AGENT_TOWN_NPC_POLICY_TEMPERATURE=0.65 \
+  backend/.venv/bin/python scripts/simulate_games.py \
+  --seed 20260727 --games 50 --npc-policy-mode shadow \
+  --include-policy-traces --output /tmp/shadow_t065.json
+```
+
+local 金丝雀可使用保守混合（当前仅实验）：
+
+```bash
+AGENT_TOWN_NPC_POLICY_TEMPERATURE=0.65 \
+AGENT_TOWN_NPC_POLICY_BLEND=0.10 \
+  backend/.venv/bin/python scripts/simulate_games.py \
+  --seed 20260727 --games 10 --npc-policy-mode local \
+  --include-policy-traces --output /tmp/local_t065_blend010.json
+```
+
+应使用相同 seed 另跑一份 `rule` 对照。运行时的
+`npc_policy_entropy_guard.v1` 会让普通好人逐项等于 teacher，只对方向正确的硬公开
+逻辑纠偏放行，同时限制归一化熵和总变差。当前 379 条 MLP 的 10 局结果为好人胜场
+`2→4`、误投 `62.0%→57.4%`、投狼概率质量 `38.3%→44.7%`，但放逐熵
+`25.8%→26.6%`、跨日正确票保持 `80.6%→78.0%`；仍按门槛停止在 10 局，不继续
+扩大样本，默认模式保持 `rule`。
+
+提取模型与规则分歧最大的样本：
+
+```bash
+backend/.venv/bin/python backend/training/extract_policy_disagreements.py \
+  --input /tmp/smart_shadow_100_t065.json \
+  --output /tmp/smart_policy_disagreements_100.json \
+  --limit 50
+```
+
+分析分歧是否符合聪明阵营不变量：
+
+```bash
+backend/.venv/bin/python backend/training/analyze_policy_disagreements.py \
+  --input /tmp/smart_policy_disagreements_100.json \
+  --output /tmp/smart_policy_disagreement_analysis_100.json
+```
+
+训练产物包含好人/狼人两份 `manifest.json + model.npz`，manifest 封印 feature schema、
+数据摘要、模型 SHA-256、样本数和验证指标。若只想把本地模型与规则并行观察：
+
+```bash
+AGENT_TOWN_NPC_POLICY_MODE=shadow \
+  backend/.venv/bin/python scripts/simulate_games.py \
+  --seed 1 --games 10 --npc-policy-mode shadow \
+  --include-policy-traces \
+  --output /tmp/agent-town-policy-shadow.json
+```
+
+确认产物可接管候选评分并保持事件重放：
+
+```bash
+AGENT_TOWN_NPC_POLICY_MODE=local \
+  backend/.venv/bin/python scripts/simulate_games.py \
+  --seed 1 --games 3 --npc-policy-mode local \
+  --include-policy-traces \
+  --output /tmp/agent-town-policy-local.json
+```
+
+`rule` 是默认值；`shadow` 不改变规则行动；`local` 只替换合法放逐候选的概率。产物
+缺失、摘要不一致、非有限输出或契约校验失败时自动回退 `rule`。V5 路线、双预言家
+“金水 + 双方继续竞选”推理例子和训练边界见
+[`docs/V5_ROADMAP.md`](docs/V5_ROADMAP.md)。
+
+狼人警上阵容由 `wolf_sheriff_campaign.v1` 在单狼悍跳、双狼辅助站边和双狼公开拉开
+距离之间确定性选择。无需新命令；正常 rule/shadow 仿真即可覆盖。双狼搭档只做公开
+发言并在发言后退水，不新增 API 或玩家操作。
+
+V5 仿真报告当前使用 `agent_town_simulation.v18` /
+`agent_town_simulation_batch.v18`，游戏摘要 digest 投影为
+`agent_town_simulation.v15`；V4 的 v17/v14 版本只用于读取历史 artifact。
+
 ## 首次安装后端依赖
 
 已经存在 `backend/.venv` 时不需要重复创建虚拟环境，只需安装或更新依赖：
@@ -437,8 +737,10 @@ fail closed，不会部分恢复。不要手工编辑这些文件。
 早期 V4.3-A 曾生成不含 `command_results` 的合法存档。当前恢复器只在原始快照
 摘要正确、唯一 schema 差异是缺少默认空对象、且事件链从未出现
 `idempotency_key` 时内存兼容；读取不会改文件，下次正常保存才升级。已有带 key
-事件却缺台账、未知字段、其他默认差异或摘要不一致仍会拒绝启动，不能靠手工补字段
-绕过校验。
+事件却缺台账仍会拒绝。V4 公开声明还可能缺少 V5 后来增加的 `phase`、
+`window_day`、`event_sequence`；恢复器只为旧 V4 存档接受 `"" / null / 0` 的精确
+默认来源，且默认来源不改变旧规则摘要。未知字段、非默认差异或摘要不一致仍会拒绝
+启动，不能靠手工补字段绕过校验。
 
 手动恢复未进入活动缓存的合法存档，包括启动时跳过的终局归档：
 
@@ -932,8 +1234,8 @@ backend/.venv/bin/python scripts/check_game_persistence.py
 ```
 
 该检查使用临时目录，覆盖原子失败回滚、同 key 并发、409 冲突、响应丢失后的
-未完成局/终局恢复、结果台账篡改、旧空台账存档的窄兼容、固定角色顺序重放和无
-key 兼容，不会启动服务。
+未完成局/终局恢复、结果台账篡改、旧空台账与旧公开声明来源字段的窄兼容、固定角色
+顺序重放和无 key 兼容，不会启动服务。
 
 ## 查看 LLM 校验失败日志
 

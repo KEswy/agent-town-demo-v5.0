@@ -1,4 +1,4 @@
-# Agent Town Demo V4
+# Agent Town Demo V5
 
 一个用于学习游戏开发的 Godot 4 + Python FastAPI AI NPC 原型。
 
@@ -6,13 +6,127 @@
 
 项目当前把两条玩法合并到同一个 Demo 中：玩家可以在扩建后的 2D 小镇里移动、随时和坏坏、然然两名常驻居民聊天，也可以通过控制面板进行一局 1 名玩家 + 11 名 NPC 的十二人狼人杀。
 
+## V5 NPC 独立推理与本地策略模型
+
+V5 从不可移动的 `v4.0.0` 源码基线开始，主题不是重写狼人杀规则或训练语言表达，而是
+让每个 NPC 在自己的合法视野内维护独立的
+`观察 → 假设 → 信念 → 候选行动评分`。Python 仍是身份、权限、合法候选、确定性采样、
+事件、出局和胜负的唯一权威；DeepSeek 只负责合法上下文内的表达和可选输出校验。
+
+当前已完成的 V5 最小闭环：
+
+- 退水窗口关闭时，为所有仍在警上候选列表的人追加公开
+  `continue_campaign` 事实，避免 NPC 只能在警长投票后才看到时序。
+- `backend/app/npc_reasoning.py` 为每个 NPC 生成 actor-scoped hypothesis、role belief、
+  contradiction signal 和下一步 plan；`shadow/local` 与离线场景会额外计算有界可能世界
+  边际。好人观察不会带入其他人的隐藏身份。单个预言家 claimant 会保留“未公开真
+  预言家”世界，退水证据只在同一警上窗口生效，不会跨天重复推理。
+- 双预言家“B 给 A 金水、A/B 都继续竞选”会生成
+  `seer_golded_persistent_counterclaim` 与 `sole_consistent_seer_claimant`，公开证据只
+  标记待核对矛盾，不把它直接当身份真值。
+- `backend/app/npc_policy.py` 只接收已有合法放逐候选的固定特征。`rule` 使用原规则，
+  `shadow` 计算本地模型但仍按规则行动，`local` 才由本地模型接管候选概率；模型失败
+  自动回退规则。
+- 已提供 NumPy 训练/数据脚本和好人/狼人 `backend/policy_artifacts` 产物，模型只替换
+  “候选行动评分”层，不生成新规则动作；V1 线性 artifact 保持兼容，当前正式产物为
+  V2 32 隐层 `tanh` MLP。训练集保留 280 条规则 teacher，并叠加 40 条聪明好人 v2
+  与 59 条原聪明狼人 v1 审计标签，共 379 条。
+- `backend/training/README.md`、严格 validator 和 label merger 留出了外部喂数口：
+  observation 与人工标签按 `observation_digest` 分离合并，拒绝过期摘要、非法候选、
+  概率错误和重复样本；validator 能拒绝结构性非法输入，但无法从 25 个数值语义上
+  证明用户没有编码隐藏身份，因此推荐只使用脚本生成的 actor-scoped observation。
+- `backend/training/generate_reasoning_scenarios.py` 固化 6 条高价值逻辑场景，覆盖对跳
+  金水、单 claimant、退水、跨日证据、已知角色冲突和改验结果，并可由离线 runner 自动
+  检查必需/禁止 signal 与预言家概率边界。
+- `generate_policy_review_queue.py` 可从规则教师记录中筛选逻辑冲突候选，生成不含隐藏
+  真值的人工决策审阅队列；填写后由 `convert_policy_review_queue.py` 转成严格标签。
+- 多名审阅者的标签可通过 `consensus_policy_labels.py` 计算共识；分歧样本会进入报告，
+  不会静默混入训练集。
+- 当前已生成一份 `codex_logic_review` 启发式 bootstrap 标签用于验证管线，但明确标记为
+  `needs_human_review`，不会被当作人工金标准。
+- `compare_teacher_labels.py` 可在训练前量化人工标签与规则 soft teacher 的差异，帮助
+  发现“标签只是重复规则”或“启发式偏离过大”的问题。
+- `review_dashboard.py` 提供离线浏览器审计台，可筛选样本、比较候选逻辑信号并导出填写结果。
+- `audit_policy_review_queue.py` 的聪明好人标签已升级为 teacher-anchored v2：无硬公开
+  逻辑冲突时逐项保持 rule teacher；出现冲突或唯一一致预言家信号时才小幅纠偏、保护
+  唯一一致预言家并向已有归票锚点收拢。聪明狼人仍逐项保留 v1 标签与 rubric。
+- `calibrate_policy_temperature.py` 可在 shadow 轨迹上扫描模型概率温度；温度尚未封入正式
+  游戏配置。
+- `AGENT_TOWN_NPC_POLICY_TEMPERATURE=0.65` 已支持 shadow/local 的显式温度封印，默认值仍为
+  `1.0`，不会影响 rule 模式。
+- `npc_policy_entropy_guard.v1` 在采样前约束模型扰动：普通好人逐项等于 teacher；
+  只有模型确实增加公开冲突对象票仓、且不增加唯一一致预言家票仓时，硬逻辑场景才
+  允许有界纠偏；所有阵营继续受归一化熵与总变差上限约束。trace 同时保留原始模型、
+  护栏后概率与实际有效混合比例。
+- 当前 379 条 MLP 使用同 seed `20260727–20260736`、温度 `0.65`、请求混合 `0.10`
+  完成 10 局 shadow 和 local 金丝雀。Shadow 共 205 条轨迹、0 fallback，原始模型
+  38 次改变 teacher 首选，护栏后为 0；local 重放 10/10，好人胜场 `2→4`、误投
+  `62.0%→57.4%`、投狼概率质量 `38.3%→44.7%`，但放逐熵 `25.8%→26.6%`、跨日
+  正确票保持 `80.6%→78.0%`，仍未通过“核心指标全部不恶化”门槛，因此没有扩大样本，
+  默认模式继续为 `rule`。
+- `extract_policy_disagreements.py` 可从大批量 shadow 轨迹中提取规则与模型分歧最大的样本，
+  用于下一轮重点审计。
+- `analyze_policy_disagreements.py` 会检查分歧是否符合聪明好人/聪明狼人的基本不变量，
+  把投狼队友或未分类样本单独标出。
+- 夜间查验、守护、狼刀、女巫用毒和猎人目标在 `shadow` 中计算 actor-scoped belief，
+  只有 `local` 才消费该评分；`rule/shadow` 保留 V4 实际行动基线，所有夜间候选和最终
+  结算继续经过 Python 门禁。
+- `wolf_sheriff_campaign.v1` 把狼人警上阵容扩为三种可复现编排：单狼悍跳、双狼辅助
+  站边、双狼公开拉开距离。双狼局由假预言家和一名非玩家狼同时上警；辅助狼不跳
+  预言家，只根据当时已经公开的声明表达支持或质疑，发言后固定退水，避免占用最终
+  警长票仓。白天原有的集中、分票掩护、倒钩、救队友、卖队友和放弃悍跳狼策略保留。
+- V5 当前离线仿真 schema 为 `agent_town_simulation.v18` /
+  `agent_town_simulation_batch.v18`，游戏摘要 digest 投影为
+  `agent_town_simulation.v15`；V4 的 v17/v14 只作为历史 artifact 口径保留。
+
+完整 V5 主题、里程碑、数据划分和验收门槛见 [`docs/V5_ROADMAP.md`](docs/V5_ROADMAP.md)。
+
+## macOS 试玩包
+
+当前 V5 可以从项目根目录生成 Apple Silicon 试玩包：
+
+```bash
+backend/.venv/bin/pip install -r backend/requirements-packaging.txt
+scripts/package_macos.sh
+```
+
+构建结果写入 `dist/AgentTownDemo-V5-macOS-arm64/`，同时生成同名 zip 和 SHA-256。
+包内包含 Universal 2 Godot 客户端、arm64 FastAPI 独立后端、双击启动器和配置说明；
+默认关闭真实 LLM 与向量下载，断网可运行，且不会打包 `backend/.env`、API Key、私有
+存档或聊天记忆。存档写入
+`~/Library/Application Support/Agent Town Demo/`。
+
+本地测试包使用 ad-hoc 签名，没有 Apple Developer ID 公证；通过网络分发时仍可能触发
+Gatekeeper。完整构建、模板安装、启动和验收说明见
+[`packaging/macos/README.md`](packaging/macos/README.md) 与 [`COMMANDS.md`](COMMANDS.md)。
+
+## Windows x64 试玩包
+
+在已安装 Godot 4.7 Windows x86_64 Export Templates 的 macOS 构建机上运行：
+
+```bash
+scripts/package_windows.sh
+```
+
+构建结果为 `dist/AgentTownDemo-V5-Windows-x64/`、同名 ZIP 和 SHA-256。ZIP 内包含
+64 位 Godot 客户端、Python 3.12 便携后端和双击启动器；玩家无需安装 Godot、Python
+或 pip。解压完整 ZIP 后双击 `Start Agent Town Demo.bat`，存档和日志写入
+`%LOCALAPPDATA%\Agent Town Demo\`。
+
+默认配置断网可玩且不包含 `.env`、API Key 或私有存档。当前 EXE 未做 Authenticode
+签名，可能触发 SmartScreen；跨平台构建、PE 架构和归档完整性已在 macOS 验证，
+正式分享前仍应在 Windows 10/11 真机完成启动与图形交互验收。完整说明见
+[`packaging/windows/README.md`](packaging/windows/README.md) 与
+[`COMMANDS.md`](COMMANDS.md)。
+
 ## V4.0.0 源码封版
 
 V4 于 `2026-07-24` 归档到公开仓库
 [`KEswy/agent-town-demo-v4.0`](https://github.com/KEswy/agent-town-demo-v4.0)，封版标签为
-`v4.0.0`。封版只代表源码与自动化基线冻结，不包含可执行包：仓库仍没有
+`v4.0.0`。封版只代表源码与自动化基线冻结，不包含可执行包：V4 标签中没有
 `export_presets.cfg`，Linux 图形交互也没有单独的人工签署；Ubuntu 24.04 与 macOS 15
-上的 core/Godot headless 矩阵在标签创建前必须全部通过。
+上的 core/Godot headless 矩阵在标签创建前必须全部通过。当前 V5 工作区已另行增加
+macOS 与 Windows 导出预设和本地试玩包，不回写或移动 V4 标签。
 
 根目录没有项目级 `LICENSE`，因此源码公开可读不代表获得开源或再分发许可；字体的
 `OFL.txt` 只覆盖对应字体。`3.0总结/` 继续作为本地历史资料排除在 V4 源码归档之外。
@@ -310,7 +424,9 @@ V4.4-B 已在这份稳定公共基线上增加承诺生命周期和中立矛盾�
   重载会以 409 拒绝，避免活动局指纹与实际配置分叉。
 - V4.3-A 到 V4.3-B 之间生成、且唯一差异是缺少默认空 `command_results` 的早期
   存档可安全读取，但前提是原始快照摘要正确且事件中从未出现幂等 key。读取不会
-  改盘，下一次正常保存才升级字段；其他 schema/摘要差异继续 fail closed。
+  改盘，下一次正常保存才升级字段。V4 公开声明缺少后来加入的 `phase`、
+  `window_day`、`event_sequence` 时，也只接受 `"" / null / 0` 这组精确默认值；
+  默认来源字段不改变旧规则摘要。其他 schema、非默认值或摘要差异继续 fail closed。
 
 V4.3-B 已在这份原子快照上增加客户端幂等 key 与持久结果台账。恢复指纹仍只服务
 于存档兼容性；V4.6-B 的实验、Prompt/config 和价格表指纹是独立契约，不替代恢复

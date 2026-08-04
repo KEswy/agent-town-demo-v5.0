@@ -1,0 +1,1 @@
+{"confidence":1.0,"label_type":"human_preference","observation_digest":"5e6ebd6b5e255528e01a5c8c3f2a56a88e8cc04597eafe79173b556cb66c7df1","preferred_action_id":"exile_vote:9","rationale":"公开矛盾证据充分，优先处理逻辑冲突目标。","schema_version":"npc_policy_label.v1","source_id":"human_review_001","tags":["logic_conflict"],"weight":1.0}

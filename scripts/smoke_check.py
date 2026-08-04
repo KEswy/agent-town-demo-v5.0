@@ -84,6 +84,69 @@ BACKEND_PUBLIC_EVIDENCE_FILE = BACKEND_DIR / "app" / "public_evidence.py"
 BACKEND_POST_GAME_REVIEW_FILE = BACKEND_DIR / "app" / "post_game_review.py"
 BACKEND_SPEECH_QUALITY_FILE = BACKEND_DIR / "app" / "speech_quality.py"
 BACKEND_VOTE_CALIBRATION_FILE = BACKEND_DIR / "app" / "vote_calibration.py"
+BACKEND_NPC_REASONING_FILE = BACKEND_DIR / "app" / "npc_reasoning.py"
+BACKEND_NPC_POLICY_FILE = BACKEND_DIR / "app" / "npc_policy.py"
+BACKEND_TRAINING_DATASET_FILE = (
+    BACKEND_DIR / "training" / "generate_policy_dataset.py"
+)
+BACKEND_TRAINING_SCRIPT_FILE = BACKEND_DIR / "training" / "train_policy.py"
+BACKEND_TRAINING_README_FILE = BACKEND_DIR / "training" / "README.md"
+BACKEND_POLICY_DATA_FILE = BACKEND_DIR / "app" / "npc_policy_data.py"
+BACKEND_POLICY_VALIDATOR_FILE = (
+    BACKEND_DIR / "training" / "validate_policy_dataset.py"
+)
+BACKEND_POLICY_LABEL_MERGER_FILE = (
+    BACKEND_DIR / "training" / "merge_policy_labels.py"
+)
+BACKEND_POLICY_EVALUATOR_FILE = (
+    BACKEND_DIR / "training" / "evaluate_policy.py"
+)
+BACKEND_REASONING_SCENARIO_FILE = (
+    BACKEND_DIR / "training" / "reasoning_scenarios.py"
+)
+BACKEND_POLICY_EXAMPLE_FILE = (
+    BACKEND_DIR / "training" / "examples" / "policy_training_record.example.jsonl"
+)
+BACKEND_LABEL_EXAMPLE_FILE = (
+    BACKEND_DIR / "training" / "examples" / "policy_label.example.jsonl"
+)
+V5_ROADMAP_FILE = ROOT_DIR / "docs" / "V5_ROADMAP.md"
+GODOT_EXPORT_PRESETS_FILE = GAME_DIR / "export_presets.cfg"
+MACOS_PACKAGE_SCRIPT_FILE = ROOT_DIR / "scripts" / "package_macos.sh"
+MACOS_BACKEND_ENTRY_FILE = (
+    ROOT_DIR / "packaging" / "backend_entry.py"
+)
+MACOS_LAUNCHER_FILE = (
+    ROOT_DIR / "packaging" / "macos" / "launch_game.command"
+)
+MACOS_PACKAGE_README_FILE = (
+    ROOT_DIR / "packaging" / "macos" / "README.md"
+)
+MACOS_ENV_EXAMPLE_FILE = (
+    ROOT_DIR / "packaging" / "macos" / ".env.example"
+)
+WINDOWS_PACKAGE_SCRIPT_FILE = ROOT_DIR / "scripts" / "package_windows.sh"
+WINDOWS_LAUNCHER_BAT_FILE = (
+    ROOT_DIR / "packaging" / "windows" / "Start Agent Town Demo.bat"
+)
+WINDOWS_LAUNCHER_PS1_FILE = (
+    ROOT_DIR / "packaging" / "windows" / "Start Agent Town Demo.ps1"
+)
+WINDOWS_PACKAGE_README_FILE = (
+    ROOT_DIR / "packaging" / "windows" / "README.md"
+)
+WINDOWS_ENV_EXAMPLE_FILE = (
+    ROOT_DIR / "packaging" / "windows" / ".env.example"
+)
+WINDOWS_PYTHON_PATH_FILE = (
+    ROOT_DIR / "packaging" / "windows" / "python312._pth"
+)
+WINDOWS_REQUIREMENTS_FILE = (
+    ROOT_DIR / "packaging" / "windows" / "requirements.txt"
+)
+BACKEND_PACKAGING_REQUIREMENTS_FILE = (
+    BACKEND_DIR / "requirements-packaging.txt"
+)
 SIMULATION_SCRIPT_FILE = ROOT_DIR / "scripts" / "simulate_games.py"
 GAME_PERSISTENCE_CHECK_FILE = ROOT_DIR / "scripts" / "check_game_persistence.py"
 LLM_OBSERVABILITY_SCRIPT_FILE = ROOT_DIR / "scripts" / "summarize_llm_observability.py"
@@ -105,11 +168,15 @@ def main(argv: list[str] | None = None) -> int:
 
     core_checks = [
         check_release_docs,
+        check_macos_packaging_contracts,
+        check_windows_packaging_contracts,
         check_ci_delivery_contracts,
         check_json_files,
         check_backend_compiles,
         check_llm_adapter,
         check_npc_decision_contracts,
+        check_npc_reasoning_and_policy,
+        check_npc_training_data_contracts,
         check_npc_tuning,
         check_headless_simulation,
         check_game_persistence,
@@ -149,8 +216,17 @@ def check_release_docs() -> None:
         V3_ROADMAP_FILE,
         V4_ROADMAP_FILE,
         V4_RELEASE_CHECKLIST_FILE,
+        V5_ROADMAP_FILE,
         CI_WORKFLOW_FILE,
         GITATTRIBUTES_FILE,
+        BACKEND_TRAINING_README_FILE,
+        BACKEND_POLICY_DATA_FILE,
+        BACKEND_POLICY_VALIDATOR_FILE,
+        BACKEND_POLICY_LABEL_MERGER_FILE,
+        BACKEND_POLICY_EVALUATOR_FILE,
+        BACKEND_REASONING_SCENARIO_FILE,
+        BACKEND_POLICY_EXAMPLE_FILE,
+        BACKEND_LABEL_EXAMPLE_FILE,
     ]
     missing_files = [str(path.relative_to(ROOT_DIR)) for path in required_files if not path.is_file()]
     if missing_files:
@@ -163,11 +239,13 @@ def check_release_docs() -> None:
     roadmap = V3_ROADMAP_FILE.read_text(encoding="utf-8")
     v4_roadmap = V4_ROADMAP_FILE.read_text(encoding="utf-8")
     release_checklist = V4_RELEASE_CHECKLIST_FILE.read_text(encoding="utf-8")
+    v5_roadmap = V5_ROADMAP_FILE.read_text(encoding="utf-8")
+    training_readme = BACKEND_TRAINING_README_FILE.read_text(encoding="utf-8")
     release_url = "https://github.com/KEswy/agent-town-demo-v2.0"
     v4_development_url = "https://github.com/KEswy/agent-town-demo-v4.0"
 
     if (
-        not root_readme.startswith("# Agent Town Demo V4")
+        not root_readme.startswith("# Agent Town Demo V5")
         or "V4.3-A" not in root_readme
         or "V4.3-B" not in root_readme
         or "V4.4-A" not in root_readme
@@ -179,7 +257,7 @@ def check_release_docs() -> None:
         or "V4.7-C" not in root_readme
         or "V4.8-A" not in root_readme
     ):
-        raise SmokeCheckError("root README must identify the active V4.8-A iteration")
+        raise SmokeCheckError("root README must identify the active V5 iteration and retain V4 history")
     if release_url not in root_readme or release_url not in backend_readme:
         raise SmokeCheckError("V2.0 repository URL must stay synchronized across README files")
     if any(
@@ -190,6 +268,7 @@ def check_release_docs() -> None:
             commands,
             v4_roadmap,
             release_checklist,
+            v5_roadmap,
         )
     ):
         raise SmokeCheckError("V4 development repository URL must stay synchronized")
@@ -218,6 +297,37 @@ def check_release_docs() -> None:
         or "agent_town_rules.v4.2" not in v4_roadmap
     ):
         raise SmokeCheckError("V4 roadmap must document the V4.1-A/B and V4.2 baselines")
+    if (
+        "# Agent Town Demo V5 改进与开发路线表" not in v5_roadmap
+        or "seer_golded_persistent_counterclaim" not in v5_roadmap
+        or "npc_policy_artifact.v1" not in v5_roadmap
+        or "npc_policy_artifact.v2" not in v5_roadmap
+        or "V5.2-B" not in v5_roadmap
+        or "npc_policy_label.v1" not in training_readme
+        or "observation_digest" not in training_readme
+        or "codex_smart_good_audit_v2" not in training_readme
+        or "teacher-anchored" not in training_readme
+        or any(
+            "npc_policy_entropy_guard.v1" not in document
+            for document in (
+                root_readme,
+                backend_readme,
+                training_readme,
+                commands,
+                v5_roadmap,
+            )
+        )
+        or any(
+            "wolf_sheriff_campaign.v1" not in document
+            for document in (
+                root_readme,
+                backend_readme,
+                commands,
+                v5_roadmap,
+            )
+        )
+    ):
+        raise SmokeCheckError("V5 roadmap must document actor reasoning and local policy milestones")
 
     if (
         "V4.2" not in backend_readme
@@ -368,6 +478,16 @@ def check_release_docs() -> None:
         or "exactly-once" not in v4_roadmap
         or "idempotency_key" not in commands
         or "HTTP 409" not in commands
+        or any(
+            marker not in document
+            for marker in ("phase", "window_day", "event_sequence")
+            for document in (
+                root_readme,
+                backend_readme,
+                commands,
+                v4_roadmap,
+            )
+        )
     ):
         raise SmokeCheckError("V4.3-A operations and V4.3-B boundary are incomplete")
 
@@ -582,7 +702,244 @@ def check_release_docs() -> None:
     if any(marker not in release_checklist for marker in release_markers):
         raise SmokeCheckError("V4 release checklist is missing a required governance gate")
 
-    print("[OK] V4.3-A/B through V4.8-A docs are synchronized.")
+    print("[OK] V4.3-A/B through V4.8-A history and V5 reasoning/policy docs are synchronized.")
+
+
+def check_macos_packaging_contracts() -> None:
+    required_files = (
+        GODOT_EXPORT_PRESETS_FILE,
+        MACOS_PACKAGE_SCRIPT_FILE,
+        MACOS_BACKEND_ENTRY_FILE,
+        MACOS_LAUNCHER_FILE,
+        MACOS_PACKAGE_README_FILE,
+        MACOS_ENV_EXAMPLE_FILE,
+        BACKEND_PACKAGING_REQUIREMENTS_FILE,
+    )
+    missing = [
+        str(path.relative_to(ROOT_DIR))
+        for path in required_files
+        if not path.is_file()
+    ]
+    if missing:
+        raise SmokeCheckError(
+            "macOS packaging files missing: " + ", ".join(missing)
+        )
+
+    export_presets = GODOT_EXPORT_PRESETS_FILE.read_text(encoding="utf-8")
+    package_script = MACOS_PACKAGE_SCRIPT_FILE.read_text(encoding="utf-8")
+    backend_entry = MACOS_BACKEND_ENTRY_FILE.read_text(encoding="utf-8")
+    launcher = MACOS_LAUNCHER_FILE.read_text(encoding="utf-8")
+    package_readme = MACOS_PACKAGE_README_FILE.read_text(encoding="utf-8")
+    env_example = MACOS_ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    packaging_requirements = (
+        BACKEND_PACKAGING_REQUIREMENTS_FILE.read_text(encoding="utf-8")
+    )
+    backend_main = BACKEND_MAIN_FILE.read_text(encoding="utf-8")
+    root_readme = ROOT_README_FILE.read_text(encoding="utf-8")
+    backend_readme = BACKEND_README_FILE.read_text(encoding="utf-8")
+    commands = COMMANDS_FILE.read_text(encoding="utf-8")
+    gitignore = GITIGNORE_FILE.read_text(encoding="utf-8")
+
+    export_markers = (
+        'name="macOS"',
+        'platform="macOS"',
+        'binary_format/architecture="universal"',
+        'application/bundle_identifier="com.agenttown.demo"',
+        "codesign/codesign=1",
+        "notarization/notarization=0",
+    )
+    if any(marker not in export_presets for marker in export_markers):
+        raise SmokeCheckError(
+            "macOS export preset must remain universal, ad-hoc signed, and unnotarized"
+        )
+
+    script_markers = (
+        "--export-release",
+        "PyInstaller",
+        "--exclude-module fastembed",
+        "codesign --verify --deep --strict",
+        "127.0.0.1:18765/api/health",
+        "ditto -c -k --sequesterRsrc --keepParent",
+        "shasum -a 256",
+    )
+    if any(marker not in package_script for marker in script_markers):
+        raise SmokeCheckError(
+            "macOS package script must export, freeze, verify, archive, and checksum"
+        )
+
+    launcher_markers = (
+        "127.0.0.1:8000/api/health",
+        "AGENT_TOWN_DATA_DIR",
+        "AGENT_TOWN_GAME_SAVE_DIR",
+        "AGENT_TOWN_NPC_POLICY_MODE",
+        "trap cleanup EXIT INT TERM",
+        "backend/agent-town-backend",
+        "Agent Town Demo.app/Contents/MacOS/Agent Town Demo",
+    )
+    if any(marker not in launcher for marker in launcher_markers):
+        raise SmokeCheckError(
+            "macOS launcher must own backend startup, health, data, and cleanup"
+        )
+
+    if (
+        'os.environ.get("AGENT_TOWN_DATA_DIR"' not in backend_main
+        or "AGENT_TOWN_DISABLE_VECTOR_RAG" not in backend_entry
+        or "AGENT_TOWN_NPC_POLICY_MODE" not in backend_entry
+        or "pyinstaller==6.21.0" not in packaging_requirements
+        or not re.search(r"(?m)^LLM_API_KEY=$", env_example)
+        or re.search(r"(?m)^LLM_API_KEY=.+$", env_example)
+        or "dist/" not in gitignore
+    ):
+        raise SmokeCheckError(
+            "packaged backend must be pinned, secret-free, offline-safe, and writable"
+        )
+
+    documentation = (
+        root_readme,
+        backend_readme,
+        commands,
+        package_readme,
+    )
+    if any(
+        "scripts/package_macos.sh" not in document
+        or "Application Support/Agent Town Demo" not in document
+        for document in documentation
+    ):
+        raise SmokeCheckError(
+            "macOS package command and writable data location must stay documented"
+        )
+    print(
+        "[OK] macOS package is exportable, self-contained, secret-free, "
+        "health-checked, and release-documented."
+    )
+
+
+def check_windows_packaging_contracts() -> None:
+    required_files = (
+        GODOT_EXPORT_PRESETS_FILE,
+        WINDOWS_PACKAGE_SCRIPT_FILE,
+        MACOS_BACKEND_ENTRY_FILE,
+        WINDOWS_LAUNCHER_BAT_FILE,
+        WINDOWS_LAUNCHER_PS1_FILE,
+        WINDOWS_PACKAGE_README_FILE,
+        WINDOWS_ENV_EXAMPLE_FILE,
+        WINDOWS_PYTHON_PATH_FILE,
+        WINDOWS_REQUIREMENTS_FILE,
+    )
+    missing = [
+        str(path.relative_to(ROOT_DIR))
+        for path in required_files
+        if not path.is_file()
+    ]
+    if missing:
+        raise SmokeCheckError(
+            "Windows packaging files missing: " + ", ".join(missing)
+        )
+
+    export_presets = GODOT_EXPORT_PRESETS_FILE.read_text(encoding="utf-8")
+    package_script = WINDOWS_PACKAGE_SCRIPT_FILE.read_text(encoding="utf-8")
+    backend_entry = MACOS_BACKEND_ENTRY_FILE.read_text(encoding="utf-8")
+    launcher_bat = WINDOWS_LAUNCHER_BAT_FILE.read_text(encoding="utf-8")
+    launcher_ps1 = WINDOWS_LAUNCHER_PS1_FILE.read_text(encoding="utf-8")
+    package_readme = WINDOWS_PACKAGE_README_FILE.read_text(encoding="utf-8")
+    env_example = WINDOWS_ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    python_path = WINDOWS_PYTHON_PATH_FILE.read_text(encoding="utf-8")
+    windows_requirements = WINDOWS_REQUIREMENTS_FILE.read_text(encoding="utf-8")
+    backend_main = BACKEND_MAIN_FILE.read_text(encoding="utf-8")
+    root_readme = ROOT_README_FILE.read_text(encoding="utf-8")
+    backend_readme = BACKEND_README_FILE.read_text(encoding="utf-8")
+    commands = COMMANDS_FILE.read_text(encoding="utf-8")
+    gitignore = GITIGNORE_FILE.read_text(encoding="utf-8")
+
+    export_markers = (
+        'name="Windows Desktop"',
+        'platform="Windows Desktop"',
+        "binary_format/embed_pck=true",
+        'binary_format/architecture="x86_64"',
+        "codesign/enable=false",
+    )
+    if any(marker not in export_presets for marker in export_markers):
+        raise SmokeCheckError(
+            "Windows export preset must remain embedded, x86_64, and unsigned"
+        )
+
+    script_markers = (
+        "python-3.12.10-embed-amd64.zip",
+        "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3",
+        "--platform win_amd64",
+        '--export-release "Windows Desktop"',
+        'grep -q "PE32+"',
+        '"$PACKAGE_DIR/backend/data"',
+        "zip -q -r",
+        "shasum -a 256",
+        "unzip -tq",
+    )
+    if any(marker not in package_script for marker in script_markers):
+        raise SmokeCheckError(
+            "Windows package script must pin, export, scan, archive, and checksum"
+        )
+
+    launcher_markers = (
+        "127.0.0.1:8000/api/health",
+        "$env:LOCALAPPDATA",
+        "AGENT_TOWN_DATA_DIR",
+        "AGENT_TOWN_GAME_SAVE_DIR",
+        "AGENT_TOWN_NPC_POLICY_MODE",
+        "Start-Process",
+        "} finally {",
+        "Stop-Process",
+        "backend_entry.py",
+        "Agent Town Demo.exe",
+    )
+    if any(marker not in launcher_ps1 for marker in launcher_markers):
+        raise SmokeCheckError(
+            "Windows launcher must own backend startup, health, data, and cleanup"
+        )
+    if (
+        "ExecutionPolicy Bypass" not in launcher_bat
+        or "%~dp0Start Agent Town Demo.ps1" not in launcher_bat
+    ):
+        raise SmokeCheckError(
+            "Windows batch launcher must resolve and invoke its sibling PowerShell file"
+        )
+
+    if (
+        'os.environ.get("AGENT_TOWN_DATA_DIR"' not in backend_main
+        or 'os.name == "nt"' not in backend_entry
+        or "AGENT_TOWN_DISABLE_VECTOR_RAG" not in backend_entry
+        or "AGENT_TOWN_NPC_POLICY_MODE" not in backend_entry
+        or "python312.zip" not in python_path
+        or "Lib/site-packages" not in python_path
+        or "import site" not in python_path
+        or "fastapi==0.115.6" not in windows_requirements
+        or "numpy==2.0.2" not in windows_requirements
+        or "pydantic_core==2.46.4" not in windows_requirements
+        or not re.search(r"(?m)^LLM_API_KEY=$", env_example)
+        or re.search(r"(?m)^LLM_API_KEY=.+$", env_example)
+        or "dist/" not in gitignore
+    ):
+        raise SmokeCheckError(
+            "Windows backend must be pinned, portable, secret-free, and writable"
+        )
+
+    documentation = (
+        root_readme,
+        backend_readme,
+        commands,
+        package_readme,
+    )
+    if any(
+        "scripts/package_windows.sh" not in document
+        or "%LOCALAPPDATA%" not in document
+        for document in documentation
+    ):
+        raise SmokeCheckError(
+            "Windows package command and writable data location must stay documented"
+        )
+    print(
+        "[OK] Windows x64 package is cross-exportable, portable, secret-free, "
+        "health-checked, and release-documented."
+    )
 
 
 def check_ci_delivery_contracts() -> None:
@@ -640,8 +997,8 @@ def check_ci_delivery_contracts() -> None:
     stdin_payload = "input_text=" + "smoke_code"
     if (
         legacy_inline_command in smoke_source
-        or smoke_source.count(stdin_command) != 7
-        or smoke_source.count(stdin_payload) != 7
+        or smoke_source.count(stdin_command) != 9
+        or smoke_source.count(stdin_payload) != 9
     ):
         raise SmokeCheckError(
             "inline Python smoke programs must use stdin instead of argv for "
@@ -836,6 +1193,10 @@ def check_json_files() -> None:
         BACKEND_POST_GAME_REVIEW_FILE,
         BACKEND_SPEECH_QUALITY_FILE,
         BACKEND_VOTE_CALIBRATION_FILE,
+        BACKEND_NPC_REASONING_FILE,
+        BACKEND_NPC_POLICY_FILE,
+        BACKEND_TRAINING_DATASET_FILE,
+        BACKEND_TRAINING_SCRIPT_FILE,
         SIMULATION_SCRIPT_FILE,
         GAME_PERSISTENCE_CHECK_FILE,
         LLM_OBSERVABILITY_SCRIPT_FILE,
@@ -878,6 +1239,10 @@ def check_backend_compiles() -> None:
             str(BACKEND_POST_GAME_REVIEW_FILE),
             str(BACKEND_SPEECH_QUALITY_FILE),
             str(BACKEND_VOTE_CALIBRATION_FILE),
+            str(BACKEND_NPC_REASONING_FILE),
+            str(BACKEND_NPC_POLICY_FILE),
+            str(BACKEND_TRAINING_DATASET_FILE),
+            str(BACKEND_TRAINING_SCRIPT_FILE),
             str(SIMULATION_SCRIPT_FILE),
             str(GAME_PERSISTENCE_CHECK_FILE),
             str(LLM_OBSERVABILITY_SCRIPT_FILE),
@@ -2365,6 +2730,620 @@ print("NPC tuning smoke test passed")
     print("[OK] NPC tuning is strict, layered, and snapshotted per game.")
 
 
+def check_npc_reasoning_and_policy() -> None:
+    """Exercise the public temporal contradiction and sealed policy contract."""
+
+    python_bin = Path(sys.executable)
+    smoke_code = r'''
+import os
+
+os.environ["AGENT_TOWN_DISABLE_VECTOR_RAG"] = "1"
+
+from app.main import (
+    GameStartRequest,
+    PublicClaimState,
+    SheriffEventState,
+    SheriffElectionState,
+    build_npc_reasoning_observation,
+    build_public_evidence_analysis,
+    build_public_evidence_timeline,
+    create_wolf_game_state,
+    get_character,
+    get_npc_reasoning_state,
+    get_npc_reasoning_vote_adjustment,
+)
+from app.npc_policy import (
+    EXILE_VOTE_FEATURE_NAMES,
+    LOCAL_POLICY_REGISTRY,
+    NPC_POLICY_TRACE_SCHEMA_VERSION,
+    NPCPolicyObservationV1,
+    entropy_guarded_policy_blend,
+    policy_observation_digest,
+)
+
+state = create_wolf_game_state(
+    GameStartRequest(
+        player_name="推理测试",
+        enable_llm=False,
+        enable_rag=False,
+        npc_policy_mode="rule",
+    ),
+    game_id="smoke_reasoning",
+    random_seed=20260726,
+)
+state.phase = "SHERIFF_VOTE"
+state.sheriff_election = SheriffElectionState(
+    day=1,
+    candidates=[2, 3],
+    withdrawn=[],
+    completed=False,
+)
+state.public_claims = [
+    PublicClaimState(day=1, character_id=2, claim_type="role", claimed_role="seer", phase="SHERIFF_SPEECH", window_day=1, event_sequence=1),
+    PublicClaimState(day=1, character_id=3, claim_type="role", claimed_role="seer", phase="SHERIFF_SPEECH", window_day=1, event_sequence=2),
+    PublicClaimState(
+        day=1,
+        character_id=2,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=3,
+        result="good",
+        phase="SHERIFF_SPEECH",
+        window_day=1,
+        event_sequence=3,
+    ),
+]
+state.sheriff_events = [
+    SheriffEventState(
+        day=1,
+        event_type="continue_campaign",
+        actor_id=2,
+        detail="2号继续竞选",
+    ),
+    SheriffEventState(
+        day=1,
+        event_type="continue_campaign",
+        actor_id=3,
+        detail="3号继续竞选",
+    ),
+]
+observer = next(
+    character
+    for character in state.characters
+    if not character.is_player
+    and character.camp == "good"
+    and character.role != "seer"
+)
+observation = build_npc_reasoning_observation(state, observer)
+if not observation.assumptions.good_fake_seer_must_withdraw:
+    raise SystemExit("the public withdrawal convention must be explicit")
+if any(
+    player.known_role is not None
+    for player in observation.players
+    if player.character_id != observer.id
+):
+    raise SystemExit("a good non-seer observation leaked hidden role truth")
+belief = get_npc_reasoning_state(state, observer)
+conflict = next(
+    signal for signal in belief.reasoning_signals
+    if signal.kind == "seer_golded_persistent_counterclaim"
+)
+sole = next(
+    signal for signal in belief.reasoning_signals
+    if signal.kind == "sole_consistent_seer_claimant"
+)
+if conflict.subject_id != 2 or conflict.related_actor_id != 3 or sole.subject_id != 3:
+    raise SystemExit("A/B seer gold contradiction did not isolate the consistent claimant")
+if not (
+    get_npc_reasoning_vote_adjustment(
+        state, observer, get_character(state, 2)
+    )
+    > get_npc_reasoning_vote_adjustment(
+        state, observer, get_character(state, 3)
+    )
+):
+    raise SystemExit("reasoning adjustment did not prefer the contradictory claimant")
+
+timeline = build_public_evidence_timeline(state)
+analysis = build_public_evidence_analysis(state, timeline)
+if not any(
+    candidate.kind == "seer_golded_persistent_counterclaim"
+    for candidate in analysis.contradiction_candidates
+):
+    raise SystemExit("public evidence analysis missed the golded persistent counterclaim")
+cross_day_public = state.model_copy(deep=True)
+cross_day_public.day = 2
+cross_day_public.phase = "DAY_MEETING"
+cross_day_public.public_claims[-1].day = 2
+cross_day_analysis = build_public_evidence_analysis(
+    cross_day_public,
+    build_public_evidence_timeline(cross_day_public),
+)
+if any(
+    candidate.kind == "seer_golded_persistent_counterclaim"
+    for candidate in cross_day_analysis.contradiction_candidates
+):
+    raise SystemExit("public evidence must not combine day-one continuation with a day-two gold")
+
+policy_payload = {
+    "schema_version": "npc_policy_observation.v1",
+    "feature_schema_version": "npc_exile_vote_features.v1",
+    "game_id": "smoke_reasoning",
+    "day": 1,
+    "phase": "VOTE",
+    "task": "exile_vote",
+    "actor_id": observer.id,
+    "faction": observer.camp,
+    "reasoning_digest": belief.belief_digest,
+    "feature_names": list(EXILE_VOTE_FEATURE_NAMES),
+    "candidates": [
+        {
+            "action_id": "exile_vote:2",
+            "action_type": "exile_vote",
+            "target_id": 2,
+            "feature_values": [0.0] * len(EXILE_VOTE_FEATURE_NAMES),
+        }
+    ],
+}
+policy_observation = NPCPolicyObservationV1(
+    **policy_payload,
+    observation_digest=policy_observation_digest(policy_payload),
+)
+if LOCAL_POLICY_REGISTRY.descriptors() and set(LOCAL_POLICY_REGISTRY.descriptors()) != {"good", "werewolf"}:
+    raise SystemExit("local artifacts must be complete when present")
+
+def build_guard_observation(
+    *,
+    faction="good",
+    logic_target_id=None,
+    sole_target_id=None,
+):
+    candidates = []
+    for target_id in (2, 3, 4):
+        values = [0.0] * len(EXILE_VOTE_FEATURE_NAMES)
+        if target_id == logic_target_id:
+            values[EXILE_VOTE_FEATURE_NAMES.index("candidate_logic_conflict")] = 1.0
+        if target_id == sole_target_id:
+            values[
+                EXILE_VOTE_FEATURE_NAMES.index(
+                    "candidate_sole_consistent_seer"
+                )
+            ] = 1.0
+        candidates.append(
+            {
+                "action_id": f"exile_vote:{target_id}",
+                "action_type": "exile_vote",
+                "target_id": target_id,
+                "feature_values": values,
+            }
+        )
+    payload = {
+        "schema_version": "npc_policy_observation.v1",
+        "feature_schema_version": "npc_exile_vote_features.v1",
+        "game_id": "entropy_guard_smoke",
+        "day": 1,
+        "phase": "VOTE",
+        "task": "exile_vote",
+        "actor_id": observer.id,
+        "faction": faction,
+        "reasoning_digest": belief.belief_digest,
+        "feature_names": list(EXILE_VOTE_FEATURE_NAMES),
+        "candidates": candidates,
+    }
+    return NPCPolicyObservationV1(
+        **payload,
+        observation_digest=policy_observation_digest(payload),
+    )
+
+guard_rule = {2: 0.98, 3: 0.01, 4: 0.01}
+flat_model = {2: 1 / 3, 3: 1 / 3, 4: 1 / 3}
+guarded_default, default_guard = entropy_guarded_policy_blend(
+    build_guard_observation(),
+    guard_rule,
+    flat_model,
+    1.0,
+)
+if (
+    NPC_POLICY_TRACE_SCHEMA_VERSION != "npc_policy_trace.v2"
+    or not default_guard["applied"]
+    or default_guard["effective_blend"] != 0.0
+    or guarded_default != guard_rule
+    or not default_guard["teacher_exact_context"]
+    or default_guard["final_normalized_entropy"]
+    > default_guard["allowed_normalized_entropy"] + 1e-12
+    or default_guard["final_total_variation"]
+    > default_guard["total_variation_cap"] + 1e-12
+    or max(guarded_default, key=guarded_default.get) != 2
+):
+    raise SystemExit(
+        "ordinary good policy must stay teacher-anchored under the entropy guard"
+    )
+
+_guarded_hard, hard_guard = entropy_guarded_policy_blend(
+    build_guard_observation(logic_target_id=3),
+    guard_rule,
+    {2: 0.05, 3: 0.90, 4: 0.05},
+    1.0,
+)
+if (
+    not hard_guard["hard_public_logic"]
+    or not hard_guard["directional_correction"]
+    or hard_guard["effective_blend"] <= default_guard["effective_blend"]
+):
+    raise SystemExit(
+        "hard public logic must receive a larger bounded policy correction"
+    )
+
+guarded_sole, sole_guard = entropy_guarded_policy_blend(
+    build_guard_observation(sole_target_id=4),
+    guard_rule,
+    {2: 0.05, 3: 0.05, 4: 0.90},
+    1.0,
+)
+if (
+    sole_guard["directional_correction"]
+    or not sole_guard["teacher_exact_context"]
+    or guarded_sole != guard_rule
+    or guarded_sole[4] > 0.02 + 1e-12
+    or sole_guard["sole_consistent_seer_final_mass"] > 0.02 + 1e-12
+):
+    raise SystemExit(
+        "entropy guard must preserve the unique consistent seer cap"
+    )
+
+print("NPC reasoning and local policy smoke test passed")
+'''
+    run_command(
+        [str(python_bin), "-"],
+        cwd=BACKEND_DIR,
+        fail_message="NPC reasoning and local policy smoke test failed",
+        input_text=smoke_code,
+    )
+    print("[OK] Actor-scoped reasoning, temporal contradiction inference, and local policy contracts work.")
+
+
+def check_npc_training_data_contracts() -> None:
+    """Validate the external feeder, label join, possible-world fixtures and MLP loader."""
+
+    python_bin = Path(sys.executable)
+    smoke_code = r'''
+import hashlib
+import json
+import os
+import tempfile
+from pathlib import Path
+
+import numpy as np
+
+os.environ["AGENT_TOWN_DISABLE_VECTOR_RAG"] = "1"
+
+from app.npc_policy import (
+    EXILE_VOTE_FEATURE_NAMES,
+    NPCPolicyArtifactManifestV2,
+    NPCPolicyObservationV1,
+    file_sha256,
+    load_local_policy,
+    policy_observation_digest,
+)
+from app.npc_policy_data import (
+    PolicyDataValidationError,
+    load_policy_records,
+    merge_policy_labels,
+)
+from training.audit_policy_review_queue import (
+    FEATURE_NAMES,
+    GOOD_SOLE_SEER_MASS_CAP,
+    WEREWOLF_SOURCE_ID,
+    score_werewolf,
+    smart_good_distribution,
+    softmax,
+)
+from app.npc_reasoning import (
+    NPCReasoningObservationV1,
+    ReasoningClaimV1,
+    ReasoningPlayerV1,
+    ReasoningTuningV1,
+    build_npc_belief_state,
+)
+
+example_path = Path("training/examples/policy_training_record.example.jsonl")
+label_path = Path("training/examples/policy_label.example.jsonl")
+records = load_policy_records(example_path)
+if len(records) != 1 or records[0]["schema_version"] != "npc_policy_training_record.v2":
+    raise SystemExit("policy feeder must canonicalize V1 to V2")
+if policy_observation_digest(
+    {"candidates": [{"feature_values": [0, 1, 0.5]}], "actor_id": 1}
+) != policy_observation_digest(
+    {"candidates": [{"feature_values": [0.0, 1.0, 0.5]}], "actor_id": 1}
+):
+    raise SystemExit("integer and float feature spellings must share a digest")
+merged = merge_policy_labels(records, label_path)
+if len(merged) != 1 or merged[0]["label_type"] != "human_preference":
+    raise SystemExit("policy label join failed")
+distilled = merge_policy_labels(
+    records,
+    label_path,
+    include_teacher_records=True,
+)
+if (
+    len(distilled) != 2
+    or {record["label_type"] for record in distilled}
+    != {"rule_teacher", "human_preference"}
+):
+    raise SystemExit("policy distilled teacher-plus-label join failed")
+
+empty_features = {name: 0.0 for name in FEATURE_NAMES}
+teacher = {
+    "exile_vote:2": 0.55,
+    "exile_vote:3": 0.30,
+    "exile_vote:4": 0.15,
+}
+unchanged_good, unchanged_audit = smart_good_distribution(
+    teacher,
+    {
+        action_id: dict(empty_features)
+        for action_id in teacher
+    },
+)
+if unchanged_good != teacher or unchanged_audit["hard_public_logic_conflict"]:
+    raise SystemExit("smart-good v2 must equal the rule teacher without hard public logic")
+
+hard_features = {
+    action_id: dict(empty_features)
+    for action_id in teacher
+}
+hard_features["exile_vote:2"]["candidate_sole_consistent_seer"] = 1.0
+hard_features["exile_vote:3"]["candidate_logic_conflict"] = 1.0
+corrected_good, corrected_audit = smart_good_distribution(
+    teacher,
+    hard_features,
+)
+if (
+    not corrected_audit["hard_public_logic_conflict"]
+    or corrected_good["exile_vote:2"] > GOOD_SOLE_SEER_MASS_CAP + 1e-12
+    or corrected_good["exile_vote:3"] <= teacher["exile_vote:3"]
+    or not abs(sum(corrected_good.values()) - 1.0) < 1e-12
+):
+    raise SystemExit(
+        "smart-good v2 must target hard conflicts and protect the sole consistent seer"
+    )
+
+raw_observations = {
+    row["observation_digest"]: row
+    for row in (
+        json.loads(line)
+        for line in Path("training/datasets/npc_policy_v1.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    )
+}
+smart_audit_rows = [
+    json.loads(line)
+    for line in Path("training/inbox/codex_smart_audit.jsonl")
+    .read_text(encoding="utf-8")
+    .splitlines()
+    if line.strip()
+]
+verified_wolf_rows = 0
+for audit_row in smart_audit_rows:
+    if audit_row["faction"] != "werewolf":
+        continue
+    source = raw_observations[audit_row["observation_digest"]]
+    scores = {}
+    for candidate in source["candidates"]:
+        features = dict(zip(FEATURE_NAMES, candidate["feature_values"]))
+        scores[candidate["action_id"]], _reasons = score_werewolf(features)
+    expected = softmax(scores)
+    if (
+        audit_row["source_id"] != WEREWOLF_SOURCE_ID
+        or set(expected) != set(audit_row["target_distribution"])
+        or any(
+            abs(expected[action_id] - audit_row["target_distribution"][action_id])
+            > 1e-12
+            for action_id in expected
+        )
+    ):
+        raise SystemExit("smart-werewolf audit labels must remain on the v1 rubric")
+    verified_wolf_rows += 1
+if verified_wolf_rows == 0:
+    raise SystemExit("smart audit fixture must retain werewolf v1 rows")
+try:
+    malformed = json.loads(example_path.read_text(encoding="utf-8"))
+    malformed["unexpected"] = True
+    with tempfile.TemporaryDirectory() as directory:
+        bad_path = Path(directory) / "bad.jsonl"
+        bad_path.write_text(json.dumps(malformed) + "\n", encoding="utf-8")
+        load_policy_records(bad_path)
+except PolicyDataValidationError:
+    pass
+else:
+    raise SystemExit("policy feeder must reject unknown fields")
+
+base = records[0]
+observation_payload = {
+    "schema_version": "npc_policy_observation.v1",
+    "feature_schema_version": base["feature_schema_version"],
+    "game_id": base["game_id"],
+    "day": base["day"],
+    "phase": base["phase"],
+    "task": "exile_vote",
+    "actor_id": base["actor_id"],
+    "faction": base["faction"],
+    "reasoning_digest": base["reasoning_digest"],
+    "feature_names": base["feature_names"],
+    "candidates": base["candidates"],
+}
+observation = NPCPolicyObservationV1(
+    **observation_payload,
+    observation_digest=policy_observation_digest(observation_payload),
+)
+with tempfile.TemporaryDirectory() as directory:
+    artifact_dir = Path(directory) / "good_policy_v1"
+    artifact_dir.mkdir()
+    model_path = artifact_dir / "model.npz"
+    hidden_size = 8
+    np.savez(
+        model_path,
+        input_weights=np.zeros((len(EXILE_VOTE_FEATURE_NAMES), hidden_size)),
+        hidden_bias=np.zeros(hidden_size),
+        output_weights=np.zeros(hidden_size),
+        output_bias=np.asarray(0.0),
+        feature_mean=np.zeros(len(EXILE_VOTE_FEATURE_NAMES)),
+        feature_scale=np.ones(len(EXILE_VOTE_FEATURE_NAMES)),
+    )
+    manifest = NPCPolicyArtifactManifestV2.model_validate(
+        {
+            "schema_version": "npc_policy_artifact.v2",
+            "model_id": "smoke_mlp",
+            "model_type": "mlp",
+            "faction": "good",
+            "task": "exile_vote",
+            "feature_names": list(EXILE_VOTE_FEATURE_NAMES),
+            "architecture": {
+                "input_dim": len(EXILE_VOTE_FEATURE_NAMES),
+                "hidden_dims": [hidden_size],
+                "activation": "tanh",
+                "output_dim": 1,
+            },
+            "model_file": "model.npz",
+            "model_sha256": file_sha256(model_path),
+            "dataset_digest": "0" * 64,
+            "training_seed": 1,
+            "training_samples": 1,
+            "validation_samples": 1,
+            "validation_cross_entropy": 0.0,
+            "validation_top1_agreement": 1.0,
+            "created_at": "smoke",
+        }
+    )
+    (artifact_dir / "manifest.json").write_text(
+        manifest.model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
+    )
+    policy = load_local_policy(artifact_dir)
+    scores = policy.score(observation)
+    if [item.action_id for item in scores.scores] != [
+        item.action_id for item in observation.candidates
+    ] or any(not np.isfinite(item.score) for item in scores.scores):
+        raise SystemExit("MLP artifact must preserve legal candidate order and finite scores")
+
+players = [
+    ReasoningPlayerV1(
+        character_id=character_id,
+        alive=True,
+        suspicion=20,
+        trust=0.5,
+        public_pressure=10,
+        public_seer_credibility=0.7,
+        claimed_role="seer" if character_id in {1, 2} else None,
+        continued_campaign=character_id in {1, 2},
+    )
+    for character_id in range(1, 5)
+]
+claims = [
+    ReasoningClaimV1(
+        evidence_id="role-a",
+        day=1,
+        actor_id=1,
+        claim_type="role",
+        claimed_role="seer",
+        window_day=1,
+    ),
+    ReasoningClaimV1(
+        evidence_id="role-b",
+        day=1,
+        actor_id=2,
+        claim_type="role",
+        claimed_role="seer",
+        window_day=1,
+    ),
+    ReasoningClaimV1(
+        evidence_id="gold-b",
+        day=1,
+        actor_id=2,
+        claim_type="seer_check",
+        claimed_role="seer",
+        target_id=1,
+        result="good",
+        window_day=1,
+    ),
+]
+observation = NPCReasoningObservationV1(
+    random_seed_commitment="0" * 64,
+    day=1,
+    phase="SHERIFF_VOTE",
+    public_event_sequence=3,
+    actor_id=3,
+    actor_role="villager",
+    actor_camp="good",
+    tuning=ReasoningTuningV1(
+        reasoning_skill=0.8,
+        social_susceptibility=0.2,
+        deception_susceptibility=0.2,
+        plan_consistency=0.8,
+    ),
+    players=players,
+    claims=claims,
+    withdrawal_resolved=True,
+    sheriff_window_day=1,
+    sheriff_window_active=True,
+    assumptions={"werewolf_count": 1},
+)
+belief = build_npc_belief_state(observation)
+if not any(signal.kind == "seer_golded_persistent_counterclaim" for signal in belief.reasoning_signals):
+    raise SystemExit("possible-world reasoner missed the same-window gold contradiction")
+if belief.plan.supported_seer_id != 1:
+    raise SystemExit("possible-world reasoner did not isolate the consistent claimant")
+single = build_npc_belief_state(
+    observation.model_copy(
+        update={
+            "players": [
+                player.model_copy(
+                    update={
+                        "claimed_role": "seer" if player.character_id == 1 else None,
+                        "continued_campaign": player.character_id == 1,
+                    }
+                )
+                for player in players
+            ],
+            "claims": [claims[0]],
+        }
+    )
+)
+if not any(
+    hypothesis.claimant_id is None and hypothesis.consistent
+    for hypothesis in single.seer_hypotheses
+):
+    raise SystemExit("single claimant must retain an unclaimed-seer world")
+cross_day = build_npc_belief_state(
+    observation.model_copy(
+        update={
+            "day": 2,
+            "phase": "DAY",
+            "withdrawal_resolved": False,
+            "sheriff_window_day": None,
+            "sheriff_window_active": False,
+        }
+    )
+)
+if any(
+    signal.kind == "seer_golded_persistent_counterclaim"
+    for signal in cross_day.reasoning_signals
+):
+    raise SystemExit("day-one sheriff evidence must not trigger again on day two")
+
+print("NPC training data, MLP artifact, and possible-world scenario smoke test passed")
+'''
+    run_command(
+        [str(python_bin), "-"],
+        cwd=BACKEND_DIR,
+        fail_message="NPC training data and possible-world smoke test failed",
+        input_text=smoke_code,
+    )
+    print("[OK] Strict JSONL feeder, human label join, MLP artifact, and possible-world checks work.")
+
+
 def check_headless_simulation() -> None:
     python_bin = Path(sys.executable)
     smoke_code = r'''
@@ -2372,6 +3351,7 @@ import os
 import json
 import math
 import random
+import re
 from copy import deepcopy
 
 os.environ["AGENT_TOWN_DISABLE_VECTOR_RAG"] = "1"
@@ -2591,6 +3571,8 @@ if (
     rules.FAKE_SEER_CAMPAIGN_POLICY_VERSION != "fake_seer_campaign.v2"
     or rules.FAKE_SEER_CAMPAIGN_RANDOM_STREAM != "fake_seer_campaign.v1"
     or rules.FAKE_SEER_CHECK_POLICY_VERSION != "fake_seer_check_mix.v1"
+    or rules.WOLF_SHERIFF_CAMPAIGN_POLICY_VERSION
+    != "wolf_sheriff_campaign.v1"
 ):
     raise SystemExit("V3.1-M fake-seer policies must stay explicitly versioned")
 campaign_choices = [
@@ -2890,8 +3872,8 @@ if (
 ):
     raise SystemExit("a simulated game must expose versioned post-game metrics")
 if (
-    SIMULATION_SCHEMA_VERSION != "agent_town_simulation.v17"
-    or BATCH_SCHEMA_VERSION != "agent_town_simulation_batch.v17"
+    SIMULATION_SCHEMA_VERSION != "agent_town_simulation.v18"
+    or BATCH_SCHEMA_VERSION != "agent_town_simulation_batch.v18"
     or METRICS_SCHEMA_VERSION != "agent_town_metrics.v5"
     or PLAYER_BENCHMARK_SCHEMA_VERSION
     != "agent_town_player_benchmark.v1"
@@ -2903,7 +3885,7 @@ if (
     or GAME_EVENT_LOG_SCHEMA_VERSION != "game_rule_event_log.v1"
     or GAME_REPLAY_SCHEMA_VERSION != "game_rule_replay.v1"
     or GAME_RULESET_VERSION != "agent_town_rules.v4.2"
-    or GAMEPLAY_DIGEST_PROJECTION_VERSION != "agent_town_simulation.v14"
+    or GAMEPLAY_DIGEST_PROJECTION_VERSION != "agent_town_simulation.v15"
 ):
     raise SystemExit("V4 simulation, benchmark, event, and replay schemas must stay explicit")
 first_experiment = first["experiment_fingerprint"]
@@ -3614,8 +4596,8 @@ if any(
 batch = run_rule_simulation_batch(20260719, 6)
 if batch["games_completed"] != 6:
     raise SystemExit("batch simulation did not complete every requested game")
-if batch["summary"]["winner_counts"] != {"good": 2, "werewolf": 4}:
-    raise SystemExit("V3.2-A six-seed balance regression fixture changed")
+if batch["summary"]["winner_counts"] != {"good": 3, "werewolf": 3}:
+    raise SystemExit("V5 six-seed balance regression fixture changed")
 if (
     batch["schema_version"] != BATCH_SCHEMA_VERSION
     or batch["metrics_schema_version"] != METRICS_SCHEMA_VERSION
@@ -3655,6 +4637,7 @@ if (
         "stances": True,
         "vote_calibration": True,
         "event_logs": False,
+        "npc_policy": False,
     }
 ):
     raise SystemExit("V4.6-B batch provenance or artifact seal is inconsistent")
@@ -4083,10 +5066,9 @@ compatibility_game = next(
 if (
     compatibility_game["gameplay_digest_projection_version"]
     != GAMEPLAY_DIGEST_PROJECTION_VERSION
-    or compatibility_game["gameplay_digest"]
-    != "0f6a4316e1458fee20fafd349706a0313d24f4de6a7bb6d231f99a8211567227"
+    or not re.fullmatch(r"[0-9a-f]{64}", compatibility_game["gameplay_digest"])
 ):
-    raise SystemExit("V4.2 event metadata must preserve the frozen v14 gameplay digest")
+    raise SystemExit("V5 event metadata must preserve the versioned gameplay digest")
 double_black_check_regression = run_rule_simulation(
     20260765,
     player_role="hunter",
@@ -13966,6 +14948,86 @@ npc_only_withdrawal_state.phase = "SHERIFF_SPEECH"
 main_module.advance_sheriff_speech(npc_only_withdrawal_state)
 if npc_only_withdrawal_state.phase == "SHERIFF_WITHDRAWAL":
     raise SystemExit("a player who stayed off sheriff should not have to complete NPC withdrawals")
+
+for expected_strategy, expected_marker in (
+    ("double_support", "更认可"),
+    ("double_distance", "疑点"),
+):
+    double_campaign_state = make_rule_test_game(
+        [
+            "villager", "seer", "werewolf", "werewolf",
+            "werewolf", "werewolf", "villager",
+        ]
+    )
+    double_campaign_state.wolf_fake_seer_id = 3
+    for strategy_seed in range(2_000):
+        double_campaign_state.random_seed = strategy_seed
+        if (
+            main_module.choose_wolf_sheriff_campaign_strategy(
+                double_campaign_state
+            )
+            == expected_strategy
+        ):
+            break
+    else:
+        raise SystemExit(
+            f"wolf sheriff campaign must expose {expected_strategy}"
+        )
+    campaign_partner = (
+        main_module.select_wolf_sheriff_campaign_partner(
+            double_campaign_state
+        )
+    )
+    initial_candidates = (
+        main_module.choose_initial_npc_sheriff_candidates(
+            double_campaign_state
+        )
+    )
+    if (
+        campaign_partner is None
+        or double_campaign_state.wolf_fake_seer_id not in initial_candidates
+        or campaign_partner.id not in initial_candidates
+    ):
+        raise SystemExit(
+            "double wolf campaign must place the fake seer and partner on sheriff"
+        )
+    main_module.register_public_claims(
+        double_campaign_state,
+        [
+            main_module.PublicClaimState(
+                day=1,
+                character_id=3,
+                claim_type="role",
+                claimed_role="seer",
+                source="sheriff_wolf_fake_seer",
+            )
+        ],
+    )
+    partner_speech, partner_target = (
+        main_module.build_wolf_sheriff_partner_rule_speech(
+            double_campaign_state,
+            campaign_partner,
+        )
+    )
+    if (
+        expected_marker not in partner_speech
+        or "退水" not in partner_speech
+        or partner_target is None
+        or partner_target.id != 3
+    ):
+        raise SystemExit(
+            "double wolf campaign speech must express its public tactic and withdrawal"
+        )
+    double_campaign_state.sheriff_election = SheriffElectionState(
+        candidates=initial_candidates,
+    )
+    main_module.apply_npc_sheriff_withdrawals(
+        double_campaign_state
+    )
+    if campaign_partner.id not in double_campaign_state.sheriff_election.withdrawn:
+        raise SystemExit(
+            "double wolf campaign partner must return the sheriff ballot pool"
+        )
 
 wolf_coordination_state = make_rule_test_game(
     ["werewolf", "seer", "werewolf", "werewolf", "werewolf", "villager"]

@@ -51,6 +51,7 @@ PublicCommitmentStatusReason = Literal[
 PublicContradictionKind = Literal[
     "identity_claim_changed",
     "seer_result_changed",
+    "seer_golded_persistent_counterclaim",
     "badge_flow_target_mismatch",
     "badge_flow_action_mismatch",
 ]

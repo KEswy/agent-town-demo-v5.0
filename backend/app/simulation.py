@@ -53,6 +53,13 @@ from .npc_decision import (
     PUBLIC_SPEECH_PLAN_SCHEMA_VERSION,
     SpeechContinuityReason,
 )
+from .npc_policy import (
+    NPC_POLICY_ENTROPY_GUARD_VERSION,
+    NPC_POLICY_FEATURE_SCHEMA_VERSION,
+    NPC_POLICY_OBSERVATION_SCHEMA_VERSION,
+    NPC_POLICY_TRACE_SCHEMA_VERSION,
+    capture_policy_traces,
+)
 from .stance import (
     STANCE_SCHEMA_VERSION,
     StanceTraceRecorder,
@@ -72,9 +79,9 @@ from .vote_calibration import (
 )
 
 
-SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v17"
-BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v17"
-GAMEPLAY_DIGEST_PROJECTION_VERSION = "agent_town_simulation.v14"
+SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v18"
+BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v18"
+GAMEPLAY_DIGEST_PROJECTION_VERSION = "agent_town_simulation.v15"
 PLAYER_BENCHMARK_SCHEMA_VERSION = "agent_town_player_benchmark.v1"
 PLAYER_DECISION_TRACE_SCHEMA_VERSION = "player_decision_trace.v1"
 PLAYER_POLICY_VERSION = PLAYER_STRATEGY_POLICY_VERSIONS[
@@ -83,6 +90,7 @@ PLAYER_POLICY_VERSION = PLAYER_STRATEGY_POLICY_VERSIONS[
 SPEECH_CONTINUITY_METRICS_VERSION = "speech_continuity_metrics.v1"
 DEFAULT_MAX_DAYS = 20
 DEFAULT_MAX_STEPS = 5_000
+NPC_POLICY_MODES = ("rule", "shadow", "local")
 
 
 class SimulationError(RuntimeError):
@@ -100,6 +108,8 @@ def run_rule_simulation(
     capture_stances: bool = True,
     capture_vote_calibration: bool = True,
     capture_event_log: bool = True,
+    capture_npc_policy: bool = False,
+    npc_policy_mode: str = "rule",
 ) -> dict[str, object]:
     """Run one complete rule-only game and return a normalized result."""
 
@@ -117,6 +127,7 @@ def run_rule_simulation(
         player_role=player_role,
         enable_llm=False,
         enable_rag=False,
+        npc_policy_mode=npc_policy_mode,
     )
     game_state = rules.create_wolf_game_state(
         request,
@@ -130,6 +141,7 @@ def run_rule_simulation(
         rules.GAME_STORE[game_id] = game_state
 
     phase_trace: list[str] = []
+    npc_policy_trace: list[dict[str, object]] = []
     belief_recorder = BeliefTraceRecorder() if capture_beliefs else None
     stance_recorder = (
         StanceTraceRecorder()
@@ -159,7 +171,11 @@ def run_rule_simulation(
                 if vote_calibration_recorder is not None
                 else None
             )
-            _advance_one_phase(game_state, normalized_strategy)
+            if capture_npc_policy:
+                with capture_policy_traces(npc_policy_trace.append):
+                    _advance_one_phase(game_state, normalized_strategy)
+            else:
+                _advance_one_phase(game_state, normalized_strategy)
             if vote_calibration_recorder is not None:
                 vote_calibration_recorder.capture_after_vote(
                     game_state,
@@ -203,6 +219,9 @@ def run_rule_simulation(
             event_log=event_log,
             replay_report=replay_report,
             capture_event_log=capture_event_log,
+            npc_policy_trace=(
+                npc_policy_trace if capture_npc_policy else None
+            ),
         )
     finally:
         with rules.GAME_LOCK:
@@ -221,6 +240,8 @@ def run_rule_simulation_batch(
     capture_stances: bool = True,
     capture_vote_calibration: bool = True,
     capture_event_logs: bool = False,
+    capture_npc_policy: bool = False,
+    npc_policy_mode: str = "rule",
 ) -> dict[str, object]:
     """Run sequential seeds and return deterministic per-game and aggregate data."""
 
@@ -244,6 +265,8 @@ def run_rule_simulation_batch(
             capture_stances=capture_stances,
             capture_vote_calibration=capture_vote_calibration,
             capture_event_log=capture_event_logs,
+            capture_npc_policy=capture_npc_policy,
+            npc_policy_mode=npc_policy_mode,
         )
         for offset in range(games)
     ]
@@ -284,6 +307,11 @@ def run_rule_simulation_batch(
         ),
         "vote_calibration_schema_version": VOTE_CALIBRATION_SCHEMA_VERSION,
         "vote_calibration_summary_version": VOTE_CALIBRATION_SUMMARY_VERSION,
+        "npc_policy_trace_schema_version": NPC_POLICY_TRACE_SCHEMA_VERSION,
+        "npc_policy_observation_schema_version": (
+            NPC_POLICY_OBSERVATION_SCHEMA_VERSION
+        ),
+        "npc_policy_feature_schema_version": NPC_POLICY_FEATURE_SCHEMA_VERSION,
         "player_strategy_schema_version": PLAYER_STRATEGY_SCHEMA_VERSION,
         "player_strategy_context_schema_version": (
             PLAYER_STRATEGY_CONTEXT_SCHEMA_VERSION
@@ -302,11 +330,14 @@ def run_rule_simulation_batch(
         "player_policy_version": PLAYER_STRATEGY_POLICY_VERSIONS[
             normalized_strategy
         ],
+        "npc_policy_mode": npc_policy_mode,
+        "npc_policy_descriptors": results[0]["npc_policy_descriptors"],
         "trace_capture": {
             "beliefs": capture_beliefs,
             "stances": capture_beliefs and capture_stances,
             "vote_calibration": capture_vote_calibration,
             "event_logs": capture_event_logs,
+            "npc_policy": capture_npc_policy,
         },
         "start_seed": start_seed,
         "games_requested": games,
@@ -1098,6 +1129,7 @@ def build_simulation_result(
     event_log: Optional[rules.GameRuleEventLogV1] = None,
     replay_report: Optional[rules.GameRuleReplayV1] = None,
     capture_event_log: bool = True,
+    npc_policy_trace: Optional[list[dict[str, object]]] = None,
 ) -> dict[str, object]:
     """Build a timestamp- and game-id-free result suitable for exact replay."""
 
@@ -1143,6 +1175,8 @@ def build_simulation_result(
         "event_log_schema_version": rules.GAME_EVENT_LOG_SCHEMA_VERSION,
         "replay_schema_version": rules.GAME_REPLAY_SCHEMA_VERSION,
         "ruleset_version": rules.GAME_RULESET_VERSION,
+        "npc_policy_mode": game_state.npc_policy_mode,
+        "npc_policy_descriptors": game_state.npc_policy_descriptors,
         "seed": game_state.random_seed,
         "winner": game_state.winner,
         "winner_reason": game_state.winner_reason,
@@ -1210,8 +1244,20 @@ def build_simulation_result(
         EXPERIMENT_FINGERPRINT_SCHEMA_VERSION
     )
     result["experiment_fingerprint"] = (
-        _build_rule_only_experiment_fingerprint(normalized_strategy)
+        _build_rule_only_experiment_fingerprint(
+            normalized_strategy,
+            npc_policy_mode=game_state.npc_policy_mode,
+            npc_policy_descriptors=game_state.npc_policy_descriptors,
+        )
     )
+    result["npc_policy_trace_schema_version"] = NPC_POLICY_TRACE_SCHEMA_VERSION
+    result["npc_policy_observation_schema_version"] = (
+        NPC_POLICY_OBSERVATION_SCHEMA_VERSION
+    )
+    result["npc_policy_feature_schema_version"] = (
+        NPC_POLICY_FEATURE_SCHEMA_VERSION
+    )
+    result["npc_policy_trace"] = npc_policy_trace
     result["npc_speech_quality_schema_version"] = (
         NPC_SPEECH_QUALITY_SCHEMA_VERSION
     )
@@ -1252,6 +1298,9 @@ def build_simulation_result(
 
 def _build_rule_only_experiment_fingerprint(
     player_strategy: str,
+    *,
+    npc_policy_mode: str = "rule",
+    npc_policy_descriptors: Optional[dict[str, dict[str, str]]] = None,
 ) -> dict[str, object]:
     """Seal active rule inputs and inactive LLM provenance as digests only."""
 
@@ -1324,6 +1373,21 @@ def _build_rule_only_experiment_fingerprint(
         ),
         "player_policy": (
             build_player_strategy_descriptor(player_strategy),
+            True,
+        ),
+        "npc_policy": (
+            {
+                "mode": npc_policy_mode,
+                "descriptors": npc_policy_descriptors or {},
+                "observation_schema_version": (
+                    NPC_POLICY_OBSERVATION_SCHEMA_VERSION
+                ),
+                "feature_schema_version": NPC_POLICY_FEATURE_SCHEMA_VERSION,
+                "trace_schema_version": NPC_POLICY_TRACE_SCHEMA_VERSION,
+                "entropy_guard_version": (
+                    NPC_POLICY_ENTROPY_GUARD_VERSION
+                ),
+            },
             True,
         ),
         "prompt_catalog": (

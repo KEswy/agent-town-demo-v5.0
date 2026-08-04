@@ -4,6 +4,7 @@ import math
 import os
 import random
 import re
+from copy import deepcopy
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -92,6 +93,35 @@ from .npc_decision import (
     validate_public_speech_plan,
     upgrade_public_speech_decision_v1,
 )
+from .npc_policy import (
+    EXILE_VOTE_FEATURE_NAMES,
+    LOCAL_POLICY_REGISTRY,
+    NPC_POLICY_FEATURE_SCHEMA_VERSION,
+    NPC_POLICY_OBSERVATION_SCHEMA_VERSION,
+    NPCPolicyCandidateV1,
+    NPCPolicyObservationV1,
+    emit_policy_trace,
+    entropy_guarded_policy_blend,
+    file_sha256,
+    policy_mode_from_environment,
+    policy_blend_from_environment,
+    policy_temperature_from_environment,
+    policy_observation_digest,
+)
+from .npc_reasoning import (
+    NPC_BELIEF_STATE_SCHEMA_VERSION,
+    NPC_REASONING_OBSERVATION_SCHEMA_VERSION,
+    NPC_REASONING_POLICY_VERSION,
+    NPCBeliefStateV1,
+    NPCReasoningObservationV1,
+    ROLE_NAMES,
+    ReasoningClaimV1,
+    ReasoningAssumptionsV1,
+    ReasoningPlayerV1,
+    ReasoningTuningV1,
+    build_npc_belief_state,
+    get_role_belief,
+)
 from .npc_tuning import (
     NPC_TUNING_SCHEMA_VERSION,
     NPCTuningConfigV1,
@@ -149,7 +179,10 @@ async def app_lifespan(_app: FastAPI):
 
 app = FastAPI(title="Agent Town Backend", lifespan=app_lifespan)
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+DEFAULT_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+DATA_DIR = Path(
+    os.environ.get("AGENT_TOWN_DATA_DIR", str(DEFAULT_DATA_DIR))
+).expanduser()
 MEMORY_FILE = DATA_DIR / "memory.json"
 GAME_SAVE_DIR = Path(
     os.environ.get("AGENT_TOWN_GAME_SAVE_DIR", str(DATA_DIR / "games"))
@@ -229,8 +262,16 @@ FAKE_SEER_CAMPAIGN_POLICY_VERSION = "fake_seer_campaign.v2"
 # Keep the paired-cohort random stream stable while policy thresholds evolve.
 FAKE_SEER_CAMPAIGN_RANDOM_STREAM = "fake_seer_campaign.v1"
 FAKE_SEER_CHECK_POLICY_VERSION = "fake_seer_check_mix.v1"
+WOLF_SHERIFF_CAMPAIGN_POLICY_VERSION = "wolf_sheriff_campaign.v1"
 PUBLIC_CONTESTED_EXILE_MAX_SHARE = 0.75
 PUBLIC_SPEECH_LLM_MAX_CHARS = 120
+SHERIFF_WINDOW_PHASES = {
+    "SHERIFF_SPEECH",
+    "SHERIFF_RUNOFF_SPEECH",
+    "SHERIFF_WITHDRAWAL",
+    "SHERIFF_RUNOFF_VOTE",
+    "SHERIFF_VOTE",
+}
 
 NPC_PERSONALITIES = {
     "梅西": {
@@ -443,6 +484,9 @@ class GameStartRequest(BaseModel):
     enable_llm: bool = False
     enable_llm_validation: bool = True
     enable_rag: bool = False
+    npc_policy_mode: Literal["rule", "shadow", "local"] = Field(
+        default_factory=policy_mode_from_environment
+    )
 
 
 class CharacterState(BaseModel):
@@ -673,6 +717,12 @@ class PublicClaimState(BaseModel):
     target_id: Optional[int] = None
     result: str = ""
     source: str = "speech"
+    # V5.4 public provenance.  Older V4 snapshots leave these at their
+    # defaults; such records remain displayable but are not used to infer
+    # sheriff-window chronology.
+    phase: str = ""
+    window_day: Optional[int] = Field(default=None, ge=1)
+    event_sequence: int = Field(default=0, ge=0)
 
 
 class BadgeFlowState(BaseModel):
@@ -858,6 +908,11 @@ class WolfGameState(BaseModel):
     winner_reason: str = ""
     llm_enabled: bool = False
     rag_enabled: bool = False
+    npc_policy_mode: Literal["rule", "shadow", "local"] = "rule"
+    npc_policy_descriptors: dict[str, dict[str, str]] = Field(
+        default_factory=dict
+    )
+    npc_reasoning_states: list[NPCBeliefStateV1] = Field(default_factory=list)
     created_at: str
     updated_at: str
 
@@ -871,6 +926,7 @@ class GameStartResponse(BaseModel):
     message: str
     llm_enabled: bool = False
     llm_validation_enabled: bool = False
+    npc_policy_mode: Literal["rule", "shadow", "local"] = "rule"
 
 
 class GameStateResponse(BaseModel):
@@ -888,6 +944,7 @@ class GameStateResponse(BaseModel):
     winner: Optional[str] = None
     llm_enabled: bool = False
     llm_validation_enabled: bool = False
+    npc_policy_mode: Literal["rule", "shadow", "local"] = "rule"
 
 
 def is_llm_validation_enabled(game_state: WolfGameState) -> bool:
@@ -1281,6 +1338,14 @@ GAME_SAVE_STORE = GameSaveStore(GAME_SAVE_DIR)
 GAME_SAVE_LOCK = Lock()
 GAME_PERSISTENCE_ACTIVE = False
 PERSISTED_GAME_IDS: set[str] = set()
+# Ephemeral verified reasoner cache.  It is keyed by the complete lawful
+# observation digest and never serialized or trusted as rule state.  Keeping
+# this separate from ``WolfGameState.npc_reasoning_states`` avoids recomputing
+# the full possible-world set once per candidate while still rejecting edits
+# to the persisted convenience snapshot.
+NPC_REASONING_RUNTIME_CACHE: dict[
+    tuple[str, int, bool, str], NPCBeliefStateV1
+] = {}
 LAST_GAME_RECOVERY_REPORT = GameRecoveryReportV1(
     scanned_count=0,
     restored_count=0,
@@ -1522,8 +1587,79 @@ def transactional_rule_endpoint(endpoint):
     return wrapped
 
 
-def build_game_config_fingerprint() -> str:
-    """Fingerprint rule-relevant live config without secrets or runtime state."""
+def build_game_config_fingerprint(
+    *,
+    npc_policy_mode: Literal["rule", "shadow", "local"] = "rule",
+    npc_policy_descriptors: Optional[dict[str, dict[str, str]]] = None,
+) -> str:
+    """Fingerprint config sealed by one game.
+
+    Rule-mode saves deliberately do not depend on whatever artifacts happen to
+    be installed later.  Shadow/local saves use the exact descriptor captured
+    at creation, so retraining another game cannot invalidate an unfinished
+    rule-mode save and replacing a local artifact is detected on restore.
+    """
+
+    llm_status = LLM_CLIENT.status()
+    return canonical_payload_digest(
+        {
+            "fingerprint_version": RECOVERY_CONFIG_FINGERPRINT_VERSION,
+            "ruleset_version": GAME_RULESET_VERSION,
+            "roles": DEFAULT_WOLF_ROLES,
+            "npc_names": NPC_NAMES,
+            "npc_personalities": NPC_PERSONALITIES,
+            "npc_profiles": {
+                name: profile.model_dump(mode="json")
+                for name, profile in sorted(NPC_PROFILES.items())
+            },
+            "knowledge_base": [
+                item.model_dump(mode="json") for item in KNOWLEDGE_BASE
+            ],
+            "npc_tuning": (
+                NPC_TUNING_CONFIG.model_dump(mode="json")
+                if NPC_TUNING_CONFIG is not None
+                else None
+            ),
+            "npc_policy": {
+                "mode": npc_policy_mode,
+                "temperature": (
+                    policy_temperature_from_environment()
+                    if npc_policy_mode in {"shadow", "local"}
+                    else 1.0
+                ),
+                "blend": (
+                    policy_blend_from_environment()
+                    if npc_policy_mode in {"shadow", "local"}
+                    else 0.0
+                ),
+                "observation_schema_version": (
+                    NPC_POLICY_OBSERVATION_SCHEMA_VERSION
+                ),
+                "feature_schema_version": NPC_POLICY_FEATURE_SCHEMA_VERSION,
+                "reasoning_observation_schema_version": (
+                    NPC_REASONING_OBSERVATION_SCHEMA_VERSION
+                ),
+                "belief_schema_version": NPC_BELIEF_STATE_SCHEMA_VERSION,
+                "reasoning_policy_version": NPC_REASONING_POLICY_VERSION,
+                "sealed_artifacts": (
+                    npc_policy_descriptors
+                    if npc_policy_mode in {"shadow", "local"}
+                    else {}
+                ),
+            },
+            "llm": {
+                "enabled": bool(llm_status.get("enabled", False)),
+                "configured": bool(llm_status.get("configured", False)),
+                "provider": str(llm_status.get("provider", "")),
+                "model": str(llm_status.get("model", "")),
+                "base_url": str(llm_status.get("base_url", "")),
+            },
+        }
+    )
+
+
+def build_legacy_v4_game_config_fingerprint() -> str:
+    """Reproduce the V4 fingerprint for one explicit save migration path."""
 
     llm_status = LLM_CLIENT.status()
     return canonical_payload_digest(
@@ -1657,6 +1793,7 @@ def start_wolf_game(request: GameStartRequest) -> GameStartResponse:
         ),
         llm_enabled=game_state.llm_enabled,
         llm_validation_enabled=is_llm_validation_enabled(game_state),
+        npc_policy_mode=game_state.npc_policy_mode,
     )
 
 
@@ -1713,6 +1850,20 @@ def create_wolf_game_state(
         role_pool.insert(0, requested_player_role)
     now = datetime.now(timezone.utc).isoformat()
     characters = build_characters(request.player_name, role_pool)
+    policy_descriptors = (
+        LOCAL_POLICY_REGISTRY.descriptors()
+        if request.npc_policy_mode in {"shadow", "local"}
+        else {}
+    )
+    if request.npc_policy_mode in {"shadow", "local"} and set(
+        policy_descriptors
+    ) != {"good", "werewolf"}:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "本地NPC策略模式需要完整且摘要有效的好人、狼人模型产物。"
+            ),
+        )
     game_state = WolfGameState(
         game_id=game_id,
         random_seed=selected_seed,
@@ -1728,7 +1879,12 @@ def create_wolf_game_state(
             and bool(LLM_CLIENT.status()["configured"])
         ),
         rag_enabled=request.enable_rag,
-        recovery_config_fingerprint=build_game_config_fingerprint(),
+        npc_policy_mode=request.npc_policy_mode,
+        npc_policy_descriptors=policy_descriptors,
+        recovery_config_fingerprint=build_game_config_fingerprint(
+            npc_policy_mode=request.npc_policy_mode,
+            npc_policy_descriptors=policy_descriptors,
+        ),
         created_at=now,
         updated_at=now,
     )
@@ -1751,6 +1907,13 @@ def create_wolf_game_state(
                 game_state.llm_enabled and request.enable_llm_validation
             ),
             "effective_rag_enabled": game_state.rag_enabled,
+            "effective_npc_policy_mode": game_state.npc_policy_mode,
+            "effective_npc_policy_temperature": (
+                policy_temperature_from_environment()
+                if game_state.npc_policy_mode in {"shadow", "local"}
+                else 1.0
+            ),
+            "npc_policy_descriptors": game_state.npc_policy_descriptors,
             "recovery_config_fingerprint": (
                 game_state.recovery_config_fingerprint
             ),
@@ -1817,28 +1980,77 @@ def load_validated_saved_game(
     if canonical_payload_digest(envelope.state) != envelope.snapshot_digest:
         raise ValueError("saved snapshot digest does not match the envelope")
 
+    legacy_v4_state = "npc_policy_mode" not in envelope.state
     game_state = WolfGameState.model_validate(envelope.state)
     normalized_state = game_state.model_dump(mode="json")
     normalized_snapshot_digest = canonical_payload_digest(normalized_state)
     if normalized_snapshot_digest != envelope.snapshot_digest:
-        # Early game_save.v1 snapshots predate the durable idempotency ledger.
-        # Accept that one exact omission only after the original snapshot digest
-        # has been verified above.  Comparing the complete normalized payload
-        # with just this field removed keeps unknown fields, other missing
-        # defaults, coercions, and malformed command_results fail-closed.
-        legacy_state = dict(normalized_state)
-        legacy_command_results = legacy_state.pop("command_results", None)
+        # V4 and early V5 snapshots predate one or more derived/optional
+        # fields.  Accept only the explicitly versioned omissions after the
+        # original snapshot digest has been verified above.  Unknown fields,
+        # coercions, malformed ledgers, and any other omission stay fail-closed.
+        legacy_state = deepcopy(normalized_state)
+        omitted_compat_fields = {
+            field
+            for field in (
+                "command_results",
+                "npc_policy_mode",
+                "npc_policy_descriptors",
+                "npc_reasoning_states",
+            )
+            if field not in envelope.state
+        }
+        for field in omitted_compat_fields:
+            legacy_state.pop(field, None)
+        if legacy_v4_state:
+            original_claims = envelope.state.get("public_claims")
+            normalized_claims = legacy_state.get("public_claims")
+            if isinstance(original_claims, list) and isinstance(
+                normalized_claims, list
+            ):
+                provenance_defaults = {
+                    "phase": "",
+                    "window_day": None,
+                    "event_sequence": 0,
+                }
+                for original_claim, normalized_claim in zip(
+                    original_claims,
+                    normalized_claims,
+                ):
+                    if not isinstance(original_claim, dict) or not isinstance(
+                        normalized_claim, dict
+                    ):
+                        continue
+                    for field, default_value in provenance_defaults.items():
+                        if (
+                            field not in original_claim
+                            and normalized_claim.get(field) == default_value
+                        ):
+                            normalized_claim.pop(field, None)
+        legacy_command_results = (
+            normalized_state.get("command_results")
+            if "command_results" in omitted_compat_fields
+            else None
+        )
         has_keyed_event = any(
             event.command.get("idempotency_key") is not None
             for event in game_state.rule_events
         )
         if (
-            "command_results" in envelope.state
-            or legacy_command_results != {}
-            or has_keyed_event
-            or legacy_state != envelope.state
+            "command_results" in omitted_compat_fields
+            and legacy_command_results != {}
+        ) or (
+            "command_results" not in omitted_compat_fields
+            and "command_results" not in envelope.state
+        ) or (
+            "command_results" in omitted_compat_fields
+            and has_keyed_event
+        ) or (
+            legacy_state != envelope.state
         ):
-            raise ValueError("saved snapshot does not round-trip through its schema")
+            raise ValueError(
+                "saved snapshot does not round-trip through its schema"
+            )
         envelope = GameSaveEnvelopeV1.model_validate(
             {
                 **envelope.model_dump(mode="json"),
@@ -1864,9 +2076,23 @@ def load_validated_saved_game(
         raise ValueError("saved config fingerprint is not creation-sealed")
     if any(event.game_id != game_id for event in game_state.rule_events):
         raise ValueError("saved event chain contains another game_id")
+    if game_state.npc_policy_mode == "rule":
+        # Keep the no-argument hook compatible with V4 persistence tests and
+        # operator drift checks that monkeypatch the live rule fingerprint.
+        expected_config_fingerprint = build_game_config_fingerprint()
+    else:
+        expected_config_fingerprint = build_game_config_fingerprint(
+            npc_policy_mode=game_state.npc_policy_mode,
+            npc_policy_descriptors=game_state.npc_policy_descriptors,
+        )
+    legacy_config_accepted = (
+        legacy_v4_state
+        and envelope.config_fingerprint == build_legacy_v4_game_config_fingerprint()
+    )
     if (
         game_state.phase != "GAME_OVER"
-        and envelope.config_fingerprint != build_game_config_fingerprint()
+        and not legacy_config_accepted
+        and envelope.config_fingerprint != expected_config_fingerprint
     ):
         raise ValueError("save config fingerprint does not match current config")
     last_event = game_state.rule_events[-1]
@@ -2089,6 +2315,7 @@ def get_wolf_game_state(game_id: str) -> GameStateResponse:
         winner=game_state.winner,
         llm_enabled=game_state.llm_enabled,
         llm_validation_enabled=is_llm_validation_enabled(game_state),
+        npc_policy_mode=game_state.npc_policy_mode,
     )
 
 
@@ -2580,21 +2807,54 @@ def choose_npc_hunter_target(
     ]
     if not candidates:
         return None
-    highest_suspicion = max(
-        hunter.suspicion.get(str(character.id), 0)
-        for character in candidates
-    )
-    likely_targets = [
-        character
-        for character in candidates
-        if hunter.suspicion.get(str(character.id), 0) == highest_suspicion
-    ]
-    return deterministic_game_choice(
-        game_state,
-        sorted(likely_targets, key=lambda character: character.id),
-        f"npc_hunter_target:{hunter.id}:{game_state.pending_hunter_trigger}",
-    ).id
+    if game_state.npc_policy_mode != "local":
+        highest_suspicion = max(
+            hunter.suspicion.get(str(character.id), 0)
+            for character in candidates
+        )
+        likely_targets = [
+            character
+            for character in candidates
+            if hunter.suspicion.get(str(character.id), 0) == highest_suspicion
+        ]
+        return deterministic_game_choice(
+            game_state,
+            sorted(likely_targets, key=lambda character: character.id),
+            f"npc_hunter_target:{hunter.id}:{game_state.pending_hunter_trigger}",
+        ).id
+    try:
+        belief_state = get_npc_reasoning_state(
+            game_state,
+            hunter,
+            enumerate_possible_worlds=True,
+        )
+        beliefs = {
+            belief.target_id: belief for belief in belief_state.role_beliefs
+        }
+    except (LookupError, ValueError):
+        beliefs = {}
 
+    def hunter_target_value(character: CharacterState) -> tuple[float, float, int]:
+        belief = beliefs.get(character.id)
+        wolf_probability = (
+            belief.werewolf_probability
+            if belief is not None
+            else hunter.suspicion.get(str(character.id), 0) / 100.0
+        )
+        return (
+            wolf_probability * 100.0
+            + get_public_suspicion_score(game_state, character.id) * 0.2,
+            deterministic_strategy_roll(
+                game_state,
+                hunter,
+                f"hunter_reasoning_target:{character.id}:{game_state.pending_hunter_trigger}",
+            ),
+            -character.id,
+        )
+
+    # The reasoner supplies a fallible wolf marginal; the rule layer still
+    # owns the legal target list and deterministic tie break.
+    return max(candidates, key=hunter_target_value).id
 
 def clear_pending_hunter(game_state: WolfGameState) -> None:
     game_state.pending_hunter_id = None
@@ -3097,6 +3357,15 @@ def choose_initial_npc_sheriff_candidates(game_state: WolfGameState) -> list[int
         fake_seer = get_character(game_state, game_state.wolf_fake_seer_id)
         if fake_seer.alive and fake_seer.id not in candidates:
             candidates.append(fake_seer.id)
+
+    wolf_campaign_strategy = choose_wolf_sheriff_campaign_strategy(game_state)
+    wolf_campaign_partner = select_wolf_sheriff_campaign_partner(game_state)
+    if (
+        wolf_campaign_strategy in {"double_support", "double_distance"}
+        and wolf_campaign_partner is not None
+        and wolf_campaign_partner.id not in candidates
+    ):
+        candidates.append(wolf_campaign_partner.id)
 
     extra_candidates = sorted(
         [
@@ -3785,7 +4054,12 @@ def generate_npc_sheriff_speech(
             allow_pending_seer_claim=True,
             planned_claims=planned_claims,
         )
+    partner_rule_speech, partner_target = (
+        build_wolf_sheriff_partner_rule_speech(game_state, speaker)
+    )
     target = get_primary_claim_target(game_state, planned_claims)
+    if target is None:
+        target = partner_target
     if target is None:
         target = choose_speech_focus_target(game_state, speaker)
     rag_context = build_public_decision_rag_context(game_state, speaker, target, "警上竞选")
@@ -3793,6 +4067,8 @@ def generate_npc_sheriff_speech(
     if planned_claims:
         rule_speech = build_public_claim_speech(game_state, speaker, planned_claims)
         rule_speech += "我上警，后续看结果和票型。"
+    elif partner_rule_speech:
+        rule_speech = partner_rule_speech
     elif speaker.role == "werewolf" and speaker.id == game_state.wolf_fake_seer_id:
         rule_speech = "我不跳预言家，先听起跳位把身份和逻辑说清楚。"
     else:
@@ -3885,6 +4161,8 @@ def apply_npc_sheriff_withdrawals(game_state: WolfGameState) -> None:
         for claim in game_state.public_claims
     )
     seer_claimants = set(get_public_role_claimants(game_state, "seer"))
+    wolf_campaign_strategy = choose_wolf_sheriff_campaign_strategy(game_state)
+    wolf_campaign_partner = select_wolf_sheriff_campaign_partner(game_state)
     for candidate_id in list(election.candidates):
         candidate = get_character(game_state, candidate_id)
         if candidate.is_player or candidate.id in election.withdrawn or not candidate.alive:
@@ -3892,6 +4170,14 @@ def apply_npc_sheriff_withdrawals(game_state: WolfGameState) -> None:
         should_withdraw = False
         if candidate.role == "seer":
             should_withdraw = False
+        elif (
+            wolf_campaign_strategy in {"double_support", "double_distance"}
+            and wolf_campaign_partner is not None
+            and candidate.id == wolf_campaign_partner.id
+        ):
+            # The second wolf's public job is to shape the comparison before
+            # returning the ballot pool to the active claimants.
+            should_withdraw = True
         elif candidate.role == "werewolf" and candidate.id == game_state.wolf_fake_seer_id:
             player_claim_is_strong = bool(
                 player.role == "werewolf"
@@ -3919,6 +4205,29 @@ def apply_npc_sheriff_withdrawals(game_state: WolfGameState) -> None:
 
 def complete_sheriff_withdrawal(game_state: WolfGameState) -> None:
     active_candidates = get_active_sheriff_candidates(game_state)
+    continued_actor_ids = {
+        event.actor_id
+        for event in game_state.sheriff_events
+        if event.day == game_state.day
+        and event.event_type == "continue_campaign"
+        and event.actor_id is not None
+    }
+    for character_id in active_candidates:
+        if character_id in continued_actor_ids:
+            continue
+        character = get_character(game_state, character_id)
+        detail = (
+            f"{character.id}号{character.name}在退水窗口关闭后仍继续竞选。"
+        )
+        game_state.public_logs.append(detail)
+        game_state.sheriff_events.append(
+            SheriffEventState(
+                day=game_state.day,
+                event_type="continue_campaign",
+                actor_id=character.id,
+                detail=detail,
+            )
+        )
     if not active_candidates:
         finish_sheriff_election(game_state, None, "所有候选人均已退水，警徽被撕毁。")
     elif len(active_candidates) == 1:
@@ -4236,6 +4545,26 @@ def score_npc_sheriff_candidate(
         voter,
         candidate,
     )
+    # The sealed ``shadow`` mode must be behaviorally identical to the
+    # V4/rule path.  Reasoning is still projected into policy observations and
+    # traces, but it may influence an authoritative ballot only after a local
+    # artifact is explicitly selected.
+    if game_state.npc_policy_mode in {"rule", "shadow", "local"}:
+        reasoning_state = get_npc_reasoning_state(
+            game_state,
+            voter,
+            enumerate_possible_worlds=True,
+        )
+        reasoning_belief = get_role_belief(reasoning_state, candidate.id)
+        score += reasoning_belief.seer_probability * 34.0
+        score -= reasoning_belief.werewolf_probability * 18.0
+        for signal in reasoning_state.reasoning_signals:
+            if signal.subject_id != candidate.id:
+                continue
+            if signal.kind == "sole_consistent_seer_claimant":
+                score += 28.0
+            elif signal.hypothesis_status == "inconsistent":
+                score -= 32.0
     return round(score, 4)
 
 
@@ -7097,6 +7426,16 @@ def choose_npc_night_target(
             for character in candidates
             if character.role != "werewolf"
         ]
+    if action_type == "guard_protect":
+        resources = get_role_resources(game_state, actor.id)
+        last_target_id = resources.get("last_protected_target_id")
+        last_day = int(resources.get("last_protected_day", 0))
+        if last_day == game_state.day - 1 and isinstance(last_target_id, int):
+            candidates = [
+                character
+                for character in candidates
+                if character.id != last_target_id
+            ]
 
     if action_type == "seer_check":
         checked_ids = {
@@ -7145,6 +7484,23 @@ def choose_npc_night_target(
                 )
                 * 12.0
             )
+            reasoning_bonus = 0.0
+            if game_state.npc_policy_mode == "local":
+                try:
+                    belief_state = get_npc_reasoning_state(
+                        game_state,
+                        actor,
+                        enumerate_possible_worlds=True,
+                    )
+                    belief = get_role_belief(belief_state, character.id)
+                    # A seer uses public/private suspicion to choose an
+                    # informative check; the target's hidden role is not read.
+                    reasoning_bonus = (
+                        (0.5 - abs(belief.werewolf_probability - 0.5)) * 18.0
+                        + belief.confidence * 4.0
+                    )
+                except (LookupError, ValueError):
+                    pass
             return (
                 pressure * 0.32
                 + personal_suspicion * 0.38
@@ -7152,6 +7508,7 @@ def choose_npc_night_target(
                 + role_claim_bonus
                 + flow_bonus
                 + individual_read
+                + reasoning_bonus
             )
 
         if candidates:
@@ -7162,6 +7519,71 @@ def choose_npc_night_target(
                     -character.id,
                 ),
             ).id
+
+    if (
+        action_type in {"guard_protect", "werewolf_kill"}
+        and candidates
+        and game_state.npc_policy_mode == "local"
+    ):
+        try:
+            belief_state = get_npc_reasoning_state(
+                game_state,
+                actor,
+                enumerate_possible_worlds=True,
+            )
+            beliefs = {
+                belief.target_id: belief for belief in belief_state.role_beliefs
+            }
+        except (LookupError, ValueError):
+            beliefs = {}
+
+        def night_target_value(character: CharacterState) -> tuple[float, float, int]:
+            belief = beliefs.get(character.id)
+            public_role_claim = get_public_role_claim(game_state, character.id)
+            claimed_seer_bonus = (
+                30.0
+                if public_role_claim is not None
+                and public_role_claim.claimed_role == "seer"
+                else 0.0
+            )
+            public_pressure = get_public_suspicion_score(
+                game_state,
+                character.id,
+            )
+            personal_suspicion = actor.suspicion.get(str(character.id), 0)
+            trust = float(
+                actor.relationships.get(str(character.id), {}).get("trust", 0.5)
+            )
+            if action_type == "werewolf_kill":
+                # Wolves prioritize a publicly valuable/likely seer good
+                # target while retaining their rule-owned teammate mask.
+                score = (
+                    claimed_seer_bonus
+                    + public_pressure * 0.25
+                    + (belief.good_probability if belief is not None else 0.5) * 18.0
+                    + (0.5 - trust) * 8.0
+                )
+            else:
+                # A guard protects the most likely seer/valuable good voice,
+                # never the previous night's target.
+                score = (
+                    claimed_seer_bonus
+                    + (belief.seer_probability if belief is not None else 0.0) * 42.0
+                    + public_pressure * 0.18
+                    + trust * 8.0
+                    + personal_suspicion * 0.08
+                )
+            deterministic_noise = deterministic_strategy_roll(
+                game_state,
+                actor,
+                f"{action_type}_reasoning_target:{character.id}",
+            )
+            return score, deterministic_noise, -character.id
+
+        return max(
+            candidates,
+            key=night_target_value,
+        ).id
 
     if not candidates:
         return None
@@ -7396,14 +7818,39 @@ def choose_npc_witch_action_decision(
     public_vote_focus_id = get_public_contested_exile_dissent_focus_id(
         game_state
     )
+    if game_state.npc_policy_mode != "local":
+        belief_by_id = {}
+    else:
+        try:
+            belief_state = get_npc_reasoning_state(
+                game_state,
+                witch,
+                enumerate_possible_worlds=True,
+            )
+            belief_by_id = {
+                belief.target_id: belief for belief in belief_state.role_beliefs
+            }
+        except (LookupError, ValueError):
+            belief_by_id = {}
+
+    def poison_rank(character: CharacterState) -> tuple[bool, float, float, int]:
+        belief = belief_by_id.get(character.id)
+        wolf_belief = (
+            belief.werewolf_probability
+            if belief is not None
+            else witch.suspicion.get(str(character.id), 0) / 100.0
+        )
+        return (
+            character.id == public_vote_focus_id,
+            wolf_belief,
+            get_public_suspicion_score(game_state, character.id),
+            -character.id,
+        )
+
     ranked_candidates = sorted(
         candidates,
-        key=lambda character: (
-            character.id != public_vote_focus_id,
-            -int(witch.suspicion.get(str(character.id), 0)),
-            -get_public_suspicion_score(game_state, character.id),
-            character.id,
-        ),
+        key=poison_rank,
+        reverse=True,
     )
     own_target = ranked_candidates[0]
     highest_suspicion = int(witch.suspicion.get(str(own_target.id), 0))
@@ -8346,6 +8793,160 @@ def choose_designated_fake_seer(
     return candidate.id if roll < campaign_probability else None
 
 
+def select_wolf_sheriff_campaign_partner(
+    game_state: WolfGameState,
+) -> Optional[CharacterState]:
+    """Choose the non-player wolf best suited to a second sheriff speech."""
+
+    if game_state.wolf_fake_seer_id is None:
+        return None
+    candidates = [
+        character
+        for character in game_state.characters
+        if character.alive
+        and not character.is_player
+        and character.role == "werewolf"
+        and character.id != game_state.wolf_fake_seer_id
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda character: (
+            get_character_strategy_tuning(character).team_coordination * 0.45
+            + get_character_strategy_tuning(character).deception_strength * 0.30
+            + character.personality.get("leadership", 0.5) * 0.15
+            + character.personality.get("logic", 0.5) * 0.10,
+            -character.id,
+        ),
+    )
+
+
+def choose_wolf_sheriff_campaign_strategy(
+    game_state: WolfGameState,
+) -> str:
+    """Choose solo, second-wolf support, or public-distance campaigning.
+
+    The plan is private and deterministic. Only ordinary public actions are
+    emitted: both wolves may sign up, the partner makes a non-role speech, and
+    the partner later withdraws. No hidden strategy label is exposed.
+    """
+
+    if game_state.wolf_fake_seer_id is None:
+        return "no_fake_seer"
+    fake_seer = get_character(game_state, game_state.wolf_fake_seer_id)
+    partner = select_wolf_sheriff_campaign_partner(game_state)
+    if not fake_seer.alive or partner is None:
+        return "solo_fake_seer"
+    npc_wolves = [
+        character
+        for character in game_state.characters
+        if character.alive
+        and not character.is_player
+        and character.role == "werewolf"
+    ]
+    average_coordination = sum(
+        get_character_strategy_tuning(wolf).team_coordination
+        for wolf in npc_wolves
+    ) / len(npc_wolves)
+    double_campaign_probability = max(
+        0.32,
+        min(
+            0.68,
+            0.20
+            + average_coordination * 0.30
+            + get_character_strategy_tuning(partner).deception_strength * 0.14,
+        ),
+    )
+    campaign_roll = (
+        deterministic_seed_value(
+            game_state.random_seed,
+            (
+                f"{WOLF_SHERIFF_CAMPAIGN_POLICY_VERSION}:"
+                f"fake:{fake_seer.id}:partner:{partner.id}:double"
+            ),
+        )
+        % 1_000_000
+    ) / 999_999
+    if campaign_roll >= double_campaign_probability:
+        return "solo_fake_seer"
+    style_roll = (
+        deterministic_seed_value(
+            game_state.random_seed,
+            (
+                f"{WOLF_SHERIFF_CAMPAIGN_POLICY_VERSION}:"
+                f"fake:{fake_seer.id}:partner:{partner.id}:style"
+            ),
+        )
+        % 1_000_000
+    ) / 999_999
+    return "double_support" if style_roll < 0.62 else "double_distance"
+
+
+def build_wolf_sheriff_partner_rule_speech(
+    game_state: WolfGameState,
+    speaker: CharacterState,
+) -> tuple[str, Optional[CharacterState]]:
+    """Render only publicly defensible cooperation for the second wolf."""
+
+    strategy = choose_wolf_sheriff_campaign_strategy(game_state)
+    partner = select_wolf_sheriff_campaign_partner(game_state)
+    if (
+        strategy not in {"double_support", "double_distance"}
+        or partner is None
+        or speaker.id != partner.id
+    ):
+        return "", None
+    fake_seer = get_character(game_state, game_state.wolf_fake_seer_id)
+    fake_claim = get_public_role_claim(game_state, fake_seer.id)
+    other_claimants = [
+        get_character(game_state, character_id)
+        for character_id in get_public_role_claimants(game_state, "seer")
+        if character_id != fake_seer.id
+        and get_character(game_state, character_id).alive
+    ]
+    other_claimant = other_claimants[0] if other_claimants else None
+    if strategy == "double_support":
+        if fake_claim is not None and fake_claim.claimed_role == "seer":
+            return (
+                f"我不跳预言家，目前更认可{format_full_character_name(fake_seer)}"
+                "给出的查验与警徽安排；其他起跳位要正面回应。"
+                "我发言后退水，避免警上无谓分票。",
+                fake_seer,
+            )
+        if other_claimant is not None:
+            return (
+                f"我不跳预言家，先请{format_full_character_name(other_claimant)}"
+                "把查验链和警徽安排讲完整，后置起跳位再逐项对比。"
+                "我发言后退水，不占票仓。",
+                other_claimant,
+            )
+        return (
+            "我不跳预言家，只负责核对后续起跳位的查验链和警徽安排。"
+            "我发言后退水，不占票仓。",
+            None,
+        )
+    if fake_claim is not None and fake_claim.claimed_role == "seer":
+        return (
+            f"我不跳预言家，{format_full_character_name(fake_seer)}"
+            "的查验链仍有疑点，我不会因为同在警上就直接站边。"
+            "我发言后退水，把票型留给真正的预言家对比。",
+            fake_seer,
+        )
+    if other_claimant is not None:
+        return (
+            f"我不跳预言家，目前{format_full_character_name(other_claimant)}"
+            "的信息相对完整，但仍等后置起跳位回应。"
+            "我发言后退水，把票型留给预言家对比。",
+            other_claimant,
+        )
+    return (
+        "我不跳预言家，警上只做独立核对，不提前绑定任何起跳位。"
+        "我发言后退水，把票型留给预言家对比。",
+        None,
+    )
+
+
 def get_public_role_claim(
     game_state: WolfGameState,
     character_id: int,
@@ -8452,7 +9053,38 @@ def register_public_claims(
     claims: list[PublicClaimState],
 ) -> list[PublicClaimState]:
     added_claims = []
+    claim_phase = game_state.phase
+    claim_window_day = (
+        game_state.sheriff_election.day
+        if (
+            game_state.sheriff_election is not None
+            and claim_phase in {"SHERIFF_SPEECH", "SHERIFF_RUNOFF_SPEECH"}
+        )
+        else None
+    )
+    next_event_sequence = (
+        game_state.rule_events[-1].sequence + 1
+        if game_state.rule_events
+        else 1
+    )
     for claim in claims:
+        # Stamp provenance at the rule boundary, after parsing/permission
+        # checks but before the public record is appended.  A supplied
+        # non-zero value is preserved for replay fixtures and migrated saves.
+        if not claim.phase or claim.event_sequence == 0:
+            claim = claim.model_copy(
+                update={
+                    "phase": claim.phase or claim_phase,
+                    "window_day": (
+                        claim.window_day
+                        if claim.window_day is not None
+                        else claim_window_day
+                    ),
+                    "event_sequence": (
+                        claim.event_sequence or next_event_sequence
+                    ),
+                }
+            )
         duplicate = any(
             existing.day == claim.day
             and existing.character_id == claim.character_id
@@ -8886,6 +9518,16 @@ def build_public_evidence_timeline(
         "witch_poison",
         "guard_success",
     }
+    claim_phase_rank = {
+        "SHERIFF_SPEECH": 20,
+        "SHERIFF_RUNOFF_SPEECH": 20,
+        "SHERIFF_WITHDRAWAL": 27,
+        "SHERIFF_RUNOFF_VOTE": 35,
+        "SHERIFF_VOTE": 35,
+        "DAY_MEETING": 50,
+        "FREE_ACTIVITY": 60,
+        "VOTE": 70,
+    }
     for claim_index, claim in enumerate(game_state.public_claims):
         if claim.claim_type not in visible_claim_types:
             continue
@@ -8928,7 +9570,10 @@ def build_public_evidence_timeline(
                 source_family="public_claim",
                 source_index=claim_index,
                 day=claim.day,
-                phase_rank=20,
+                # Legacy records have no phase provenance and retain the old
+                # display rank, but are excluded from sheriff-window
+                # contradiction inference below.
+                phase_rank=claim_phase_rank.get(claim.phase, 20),
                 source_rank=10,
                 category="claim",
                 kind=claim.claim_type,
@@ -9348,6 +9993,108 @@ def build_public_evidence_analysis(
                     "仅标记为待核对。"
                 ),
             )
+
+    # Under this project's public election convention, a non-seer may make a
+    # temporary fake claim but must withdraw after another seer persists. If
+    # two claimants both continue and one publicly gold-checks the other, the
+    # temporal story is internally inconsistent and deserves explicit review.
+    # This is still only a public contradiction candidate, never a role verdict.
+    def is_seer_window_claim(item: object) -> bool:
+        """Require stamped sheriff-speech provenance for window logic."""
+
+        actor_id = getattr(item, "actor_id", None)
+        target_id = getattr(item, "target_id", None)
+        kind = getattr(item, "kind", "")
+        public_result = getattr(item, "public_result", "")
+        day = getattr(item, "day", None)
+        return any(
+            claim.character_id == actor_id
+            and claim.day == day
+            and claim.claim_type == kind
+            and claim.target_id == target_id
+            and (
+                (claim.claimed_role or claim.result) == public_result
+                or claim.result == public_result
+                or claim.claimed_role == public_result
+            )
+            and claim.window_day == day
+            and claim.phase in {"SHERIFF_SPEECH", "SHERIFF_RUNOFF_SPEECH"}
+            for claim in game_state.public_claims
+        )
+
+    latest_role_items: dict[tuple[int, int], object] = {}
+    for item in public_timeline.items:
+        if (
+            item.kind == "role"
+            and item.actor_id is not None
+            and is_seer_window_claim(item)
+        ):
+            latest_role_items[(item.actor_id, item.day)] = item
+    role_claim_items = {
+        key: item
+        for key, item in latest_role_items.items()
+        if item.public_result == "seer"
+    }
+    continued_items_by_actor: dict[int, list[object]] = {}
+    for item in public_timeline.items:
+        if item.kind == "sheriff_campaign_continued" and item.actor_id is not None:
+            continued_items_by_actor.setdefault(item.actor_id, []).append(item)
+    for (claimant_id, target_id), claims in seer_claims_by_actor_target.items():
+        if not any(
+            claim.public_result == "good" and is_seer_window_claim(claim)
+            for claim in claims
+        ):
+            continue
+        same_day_good_claims = [
+            claim
+            for claim in claims
+            if claim.public_result == "good"
+            and is_seer_window_claim(claim)
+        ]
+        if not same_day_good_claims:
+            continue
+        gold_claim = same_day_good_claims[0]
+        claimant_role = role_claim_items.get((claimant_id, gold_claim.day))
+        target_role = role_claim_items.get((target_id, gold_claim.day))
+        claimant_continued = [
+            item
+            for item in continued_items_by_actor.get(claimant_id, [])
+            if item.day == gold_claim.day
+            and item.sequence > gold_claim.sequence
+        ]
+        target_continued = [
+            item
+            for item in continued_items_by_actor.get(target_id, [])
+            if item.day == gold_claim.day
+            and item.sequence > gold_claim.sequence
+        ]
+        if (
+            claimant_role is None
+            or target_role is None
+            or claimant_role.day != gold_claim.day
+            or target_role.day != gold_claim.day
+            or not claimant_continued
+            or not target_continued
+        ):
+            continue
+        later_item = max(
+            [*claimant_continued, *target_continued],
+            key=lambda item: item.sequence,
+        )
+        add_candidate(
+            kind="seer_golded_persistent_counterclaim",
+            earlier_item=gold_claim,
+            later_item=later_item,
+            actor_id=claimant_id,
+            actor_name=gold_claim.actor_name,
+            target_id=target_id,
+            target_name=gold_claim.target_name,
+            display_text=(
+                f"{gold_claim.actor_id}号{gold_claim.actor_name}公开跳预言家并给"
+                f"{gold_claim.target_id}号{gold_claim.target_name}发金水，"
+                "但双方在退水环节都继续竞选；按本局时序约定，这组公开信息需要核对。"
+            ),
+        )
 
     badge_flow_views = build_badge_flow_views(game_state)
     flow_records = []
@@ -12140,6 +12887,61 @@ def build_public_decision_signals(
     return [item[2] for item in ordered[-32:]]
 
 
+def build_npc_reasoning_decision_signals(
+    game_state: WolfGameState,
+    actor: CharacterState,
+) -> list[DecisionSignalV1]:
+    """Expose only public-premise reasoning results to the speech planner."""
+
+    state = get_npc_reasoning_state(game_state, actor)
+    signals = []
+    for item in state.reasoning_signals:
+        if item.kind == "seer_golded_persistent_counterclaim":
+            subject = get_character(game_state, item.subject_id)
+            related = (
+                get_character(game_state, item.related_actor_id)
+                if item.related_actor_id is not None
+                else None
+            )
+            signals.append(
+                DecisionSignalV1(
+                    id=f"signal:{item.signal_id}",
+                    kind="seer_claim_logic_conflict",
+                    category="assessment",
+                    day=game_state.day,
+                    phase="SHERIFF_WITHDRAWAL",
+                    actor_id=subject.id,
+                    target_id=(
+                        related.id if related is not None else None
+                    ),
+                    summary=(
+                        f"{format_full_character_name(subject)}跳预言家并给"
+                        f"{format_full_character_name(related)}金水，双方在退水"
+                        "窗口关闭后仍继续竞选；按唯一预言家和好人挡刀位应"
+                        f"退水的公开约定，{subject.name}的真预言家故事不自洽。"
+                    ),
+                )
+            )
+        elif item.kind == "sole_consistent_seer_claimant":
+            subject = get_character(game_state, item.subject_id)
+            signals.append(
+                DecisionSignalV1(
+                    id=f"signal:{item.signal_id}",
+                    kind="seer_claim_logic_support",
+                    category="assessment",
+                    day=game_state.day,
+                    phase="SHERIFF_WITHDRAWAL",
+                    actor_id=subject.id,
+                    summary=(
+                        f"在当前已结束的退水结果和公开验人关系下，"
+                        f"{format_full_character_name(subject)}是仍然自洽的"
+                        "预言家声明者；这是公开逻辑推断，不是身份翻牌。"
+                    ),
+                )
+            )
+    return signals
+
+
 def get_required_received_seer_check_signals(
     context: NPCDecisionContextV1,
 ) -> list[DecisionSignalV1]:
@@ -12327,7 +13129,10 @@ def build_public_speech_decision_context(
             )
         )
 
-    decision_signals = build_public_decision_signals(game_state)
+    decision_signals = [
+        *build_public_decision_signals(game_state),
+        *build_npc_reasoning_decision_signals(game_state, speaker),
+    ][-40:]
     has_received_check_to_answer = any(
         signal.kind == "seer_check_claim"
         and signal.day == game_state.day
@@ -17571,7 +18376,7 @@ def get_wolf_exile_strategy_adjustment(
     return adjustment
 
 
-def build_npc_exile_vote_probabilities(
+def build_rule_npc_exile_vote_probabilities(
     game_state: WolfGameState,
     voter: CharacterState,
     candidate_ids: Optional[list[int]] = None,
@@ -17696,6 +18501,399 @@ def build_npc_exile_vote_probabilities(
         scores,
         get_character_strategy_tuning(voter),
     )
+
+
+def build_exile_vote_policy_observation(
+    game_state: WolfGameState,
+    voter: CharacterState,
+    candidate_ids: list[int],
+) -> NPCPolicyObservationV1:
+    """Build fixed candidate features without exposing good-side role truth."""
+
+    reasoning_state = get_npc_reasoning_state(
+        game_state,
+        voter,
+        enumerate_possible_worlds=True,
+    )
+    tuning = get_character_strategy_tuning(voter)
+    position = get_latest_public_position(
+        game_state,
+        voter.id,
+        current_day_only=True,
+    )
+    suspected_ids = (
+        set(position.suspected_target_ids) if position is not None else set()
+    )
+    trusted_ids = (
+        set(position.trusted_target_ids) if position is not None else set()
+    )
+    provisional_target_id = (
+        position.provisional_vote_target_id
+        if position is not None
+        else None
+    )
+    nomination_target_id = (
+        game_state.meeting.nomination_target_id
+        if game_state.meeting is not None
+        else None
+    )
+    logic_conflict_ids = {
+        signal.subject_id
+        for signal in reasoning_state.reasoning_signals
+        if signal.hypothesis_status == "inconsistent"
+    }
+    sole_consistent_ids = {
+        signal.subject_id
+        for signal in reasoning_state.reasoning_signals
+        if signal.kind == "sole_consistent_seer_claimant"
+    }
+    known_good_ids: set[int] = set()
+    known_wolf_ids: set[int] = set()
+    wolf_teammate_ids: set[int] = set()
+    if voter.role == "seer":
+        for _day, target_id, result in get_character_seer_checks(
+            game_state,
+            voter.id,
+        ):
+            (
+                known_wolf_ids
+                if result == "werewolf"
+                else known_good_ids
+            ).add(target_id)
+    elif voter.role == "werewolf":
+        wolf_teammate_ids = {
+            character.id
+            for character in game_state.characters
+            if character.role == "werewolf"
+            and character.id != voter.id
+        }
+        known_wolf_ids.update(wolf_teammate_ids)
+        known_good_ids.update(
+            character.id
+            for character in game_state.characters
+            if character.role != "werewolf"
+        )
+
+    alive_count = sum(character.alive for character in game_state.characters)
+    candidates = []
+    for target_id in sorted(set(candidate_ids)):
+        candidate = get_character(game_state, target_id)
+        belief = get_role_belief(reasoning_state, candidate.id)
+        role_claim = get_public_role_claim(game_state, candidate.id)
+        trust = float(
+            voter.relationships.get(str(candidate.id), {}).get(
+                "trust",
+                0.5,
+            )
+        )
+        feature_map = {
+            "candidate_suspicion": max(
+                0.0,
+                min(
+                    1.0,
+                    voter.suspicion.get(str(candidate.id), 0) / 100.0,
+                ),
+            ),
+            "candidate_public_pressure": max(
+                0.0,
+                min(
+                    1.0,
+                    get_public_suspicion_score(
+                        game_state,
+                        candidate.id,
+                    )
+                    / 100.0,
+                ),
+            ),
+            "candidate_distrust": max(0.0, min(1.0, 1.0 - trust)),
+            "candidate_wolf_belief": belief.werewolf_probability,
+            "candidate_good_belief": belief.good_probability,
+            "candidate_seer_belief": belief.seer_probability,
+            "candidate_reasoning_confidence": belief.confidence,
+            "candidate_claimed_seer": float(
+                role_claim is not None and role_claim.claimed_role == "seer"
+            ),
+            "candidate_logic_conflict": float(
+                candidate.id in logic_conflict_ids
+            ),
+            "candidate_sole_consistent_seer": float(
+                candidate.id in sole_consistent_ids
+            ),
+            "candidate_is_sheriff_nomination": float(
+                candidate.id == nomination_target_id
+            ),
+            "candidate_is_provisional_vote": float(
+                candidate.id == provisional_target_id
+            ),
+            "candidate_in_suspected_set": float(
+                candidate.id in suspected_ids
+            ),
+            "candidate_in_trusted_set": float(
+                candidate.id in trusted_ids
+            ),
+            "candidate_is_sheriff": float(
+                candidate.id == game_state.sheriff_id
+            ),
+            "candidate_is_known_good": float(
+                candidate.id in known_good_ids
+            ),
+            "candidate_is_known_wolf": float(
+                candidate.id in known_wolf_ids
+            ),
+            "candidate_is_wolf_teammate": float(
+                candidate.id in wolf_teammate_ids
+            ),
+            "actor_reasoning_skill": tuning.reasoning_skill,
+            "actor_social_susceptibility": tuning.social_susceptibility,
+            "actor_deception_susceptibility": (
+                tuning.deception_susceptibility
+            ),
+            "actor_plan_consistency": tuning.plan_consistency,
+            "actor_team_coordination": tuning.team_coordination,
+            "day_progress": max(0.0, min(1.0, game_state.day / 8.0)),
+            "alive_ratio": alive_count / len(game_state.characters),
+        }
+        candidates.append(
+            NPCPolicyCandidateV1(
+                action_id=f"exile_vote:{candidate.id}",
+                action_type="exile_vote",
+                target_id=candidate.id,
+                feature_values=[
+                    float(feature_map[name])
+                    for name in EXILE_VOTE_FEATURE_NAMES
+                ],
+            )
+        )
+    base_payload = {
+        "schema_version": NPC_POLICY_OBSERVATION_SCHEMA_VERSION,
+        "feature_schema_version": NPC_POLICY_FEATURE_SCHEMA_VERSION,
+        "game_id": game_state.game_id,
+        "day": game_state.day,
+        "phase": game_state.phase,
+        "task": "exile_vote",
+        "actor_id": voter.id,
+        "faction": voter.camp,
+        "reasoning_digest": reasoning_state.belief_digest,
+        "feature_names": list(EXILE_VOTE_FEATURE_NAMES),
+        "candidates": [
+            candidate.model_dump(mode="json") for candidate in candidates
+        ],
+    }
+    return NPCPolicyObservationV1(
+        **base_payload,
+        observation_digest=policy_observation_digest(base_payload),
+    )
+
+
+def _normalize_policy_weights(
+    weights: dict[int, float],
+) -> dict[int, float]:
+    canonical = {
+        target_id: max(0.0, float(weight))
+        for target_id, weight in sorted(weights.items())
+    }
+    total = sum(canonical.values())
+    if total <= 0.0 or not math.isfinite(total):
+        raise ValueError("policy distribution requires positive finite weight")
+    return {
+        target_id: weight / total
+        for target_id, weight in canonical.items()
+    }
+
+
+def _apply_reasoning_to_rule_probabilities(
+    game_state: WolfGameState,
+    voter: CharacterState,
+    probabilities: dict[int, float],
+) -> dict[int, float]:
+    if len(probabilities) <= 1:
+        return probabilities
+    temperature = 12.0
+    weights = {}
+    for target_id, probability in probabilities.items():
+        candidate = get_character(game_state, target_id)
+        adjustment = get_npc_reasoning_vote_adjustment(
+            game_state,
+            voter,
+            candidate,
+        )
+        weights[target_id] = max(1e-12, probability) * math.exp(
+            max(-40.0, min(40.0, adjustment / temperature))
+        )
+    return _normalize_policy_weights(weights)
+
+
+def _model_scores_to_probabilities(
+    observation: NPCPolicyObservationV1,
+    scores: dict[str, float],
+    *,
+    temperature: Optional[float] = None,
+) -> dict[int, float]:
+    canonical_scores = [
+        (candidate, float(scores[candidate.action_id]))
+        for candidate in observation.candidates
+    ]
+    if any(not math.isfinite(score) for _candidate, score in canonical_scores):
+        raise ValueError("local policy returned a non-finite score")
+    effective_temperature = (
+        policy_temperature_from_environment()
+        if temperature is None
+        else float(temperature)
+    )
+    if not math.isfinite(effective_temperature) or effective_temperature <= 0.0:
+        raise ValueError("policy temperature must be positive and finite")
+    maximum = max(score for _candidate, score in canonical_scores)
+    weights = {
+        candidate.target_id: math.exp(
+            max(-60.0, (score - maximum) / effective_temperature)
+        )
+        for candidate, score in canonical_scores
+    }
+    return _normalize_policy_weights(weights)
+
+
+def build_npc_exile_vote_probabilities(
+    game_state: WolfGameState,
+    voter: CharacterState,
+    candidate_ids: Optional[list[int]] = None,
+    ignore_sheriff_lock: bool = False,
+) -> dict[int, float]:
+    """Resolve rule, shadow, or local scores over one legal candidate set."""
+
+    rule_probabilities = build_rule_npc_exile_vote_probabilities(
+        game_state,
+        voter,
+        candidate_ids=candidate_ids,
+        ignore_sheriff_lock=ignore_sheriff_lock,
+    )
+    # Sheriff nominations/final sheriff ballots remain on the V4 legacy
+    # scoring path in the first V5 policy surface.
+    if ignore_sheriff_lock or game_state.sheriff_id == voter.id:
+        return rule_probabilities
+    # M15-B's controlled good-NPC VOTE distribution is itself a sealed
+    # calibration contract and its trace must equal the live rule path. The
+    # local-policy observation still contains actor reasoning features, and
+    # local mode may replace this distribution; rule mode preserves the
+    # calibrated teacher exactly.
+    controlled_good_vote = (
+        game_state.phase == "VOTE"
+        and voter.camp == "good"
+        and not voter.is_player
+        and voter.id != game_state.sheriff_id
+    )
+    if not controlled_good_vote:
+        # Keep the V5 rule teacher identical in rule and shadow.  The possible
+        # world marginal is mode-independent for this legacy adjustment; the
+        # larger complete-world feature is consumed only by the local artifact.
+        rule_probabilities = _apply_reasoning_to_rule_probabilities(
+            game_state,
+            voter,
+            rule_probabilities,
+        )
+    if not rule_probabilities:
+        return {}
+    observation = build_exile_vote_policy_observation(
+        game_state,
+        voter,
+        list(rule_probabilities),
+    )
+    local_scores: dict[str, float] = {}
+    local_probabilities: dict[int, float] = {}
+    model_probabilities: dict[int, float] = {}
+    entropy_guard: dict[str, object] = {}
+    fallback_reason = ""
+    model_id = ""
+    model_digest = ""
+    try:
+        if game_state.npc_policy_mode in {"shadow", "local"}:
+            policy = LOCAL_POLICY_REGISTRY.get(voter.camp)  # type: ignore[arg-type]
+            sealed = game_state.npc_policy_descriptors.get(voter.camp, {})
+            if sealed.get("model_digest") != policy.model_digest:
+                raise ValueError("loaded policy differs from creation seal")
+            sealed_manifest_digest = sealed.get("manifest_sha256")
+            if sealed_manifest_digest:
+                manifest_path = (
+                    LOCAL_POLICY_REGISTRY.artifact_dir(voter.camp)
+                    / "manifest.json"
+                )
+                if file_sha256(manifest_path) != sealed_manifest_digest:
+                    raise ValueError(
+                        "loaded policy manifest differs from creation seal"
+                    )
+            result = policy.score(observation)
+            local_scores = {
+                score.action_id: score.score for score in result.scores
+            }
+            model_probabilities = _model_scores_to_probabilities(
+                observation,
+                local_scores,
+            )
+            blend = policy_blend_from_environment()
+            local_probabilities, entropy_guard = (
+                entropy_guarded_policy_blend(
+                    observation,
+                    rule_probabilities,
+                    model_probabilities,
+                    blend,
+                )
+            )
+            model_id = result.model_id
+            model_digest = result.model_digest
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        fallback_reason = f"{type(exc).__name__}: {exc}"
+
+    effective_mode = game_state.npc_policy_mode
+    if game_state.npc_policy_mode == "shadow":
+        effective_mode = "rule"
+    elif game_state.npc_policy_mode == "local" and not local_probabilities:
+        effective_mode = "rule_fallback"
+    emit_policy_trace(
+        {
+            "game_id": game_state.game_id,
+            "day": game_state.day,
+            "phase": game_state.phase,
+            "actor_id": voter.id,
+            "faction": voter.camp,
+            "task": "exile_vote",
+            "requested_mode": game_state.npc_policy_mode,
+            "effective_mode": effective_mode,
+            "observation": observation.model_dump(mode="json"),
+            "rule_probabilities": {
+                str(target_id): probability
+                for target_id, probability in rule_probabilities.items()
+            },
+            "local_scores": local_scores,
+            "local_probabilities": {
+                str(target_id): probability
+                for target_id, probability in local_probabilities.items()
+            },
+            "model_probabilities": {
+                str(target_id): probability
+                for target_id, probability in (
+                    model_probabilities if local_scores else {}
+                ).items()
+            },
+            "policy_blend": (
+                policy_blend_from_environment()
+                if local_probabilities
+                else None
+            ),
+            "policy_temperature": (
+                policy_temperature_from_environment()
+                if local_probabilities
+                else None
+            ),
+            "policy_entropy_guard": (
+                entropy_guard if local_probabilities else None
+            ),
+            "model_id": model_id,
+            "model_digest": model_digest,
+            "fallback_reason": fallback_reason,
+        }
+    )
+    if game_state.npc_policy_mode == "local" and local_probabilities:
+        return local_probabilities
+    return rule_probabilities
 
 
 def choose_npc_vote_target(
@@ -19156,6 +20354,342 @@ def get_character_strategy_tuning(
         character.camp,
         character.role,
     )
+
+
+def build_npc_reasoning_observation(
+    game_state: WolfGameState,
+    actor: CharacterState,
+    *,
+    enumerate_possible_worlds: bool = False,
+) -> NPCReasoningObservationV1:
+    """Project one NPC's lawful facts into the autonomous reasoner."""
+
+    # NPC hunter reasoning is evaluated at the trigger boundary immediately
+    # after elimination; unlike the player flow it does not populate the
+    # pending-hunter request field first.  Other dead actors must still fail
+    # closed, so the exception is scoped to a non-player hunter only.
+    if actor.is_player or (
+        not actor.alive
+        and game_state.pending_hunter_id != actor.id
+        and not (actor.role == "hunter" and not actor.is_player)
+    ):
+        raise ValueError(
+            "reasoning observation requires a living NPC or pending hunter"
+        )
+    tuning = get_character_strategy_tuning(actor)
+    election = game_state.sheriff_election
+    window_day = election.day if election is not None else None
+    election_active = bool(
+        election is not None
+        and election.day == game_state.day
+        and game_state.phase in SHERIFF_WINDOW_PHASES
+    )
+    sheriff_candidate_ids = set(
+        election.candidates if election_active and election is not None else []
+    )
+    withdrawn_ids = set(
+        event.actor_id
+        for event in game_state.sheriff_events
+        if (
+            event.event_type == "withdraw"
+            and event.actor_id is not None
+            and window_day is not None
+            and event.day == window_day
+        )
+    )
+    continued_ids = {
+        int(event.actor_id)
+        for event in game_state.sheriff_events
+        if event.event_type == "continue_campaign"
+        and event.actor_id is not None
+        and window_day is not None
+        and event.day == window_day
+    }
+    withdrawal_resolved = bool(
+        election is not None
+        and all(
+            candidate_id in withdrawn_ids or candidate_id in continued_ids
+            for candidate_id in election.candidates
+        )
+        and (
+            election.completed
+            or bool(withdrawn_ids)
+            or bool(continued_ids)
+        )
+    )
+
+    known_role_by_id: dict[int, str] = {actor.id: actor.role}
+    known_camp_by_id: dict[int, Literal["good", "werewolf"]] = {
+        actor.id: actor.camp  # type: ignore[dict-item]
+    }
+    if actor.role == "werewolf":
+        for character in game_state.characters:
+            known_camp_by_id[character.id] = (
+                "werewolf" if character.role == "werewolf" else "good"
+            )
+            if character.role == "werewolf":
+                known_role_by_id[character.id] = "werewolf"
+    elif actor.role == "seer":
+        for _day, target_id, result in get_character_seer_checks(
+            game_state,
+            actor.id,
+        ):
+            known_camp_by_id[target_id] = (
+                "werewolf" if result == "werewolf" else "good"
+            )
+
+    players = []
+    for character in game_state.characters:
+        role_claim = get_public_role_claim(game_state, character.id)
+        public_credibility = (
+            get_public_seer_claim_credibility(
+                game_state,
+                actor,
+                character,
+            )
+            if role_claim is not None and role_claim.claimed_role == "seer"
+            else 0.0
+        )
+        players.append(
+            ReasoningPlayerV1(
+                character_id=character.id,
+                alive=character.alive,
+                suspicion=max(
+                    0,
+                    min(100, int(actor.suspicion.get(str(character.id), 0))),
+                ),
+                trust=max(
+                    0.0,
+                    min(
+                        1.0,
+                        float(
+                            actor.relationships.get(
+                                str(character.id),
+                                {},
+                            ).get("trust", 0.5)
+                        ),
+                    ),
+                ),
+                public_pressure=max(
+                    0,
+                    min(
+                        100,
+                        get_public_suspicion_score(
+                            game_state,
+                            character.id,
+                        ),
+                    ),
+                ),
+                public_seer_credibility=public_credibility,
+                claimed_role=(
+                    role_claim.claimed_role
+                    if role_claim is not None
+                    else None
+                ),
+                sheriff_candidate=character.id in sheriff_candidate_ids,
+                withdrew=character.id in withdrawn_ids,
+                continued_campaign=character.id in continued_ids,
+                known_role=known_role_by_id.get(character.id),
+                known_camp=known_camp_by_id.get(character.id),
+            )
+        )
+
+    claims = []
+    for index, claim in enumerate(game_state.public_claims, start=1):
+        if claim.claim_type not in {"role", "seer_check"}:
+            continue
+        if claim.claim_type == "role" and not claim.claimed_role:
+            continue
+        if (
+            claim.claim_type == "role"
+            and claim.claimed_role not in ROLE_NAMES
+        ):
+            continue
+        if (
+            claim.claim_type == "seer_check"
+            and (
+                claim.target_id is None
+                or claim.result not in {"good", "werewolf"}
+            )
+        ):
+            continue
+        claims.append(
+            ReasoningClaimV1(
+                evidence_id=(
+                    f"public:claim:{index}:{claim.day}:"
+                    f"{claim.character_id}:{claim.claim_type}"
+                ),
+                day=claim.day,
+                actor_id=claim.character_id,
+                claim_type=claim.claim_type,  # type: ignore[arg-type]
+                claimed_role=claim.claimed_role,
+                target_id=claim.target_id,
+                result=(
+                    claim.result
+                    if claim.result in {"good", "werewolf"}
+                    else None
+                ),
+                window_day=(
+                    claim.window_day
+                    if claim.phase in {"SHERIFF_SPEECH", "SHERIFF_RUNOFF_SPEECH"}
+                    else None
+                ),
+                observed_event_sequence=claim.event_sequence or index,
+            )
+        )
+    # Replay uses an isolated game_id, so identity must not enter a persisted
+    # reasoning digest. The committed deterministic seed remains stable.
+    seed_commitment = hashlib.sha256(
+        (
+            "agent-town-npc-reasoning|"
+            f"{game_state.random_seed}"
+        ).encode("utf-8")
+    ).hexdigest()
+    return NPCReasoningObservationV1(
+        random_seed_commitment=seed_commitment,
+        day=game_state.day,
+        phase=game_state.phase,
+        public_event_sequence=(
+            game_state.rule_events[-1].sequence
+            if game_state.rule_events
+            else 0
+        ),
+        actor_id=actor.id,
+        actor_role=actor.role,
+        actor_camp=actor.camp,  # type: ignore[arg-type]
+        tuning=ReasoningTuningV1(
+            reasoning_skill=tuning.reasoning_skill,
+            social_susceptibility=tuning.social_susceptibility,
+            deception_susceptibility=tuning.deception_susceptibility,
+            plan_consistency=tuning.plan_consistency,
+        ),
+        players=players,
+        claims=claims,
+        withdrawal_resolved=withdrawal_resolved,
+        sheriff_window_day=window_day,
+        sheriff_window_active=election_active,
+        assumptions=ReasoningAssumptionsV1(
+            enumerate_possible_worlds=enumerate_possible_worlds
+        ),
+    )
+
+
+def refresh_npc_reasoning_state(
+    game_state: WolfGameState,
+    actor: CharacterState,
+    *,
+    enumerate_possible_worlds: bool = False,
+) -> NPCBeliefStateV1:
+    """Recompute and persist one deterministic private belief snapshot."""
+
+    state = build_npc_belief_state(
+        build_npc_reasoning_observation(
+            game_state,
+            actor,
+            enumerate_possible_worlds=enumerate_possible_worlds,
+        )
+    )
+    game_state.npc_reasoning_states = [
+        item
+        for item in game_state.npc_reasoning_states
+        if item.actor_id != actor.id
+    ]
+    game_state.npc_reasoning_states.append(state)
+    game_state.npc_reasoning_states.sort(key=lambda item: item.actor_id)
+    return state
+
+
+def refresh_all_npc_reasoning_states(
+    game_state: WolfGameState,
+) -> list[NPCBeliefStateV1]:
+    states = []
+    for actor in game_state.characters:
+        if actor.is_player or not actor.alive:
+            continue
+        states.append(refresh_npc_reasoning_state(game_state, actor))
+    return states
+
+
+def get_npc_reasoning_state(
+    game_state: WolfGameState,
+    actor: CharacterState,
+    *,
+    enumerate_possible_worlds: bool = False,
+) -> NPCBeliefStateV1:
+    """Return a verified actor-scoped snapshot.
+
+    The list on ``WolfGameState`` is a derived convenience cache, not an
+    authority input.  Rebuilding the deterministic belief from the current
+    lawful observation on every access prevents a chain-external edit of
+    ``role_beliefs`` or ``plan`` from changing a later action while leaving
+    the rule-event digest untouched.
+    """
+
+    observation = build_npc_reasoning_observation(
+        game_state,
+        actor,
+        enumerate_possible_worlds=enumerate_possible_worlds,
+    )
+    observation_digest = canonical_payload_digest(
+        observation.model_dump(mode="json")
+    )
+    cache_key = (
+        game_state.game_id,
+        actor.id,
+        enumerate_possible_worlds,
+        observation_digest,
+    )
+    fresh = NPC_REASONING_RUNTIME_CACHE.get(cache_key)
+    if fresh is None:
+        fresh = build_npc_belief_state(observation)
+        NPC_REASONING_RUNTIME_CACHE[cache_key] = fresh
+        if len(NPC_REASONING_RUNTIME_CACHE) > 4096:
+            NPC_REASONING_RUNTIME_CACHE.pop(next(iter(NPC_REASONING_RUNTIME_CACHE)))
+    cached = next(
+        (
+            state
+            for state in game_state.npc_reasoning_states
+            if state.actor_id == actor.id
+            and state.observation_digest == fresh.observation_digest
+        ),
+        None,
+    )
+    if cached is not None and cached.model_dump(mode="json") == fresh.model_dump(
+        mode="json"
+    ):
+        return cached
+    game_state.npc_reasoning_states = [
+        item
+        for item in game_state.npc_reasoning_states
+        if item.actor_id != actor.id
+    ]
+    game_state.npc_reasoning_states.append(fresh)
+    game_state.npc_reasoning_states.sort(key=lambda item: item.actor_id)
+    return fresh
+
+
+def get_npc_reasoning_vote_adjustment(
+    game_state: WolfGameState,
+    voter: CharacterState,
+    candidate: CharacterState,
+) -> float:
+    state = get_npc_reasoning_state(game_state, voter)
+    belief = get_role_belief(state, candidate.id)
+    adjustment = (belief.werewolf_probability - 0.5) * 42.0
+    for signal in state.reasoning_signals:
+        if signal.subject_id != candidate.id:
+            continue
+        if signal.kind == "seer_golded_persistent_counterclaim":
+            adjustment += 30.0
+        elif signal.kind in {
+            "seer_claim_withdrawn_against_persistent_counterclaim",
+            "seer_check_result_changed",
+            "known_role_conflicts_with_seer_claim",
+        }:
+            adjustment += 22.0
+        elif signal.kind == "sole_consistent_seer_claimant":
+            adjustment -= 34.0
+    return round(max(-48.0, min(adjustment, 58.0)), 4)
 
 
 def build_default_personality(character_id: int, character_name: str = "") -> dict[str, float]:

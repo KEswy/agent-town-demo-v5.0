@@ -2,7 +2,7 @@
 
 The comparator in this module deliberately does not run a simulation, import
 the live rule engine, or request an LLM.  It only accepts integrity-checked
-``agent_town_simulation_batch.v17`` JSON artifacts and pairs their fixed-role
+``agent_town_simulation_batch.v18`` JSON artifacts and pairs their fixed-role
 games by ``(seed, player_role)``.
 """
 
@@ -22,8 +22,8 @@ from .llm_fingerprinting import (
 
 
 ARTIFACT_AB_SCHEMA_VERSION = "agent_town_artifact_ab.v1"
-SUPPORTED_BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v17"
-SUPPORTED_SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v17"
+SUPPORTED_BATCH_SCHEMA_VERSION = "agent_town_simulation_batch.v18"
+SUPPORTED_SIMULATION_SCHEMA_VERSION = "agent_town_simulation.v18"
 EXPERIMENT_FINGERPRINT_SCHEMA_VERSION = "experiment_fingerprint.v1"
 COMPARISON_MODE = "rule_only_artifacts_no_llm"
 
@@ -52,12 +52,13 @@ _PLAYER_STRATEGY_FIELDS = frozenset(
     {"schema_version", "tier", "policy_version", "knowledge_scope"}
 )
 _TRACE_CAPTURE_FIELDS = frozenset(
-    {"beliefs", "stances", "vote_calibration", "event_logs"}
+    {"beliefs", "stances", "vote_calibration", "event_logs", "npc_policy"}
 )
 _TRACE_FIELDS = (
     "belief_trace",
     "stance_trace",
     "vote_calibration_trace",
+    "npc_policy_trace",
     "event_log",
 )
 
@@ -744,8 +745,13 @@ def _extract_trace_presence(
         if field not in game:
             raise ValueError(f"{location} is missing trace field {field}")
         value = game[field]
-        if value is not None and type(value) is not dict:
-            raise ValueError(f"{location} {field} must be an object or null")
+        if value is not None and (
+            type(value) is not dict
+            and not (field == "npc_policy_trace" and type(value) is list)
+        ):
+            raise ValueError(
+                f"{location} {field} must be an object, list, or null"
+            )
         presence[field] = value is not None
     return presence
 
@@ -760,6 +766,7 @@ def _validate_trace_capture_consistency(
         "beliefs": "belief_trace",
         "stances": "stance_trace",
         "vote_calibration": "vote_calibration_trace",
+        "npc_policy": "npc_policy_trace",
         "event_logs": "event_log",
     }
     for flag, field in field_by_flag.items():

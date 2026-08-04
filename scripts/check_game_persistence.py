@@ -937,6 +937,108 @@ def main() -> int:
         rules.GAME_STORE.clear()
         rules.PERSISTED_GAME_IDS.clear()
 
+        legacy_claim_store = persistence.GameSaveStore(
+            temp_root / "legacy-public-claim-provenance"
+        )
+        original_config_fingerprint_builder = (
+            rules.build_game_config_fingerprint
+        )
+        rules.build_game_config_fingerprint = (
+            lambda **_kwargs: rules.build_legacy_v4_game_config_fingerprint()
+        )
+        try:
+            legacy_claim_state = rules.create_wolf_game_state(
+                rules.GameStartRequest(player_role="villager"),
+                game_id="legacy_public_claim_provenance",
+                random_seed=20260742,
+            )
+        finally:
+            rules.build_game_config_fingerprint = (
+                original_config_fingerprint_builder
+            )
+        claim_checkpoint = begin_game_command(legacy_claim_state)
+        legacy_claim_state.public_claims.append(
+            rules.PublicClaimState(
+                day=1,
+                character_id=2,
+                claim_type="role",
+                claimed_role="seer",
+            )
+        )
+        append_game_rule_event(
+            legacy_claim_state,
+            event_type="npc_day_speech_generated",
+            visibility="public",
+            command={"game_id": legacy_claim_state.game_id},
+            checkpoint=claim_checkpoint,
+            actor_id=2,
+        )
+        legacy_claim_payload = rules.build_game_save_envelope(
+            legacy_claim_state
+        ).model_dump(mode="json")
+        for field in (
+            "npc_policy_mode",
+            "npc_policy_descriptors",
+            "npc_reasoning_states",
+        ):
+            legacy_claim_payload["state"].pop(field)
+        for claim in legacy_claim_payload["state"]["public_claims"]:
+            claim.pop("phase")
+            claim.pop("window_day")
+            claim.pop("event_sequence")
+        legacy_claim_payload["snapshot_digest"] = canonical_payload_digest(
+            legacy_claim_payload["state"]
+        )
+        legacy_claim_path = legacy_claim_store.save_path(
+            legacy_claim_state.game_id
+        )
+        write_json(legacy_claim_path, legacy_claim_payload)
+        legacy_claim_bytes = legacy_claim_path.read_bytes()
+        rules.GAME_SAVE_STORE = legacy_claim_store
+        normalized_claim_envelope, normalized_claim_state = (
+            rules.load_validated_saved_game(legacy_claim_state.game_id)
+        )
+        normalized_claim = normalized_claim_state.public_claims[0]
+        if (
+            normalized_claim.phase != ""
+            or normalized_claim.window_day is not None
+            or normalized_claim.event_sequence != 0
+            or normalized_claim_envelope.state_digest
+            != rule_state_digest(normalized_claim_state)
+            or legacy_claim_path.read_bytes() != legacy_claim_bytes
+        ):
+            raise AssertionError(
+                "legacy public-claim provenance must normalize in memory only"
+            )
+        rules.GAME_STORE.clear()
+        rules.PERSISTED_GAME_IDS.clear()
+        legacy_claim_recovery = rules.activate_game_persistence()
+        if (
+            legacy_claim_recovery.restored_game_ids
+            != [legacy_claim_state.game_id]
+            or legacy_claim_recovery.failure_count
+            or legacy_claim_path.read_bytes() != legacy_claim_bytes
+        ):
+            raise AssertionError(
+                "startup recovery must accept exact legacy claim defaults"
+            )
+        rules.persist_game_state(
+            rules.GAME_STORE[legacy_claim_state.game_id]
+        )
+        upgraded_claim = legacy_claim_store.load(
+            legacy_claim_state.game_id
+        ).state["public_claims"][0]
+        if any(
+            field not in upgraded_claim
+            for field in ("phase", "window_day", "event_sequence")
+        ):
+            raise AssertionError(
+                "the next explicit save must write claim provenance defaults"
+            )
+        rules.deactivate_game_persistence()
+        rules.GAME_STORE.clear()
+        rules.PERSISTED_GAME_IDS.clear()
+
         corruption_root = temp_root / "corruption"
 
         def assert_corrupt_save_rejected(
