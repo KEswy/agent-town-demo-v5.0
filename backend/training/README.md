@@ -281,6 +281,12 @@ backend/.venv/bin/python backend/training/train_policy.py \
   --output-dir backend/policy_artifacts
 ```
 
+警长归票面（V5.5-A 第二步）复用同一 26 维特征（独立 schema
+`npc_sheriff_nomination_features.v1`）：130 局 734 条 teacher
+（好人 638 / 狼人 96），产物在 `backend/policy_artifacts/sheriff_nomination/`，
+好人/狼人验证 top-1 分别为 `85.9%` / `80.0%`。命令把 `--task` 换成
+`sheriff_nomination` 即可。
+
 当前已完成 seed `20260727–20260736` 的 10 局 shadow 和 local 金丝雀，以及
 seed `20260601–20260630` 的扩展 30 局 local 金丝雀。Shadow 有 205 条策略轨迹、
 零 fallback；原始 MLP 有 38 条会改变 teacher 首选，护栏后为 0。消融确认

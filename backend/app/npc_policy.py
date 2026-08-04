@@ -29,8 +29,16 @@ NPC_POLICY_TRACE_SCHEMA_VERSION = "npc_policy_trace.v2"
 NPC_POLICY_FEATURE_SCHEMA_VERSION = "npc_exile_vote_features.v1"
 NPC_POLICY_TASK_EXILE_VOTE = "exile_vote"
 NPC_POLICY_TASK_SHERIFF_VOTE = "sheriff_vote"
-NPC_POLICY_TASKS = (NPC_POLICY_TASK_EXILE_VOTE, NPC_POLICY_TASK_SHERIFF_VOTE)
+NPC_POLICY_TASK_SHERIFF_NOMINATION = "sheriff_nomination"
+NPC_POLICY_TASKS = (
+    NPC_POLICY_TASK_EXILE_VOTE,
+    NPC_POLICY_TASK_SHERIFF_VOTE,
+    NPC_POLICY_TASK_SHERIFF_NOMINATION,
+)
 SHERIFF_VOTE_FEATURE_SCHEMA_VERSION = "npc_sheriff_vote_features.v1"
+SHERIFF_NOMINATION_FEATURE_SCHEMA_VERSION = (
+    "npc_sheriff_nomination_features.v1"
+)
 NPC_POLICY_ENTROPY_GUARD_VERSION = "npc_policy_entropy_guard.v1"
 
 GOOD_DEFAULT_ENTROPY_ALLOWANCE = 0.01
@@ -364,13 +372,19 @@ SHERIFF_VOTE_FEATURE_NAMES = (
     "day_progress",
 )
 
+SHERIFF_NOMINATION_FEATURE_NAMES = SHERIFF_VOTE_FEATURE_NAMES
+
 TASK_FEATURE_SCHEMA_VERSIONS: dict[str, str] = {
     NPC_POLICY_TASK_EXILE_VOTE: NPC_POLICY_FEATURE_SCHEMA_VERSION,
     NPC_POLICY_TASK_SHERIFF_VOTE: SHERIFF_VOTE_FEATURE_SCHEMA_VERSION,
+    NPC_POLICY_TASK_SHERIFF_NOMINATION: (
+        SHERIFF_NOMINATION_FEATURE_SCHEMA_VERSION
+    ),
 }
 TASK_FEATURE_NAMES: dict[str, tuple[str, ...]] = {
     NPC_POLICY_TASK_EXILE_VOTE: EXILE_VOTE_FEATURE_NAMES,
     NPC_POLICY_TASK_SHERIFF_VOTE: SHERIFF_VOTE_FEATURE_NAMES,
+    NPC_POLICY_TASK_SHERIFF_NOMINATION: SHERIFF_NOMINATION_FEATURE_NAMES,
 }
 
 
@@ -393,7 +407,11 @@ class StrictPolicyModel(BaseModel):
 
 class NPCPolicyCandidateV1(StrictPolicyModel):
     action_id: str = Field(pattern=r"^[a-z_]+:[0-9]+$")
-    action_type: Literal["exile_vote", "sheriff_vote"]
+    action_type: Literal[
+        "exile_vote",
+        "sheriff_vote",
+        "sheriff_nomination",
+    ]
     target_id: int = Field(gt=0)
     feature_values: list[float]
 
@@ -411,11 +429,12 @@ class NPCPolicyObservationV1(StrictPolicyModel):
     feature_schema_version: Literal[
         "npc_exile_vote_features.v1",
         "npc_sheriff_vote_features.v1",
+        "npc_sheriff_nomination_features.v1",
     ]
     game_id: str = Field(min_length=1)
     day: int = Field(ge=1)
     phase: str = Field(min_length=1)
-    task: Literal["exile_vote", "sheriff_vote"]
+    task: Literal["exile_vote", "sheriff_vote", "sheriff_nomination"]
     actor_id: int = Field(gt=0)
     faction: NPCPolicyFaction
     reasoning_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -474,13 +493,14 @@ class NPCPolicyArtifactManifestV1(StrictPolicyModel):
     )
     model_id: str = Field(min_length=1)
     faction: NPCPolicyFaction
-    task: Literal["exile_vote", "sheriff_vote"]
+    task: Literal["exile_vote", "sheriff_vote", "sheriff_nomination"]
     observation_schema_version: Literal["npc_policy_observation.v1"] = (
         NPC_POLICY_OBSERVATION_SCHEMA_VERSION
     )
     feature_schema_version: Literal[
         "npc_exile_vote_features.v1",
         "npc_sheriff_vote_features.v1",
+        "npc_sheriff_nomination_features.v1",
     ] = NPC_POLICY_FEATURE_SCHEMA_VERSION
     feature_names: list[str]
     model_file: Literal["model.npz"] = "model.npz"
@@ -522,13 +542,14 @@ class NPCPolicyArtifactManifestV2(StrictPolicyModel):
     model_id: str = Field(min_length=1)
     model_type: Literal["mlp"]
     faction: NPCPolicyFaction
-    task: Literal["exile_vote", "sheriff_vote"]
+    task: Literal["exile_vote", "sheriff_vote", "sheriff_nomination"]
     observation_schema_version: Literal["npc_policy_observation.v1"] = (
         NPC_POLICY_OBSERVATION_SCHEMA_VERSION
     )
     feature_schema_version: Literal[
         "npc_exile_vote_features.v1",
         "npc_sheriff_vote_features.v1",
+        "npc_sheriff_nomination_features.v1",
     ] = NPC_POLICY_FEATURE_SCHEMA_VERSION
     feature_names: list[str]
     architecture: NPCPolicyArchitectureV2

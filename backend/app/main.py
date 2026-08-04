@@ -97,12 +97,15 @@ from .npc_policy import (
     EXILE_VOTE_FEATURE_NAMES,
     LOCAL_POLICY_REGISTRY,
     NPC_POLICY_TASK_EXILE_VOTE,
+    NPC_POLICY_TASK_SHERIFF_NOMINATION,
     NPC_POLICY_TASK_SHERIFF_VOTE,
     NPC_POLICY_TASKS,
     NPC_POLICY_FEATURE_SCHEMA_VERSION,
     NPC_POLICY_OBSERVATION_SCHEMA_VERSION,
     SHERIFF_VOTE_FEATURE_NAMES,
     SHERIFF_VOTE_FEATURE_SCHEMA_VERSION,
+    SHERIFF_NOMINATION_FEATURE_NAMES,
+    SHERIFF_NOMINATION_FEATURE_SCHEMA_VERSION,
     NPCPolicyCandidateV1,
     NPCPolicyObservationV1,
     emit_policy_trace,
@@ -3779,20 +3782,30 @@ def build_npc_sheriff_vote_probabilities(
     )
     if not candidates:
         return rule_probabilities
-    return _resolve_sheriff_vote_policy_probabilities(
+    return _resolve_sheriff_style_policy_probabilities(
         game_state,
         voter,
-        candidates,
+        build_sheriff_vote_policy_observation(
+            game_state,
+            voter,
+            candidates,
+        ),
         rule_probabilities,
+        NPC_POLICY_TASK_SHERIFF_VOTE,
     )
 
 
-def build_sheriff_vote_policy_observation(
+def _build_sheriff_style_observation(
     game_state: WolfGameState,
     voter: CharacterState,
     candidates: list[CharacterState],
+    *,
+    task: str,
+    action_type: str,
+    feature_schema_version: str,
+    feature_names: tuple[str, ...],
 ) -> NPCPolicyObservationV1:
-    """Build actor-scoped sheriff-vote features without hidden-role truth."""
+    """Build actor-scoped sheriff-style features without hidden-role truth."""
 
     reasoning_state = get_npc_reasoning_state(
         game_state,
@@ -3962,26 +3975,26 @@ def build_sheriff_vote_policy_observation(
         }
         feature_candidates.append(
             NPCPolicyCandidateV1(
-                action_id=f"sheriff_vote:{candidate.id}",
-                action_type="sheriff_vote",
+                action_id=f"{task}:{candidate.id}",
+                action_type=action_type,
                 target_id=candidate.id,
                 feature_values=[
                     float(feature_map[name])
-                    for name in SHERIFF_VOTE_FEATURE_NAMES
+                    for name in feature_names
                 ],
             )
         )
     base_payload = {
         "schema_version": NPC_POLICY_OBSERVATION_SCHEMA_VERSION,
-        "feature_schema_version": SHERIFF_VOTE_FEATURE_SCHEMA_VERSION,
+        "feature_schema_version": feature_schema_version,
         "game_id": game_state.game_id,
         "day": game_state.day,
         "phase": game_state.phase,
-        "task": NPC_POLICY_TASK_SHERIFF_VOTE,
+        "task": task,
         "actor_id": voter.id,
         "faction": voter.camp,
         "reasoning_digest": reasoning_state.belief_digest,
-        "feature_names": list(SHERIFF_VOTE_FEATURE_NAMES),
+        "feature_names": list(feature_names),
         "candidates": [
             candidate.model_dump(mode="json")
             for candidate in feature_candidates
@@ -3993,19 +4006,47 @@ def build_sheriff_vote_policy_observation(
     )
 
 
-def _resolve_sheriff_vote_policy_probabilities(
+def build_sheriff_vote_policy_observation(
     game_state: WolfGameState,
     voter: CharacterState,
     candidates: list[CharacterState],
-    rule_probabilities: dict[int, float],
-) -> dict[int, float]:
-    """Apply the sealed sheriff-vote artifact in shadow/local with the guard."""
-
-    observation = build_sheriff_vote_policy_observation(
+) -> NPCPolicyObservationV1:
+    return _build_sheriff_style_observation(
         game_state,
         voter,
         candidates,
+        task=NPC_POLICY_TASK_SHERIFF_VOTE,
+        action_type="sheriff_vote",
+        feature_schema_version=SHERIFF_VOTE_FEATURE_SCHEMA_VERSION,
+        feature_names=SHERIFF_VOTE_FEATURE_NAMES,
     )
+
+
+def build_sheriff_nomination_policy_observation(
+    game_state: WolfGameState,
+    sheriff: CharacterState,
+    candidates: list[CharacterState],
+) -> NPCPolicyObservationV1:
+    return _build_sheriff_style_observation(
+        game_state,
+        sheriff,
+        candidates,
+        task=NPC_POLICY_TASK_SHERIFF_NOMINATION,
+        action_type="sheriff_nomination",
+        feature_schema_version=SHERIFF_NOMINATION_FEATURE_SCHEMA_VERSION,
+        feature_names=SHERIFF_NOMINATION_FEATURE_NAMES,
+    )
+
+
+def _resolve_sheriff_style_policy_probabilities(
+    game_state: WolfGameState,
+    voter: CharacterState,
+    observation: NPCPolicyObservationV1,
+    rule_probabilities: dict[int, float],
+    task: str,
+) -> dict[int, float]:
+    """Apply a sealed sheriff-style artifact in shadow/local with the guard."""
+
     local_scores: dict[str, float] = {}
     local_probabilities: dict[int, float] = {}
     model_probabilities: dict[int, float] = {}
@@ -4016,11 +4057,11 @@ def _resolve_sheriff_vote_policy_probabilities(
     try:
         if game_state.npc_policy_mode in {"shadow", "local"}:
             policy = LOCAL_POLICY_REGISTRY.get(  # type: ignore[arg-type]
-                NPC_POLICY_TASK_SHERIFF_VOTE,
+                task,
                 voter.camp,
             )
             sealed = game_state.npc_policy_descriptors.get(
-                f"{NPC_POLICY_TASK_SHERIFF_VOTE}:{voter.camp}",
+                f"{task}:{voter.camp}",
                 {},
             )
             if sealed.get("model_digest") != policy.model_digest:
@@ -4029,7 +4070,7 @@ def _resolve_sheriff_vote_policy_probabilities(
             if sealed_manifest_digest:
                 manifest_path = (
                     LOCAL_POLICY_REGISTRY.artifact_dir(  # type: ignore[arg-type]
-                        NPC_POLICY_TASK_SHERIFF_VOTE,
+                        task,
                         voter.camp,
                     )
                     / "manifest.json"
@@ -4071,7 +4112,7 @@ def _resolve_sheriff_vote_policy_probabilities(
             "phase": game_state.phase,
             "actor_id": voter.id,
             "faction": voter.camp,
-            "task": NPC_POLICY_TASK_SHERIFF_VOTE,
+            "task": task,
             "requested_mode": game_state.npc_policy_mode,
             "effective_mode": effective_mode,
             "observation": observation.model_dump(mode="json"),
@@ -4130,6 +4171,27 @@ def choose_npc_sheriff_vote_target(
     if selected_target_id is None:
         raise ValueError("sheriff vote requires at least one legal candidate")
     return selected_target_id
+
+
+def _resolve_sheriff_nomination_policy_probabilities(
+    game_state: WolfGameState,
+    sheriff: CharacterState,
+    candidates: list[CharacterState],
+    rule_probabilities: dict[int, float],
+) -> dict[int, float]:
+    """Apply the sealed sheriff-nomination artifact in shadow/local."""
+
+    return _resolve_sheriff_style_policy_probabilities(
+        game_state,
+        sheriff,
+        build_sheriff_nomination_policy_observation(
+            game_state,
+            sheriff,
+            candidates,
+        ),
+        rule_probabilities,
+        NPC_POLICY_TASK_SHERIFF_NOMINATION,
+    )
 
 
 def tally_sheriff_votes(votes: list[VoteState]) -> tuple[Optional[int], list[int]]:
@@ -4306,7 +4368,35 @@ def set_sheriff_meeting_order(
 
 
 def choose_npc_sheriff_nomination(game_state: WolfGameState, sheriff: CharacterState) -> Optional[int]:
-    return choose_npc_vote_target(game_state, sheriff, ignore_sheriff_lock=True)
+    candidates = [
+        character
+        for character in game_state.characters
+        if character.alive and character.id != sheriff.id
+    ]
+    if not candidates:
+        return None
+    rule_probabilities = build_npc_exile_vote_probabilities(
+        game_state,
+        sheriff,
+        [candidate.id for candidate in candidates],
+        ignore_sheriff_lock=True,
+    )
+    candidates = [
+        get_character(game_state, candidate_id)
+        for candidate_id in sorted(rule_probabilities)
+    ]
+    probabilities = _resolve_sheriff_nomination_policy_probabilities(
+        game_state,
+        sheriff,
+        candidates,
+        rule_probabilities,
+    )
+    return choose_vote_target_from_probabilities(
+        game_state,
+        sheriff,
+        probabilities,
+        "exile_vote",
+    )
 
 
 def set_temporary_sheriff_nomination(

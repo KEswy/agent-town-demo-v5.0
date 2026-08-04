@@ -78,6 +78,7 @@ class PolicyTrainingRecordV1(StrictPolicyDataModel):
     feature_schema_version: Literal[
         "npc_exile_vote_features.v1",
         "npc_sheriff_vote_features.v1",
+        "npc_sheriff_nomination_features.v1",
     ]
     feature_names: list[str]
     candidates: list[NPCPolicyCandidateV1] = Field(min_length=1)
@@ -150,6 +151,7 @@ class PolicyTrainingRecordV2(StrictPolicyDataModel):
     feature_schema_version: Literal[
         "npc_exile_vote_features.v1",
         "npc_sheriff_vote_features.v1",
+        "npc_sheriff_nomination_features.v1",
     ]
     feature_names: list[str]
     candidates: list[NPCPolicyCandidateV1] = Field(min_length=1)
