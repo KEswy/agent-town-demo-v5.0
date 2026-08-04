@@ -101,7 +101,12 @@ class FactionTuningV1(StrictTuningModel):
 
 
 class RoleTuningV1(StrictTuningModel):
-    """Required overrides for the classic roles; idiot is optional."""
+    """Required overrides for all classic roles in the twelve-player setup.
+
+    The Idiot variant reuses the villager override at resolve time; the
+    persisted config and its fingerprint therefore stay byte-identical to the
+    classic contract.
+    """
 
     werewolf: TuningOverrideV1
     seer: TuningOverrideV1
@@ -109,7 +114,6 @@ class RoleTuningV1(StrictTuningModel):
     hunter: TuningOverrideV1
     guard: TuningOverrideV1
     villager: TuningOverrideV1
-    idiot: Optional[TuningOverrideV1] = None
 
 
 class NPCTuningConfigV1(StrictTuningModel):

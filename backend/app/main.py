@@ -1041,6 +1041,22 @@ def load_validated_saved_game(
         }
         for field in omitted_compat_fields:
             legacy_state.pop(field, None)
+        # Newer optional per-character fields: older snapshots omit them, so
+        # the normalized dump gains defaults that must be stripped to make the
+        # snapshot round-trip again.  Only characters that predate the field
+        # are normalized; unknown or malformed ledgers stay fail-closed.
+        envelope_characters = envelope.state.get("characters", [])
+        if (
+            isinstance(envelope_characters, list)
+            and any(
+                isinstance(character, dict)
+                and "idiot_flipped" not in character
+                for character in envelope_characters
+            )
+        ):
+            for character in legacy_state.get("characters", []):
+                if isinstance(character, dict):
+                    character.pop("idiot_flipped", None)
         if legacy_v4_state:
             original_claims = envelope.state.get("public_claims")
             normalized_claims = legacy_state.get("public_claims")

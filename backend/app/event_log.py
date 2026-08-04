@@ -171,6 +171,18 @@ def normalized_rule_state_payload(game_state: BaseModel) -> dict[str, object]:
                 claim.pop("phase", None)
                 claim.pop("window_day", None)
                 claim.pop("event_sequence", None)
+    # The Idiot flip flag defaults to False.  Old snapshots predate the field,
+    # and an all-default False never affects later rule behavior, so it is
+    # omitted from the authoritative digest exactly like the provenance triple
+    # above.  A real flip (True) stays sealed in the digest.
+    characters = payload.get("characters")
+    if isinstance(characters, list):
+        for character in characters:
+            if (
+                isinstance(character, dict)
+                and character.get("idiot_flipped", False) is False
+            ):
+                character.pop("idiot_flipped", None)
     return payload
 
 
