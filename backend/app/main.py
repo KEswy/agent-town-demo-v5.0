@@ -211,6 +211,7 @@ from .config import (
     MEMORY_META_FILE,
     NPC_NAMES,
     NPC_PERSONALITIES,
+    NPC_VOICE_OPENERS,
     NPC_PROFILES_FILE,
     NPC_TUNING_FILE,
     NPC_WITCH_FIRST_NIGHT_SAVE_RATE,
@@ -15184,6 +15185,19 @@ def apply_npc_voice(
     roll = seed % 100
     catchphrase_limit = 45 if context_kind == "private" else 35
     easter_egg_limit = 65 if context_kind == "private" else 48
+
+    openers = [
+        opener
+        for opener in NPC_VOICE_OPENERS.get(npc.name, [])
+        if opener not in used_text and opener not in text
+    ]
+    if openers and len(text) < 96:
+        opener_seed = deterministic_seed_value(
+            game_state.random_seed,
+            f"voice_opener:{npc.id}:{game_state.day}:{event_count}",
+        )
+        opener = openers[opener_seed % len(openers)]
+        text = opener + text
 
     if roll < catchphrase_limit and catchphrases:
         phrase = catchphrases[(seed // 7) % len(catchphrases)]

@@ -15777,9 +15777,9 @@ def check_godot_ui_layout() -> None:
         '[node name="GameSummaryOverlay" type="Control"',
         '[node name="ExplainableReview" type="ScrollContainer" parent="UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs"]',
         '[node name="ReviewLabel" type="Label" parent="UI/GameSummaryOverlay/Panel/Margin/VBox/SummaryTabs/ExplainableReview/Margin"]',
-        '[node name="ReviewGameButton" type="Button"',
+        '[node name="MenuOverlay" type="Control" parent="UI"]',
         '[node name="GameSummaryRequest" type="HTTPRequest"',
-        '[node name="GuideButton" type="Button" parent="UI/PhaseHUD/Panel/Margin/Row"]',
+        '[node name="MenuButton" type="Button" parent="UI/PhaseHUD/Panel/Margin/Row"]',
         '[node name="OnboardingOverlay" type="Control" parent="UI"]',
         '[node name="ProgressLabel" type="Label" parent="UI/OnboardingOverlay/Panel/Margin/VBox/HeaderRow"]',
         '[node name="ScopeLabel" type="Label" parent="UI/OnboardingOverlay/Panel/Margin/VBox"]',
@@ -15892,7 +15892,7 @@ def check_godot_ui_layout() -> None:
         if fragment not in scene_text:
             raise SmokeCheckError("resident scene introduction is not synchronized with its visual identity")
 
-    if scene_text.count('theme = SubResource("Theme_light_ui")') != 8:
+    if scene_text.count('theme = SubResource("Theme_light_ui")') != 9:
         raise SmokeCheckError("every light UI root should use the black-text light theme")
     light_ui_start = scene_text.index('[node name="PhaseHUD" type="Control" parent="UI"]')
     light_ui_end = scene_text.index('[node name="GameSummaryOverlay" type="Control" parent="UI"]')

@@ -215,10 +215,10 @@ const CHARACTER_SKIN_PATHS := {
 @onready var phase_hud: Control = $UI/PhaseHUD
 @onready var phase_title_label: Label = $UI/PhaseHUD/Panel/Margin/Row/TitleLabel
 @onready var wolf_menu_summary_label: Label = $UI/PhaseHUD/Panel/Margin/Row/MenuSummaryLabel
-@onready var refresh_state_button: Button = $UI/PhaseHUD/Panel/Margin/Row/RefreshStateButton
-@onready var review_game_button: Button = $UI/PhaseHUD/Panel/Margin/Row/ReviewGameButton
+@onready var refresh_state_button: Button = $UI/MenuOverlay/Panel/Margin/VBox/RefreshButton
+@onready var review_game_button: Button = $UI/MenuOverlay/Panel/Margin/VBox/ReviewButton
 @onready var intel_toggle_button: Button = $UI/PhaseHUD/Panel/Margin/Row/IntelToggleButton
-@onready var guide_button: Button = $UI/PhaseHUD/Panel/Margin/Row/GuideButton
+@onready var guide_button: Button = $UI/MenuOverlay/Panel/Margin/VBox/GuideButton
 @onready var setup_toggle_button: Button = $UI/PhaseHUD/Panel/Margin/Row/SetupToggleButton
 @onready var identity_panel: PanelContainer = $UI/IdentityPanel
 @onready var player_identity_block: VBoxContainer = $UI/IdentityPanel/Margin/PlayerIdentityBlock
@@ -296,13 +296,12 @@ const CHARACTER_SKIN_PATHS := {
 @onready var game_setup_overlay: Control = $UI/GameSetupOverlay
 @onready var game_setup_panel: PanelContainer = $UI/GameSetupOverlay/Panel
 @onready var setup_close_button: Button = $UI/GameSetupOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
-@onready var setup_explore_button: Button = $UI/GameSetupOverlay/Panel/Margin/VBox/ActionRow/ExploreButton
 @onready var setup_status_label: Label = $UI/GameSetupOverlay/Panel/Margin/VBox/SetupStatusLabel
 @onready var player_name_input: LineEdit = $UI/GameSetupOverlay/Panel/Margin/VBox/PlayerNameRow/PlayerNameInput
 @onready var start_game_button: Button = $UI/GameSetupOverlay/Panel/Margin/VBox/ActionRow/StartGameButton
 @onready var continue_game_button: Button = $UI/GameSetupOverlay/Panel/Margin/VBox/ActionRow/ContinueGameButton
 @onready var sound_enabled_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/SoundEnabledToggle
-@onready var knowledge_button: Button = $UI/PhaseHUD/Panel/Margin/Row/KnowledgeButton
+@onready var knowledge_button: Button = $UI/MenuOverlay/Panel/Margin/VBox/RuleButton
 @onready var knowledge_overlay: Control = $UI/KnowledgeOverlay
 @onready var knowledge_search_input: LineEdit = $UI/KnowledgeOverlay/Panel/Margin/VBox/SearchRow/SearchInput
 @onready var knowledge_search_button: Button = $UI/KnowledgeOverlay/Panel/Margin/VBox/SearchRow/SearchButton
@@ -310,13 +309,16 @@ const CHARACTER_SKIN_PATHS := {
 @onready var knowledge_status_label: Label = $UI/KnowledgeOverlay/Panel/Margin/VBox/StatusLabel
 @onready var knowledge_results_list: VBoxContainer = $UI/KnowledgeOverlay/Panel/Margin/VBox/ResultsScroll/ResultsList
 @onready var knowledge_search_request: HTTPRequest = $KnowledgeSearchRequest
-@onready var stats_button: Button = $UI/PhaseHUD/Panel/Margin/Row/StatsButton
+@onready var stats_button: Button = $UI/MenuOverlay/Panel/Margin/VBox/StatsButton
+@onready var menu_button: Button = $UI/PhaseHUD/Panel/Margin/Row/MenuButton
+@onready var menu_overlay: Control = $UI/MenuOverlay
+@onready var menu_close_button: Button = $UI/MenuOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
 @onready var stats_overlay: Control = $UI/StatsOverlay
 @onready var stats_close_button: Button = $UI/StatsOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
 @onready var stats_body_list: VBoxContainer = $UI/StatsOverlay/Panel/Margin/VBox/BodyScroll/BodyList
 @onready var bgm_volume_slider: HSlider = $UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/BGMVolumeBox/BGMVolumeSlider
 @onready var sfx_volume_slider: HSlider = $UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/SFXVolumeBox/SFXVolumeSlider
-@onready var save_button: Button = $UI/PhaseHUD/Panel/Margin/Row/SaveButton
+@onready var save_button: Button = $UI/MenuOverlay/Panel/Margin/VBox/SaveButton
 @onready var save_game_request: HTTPRequest = $SaveGameRequest
 @onready var player_role_option: OptionButton = $UI/GameSetupOverlay/Panel/Margin/VBox/PlayerRoleRow/PlayerRoleOption
 @onready var llm_enabled_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow/LLMEnabledToggle
@@ -559,9 +561,10 @@ func _ready() -> void:
 	intel_toggle_button.pressed.connect(_on_intel_toggle_button_pressed)
 	intel_close_button.pressed.connect(_on_intel_close_button_pressed)
 	guide_button.pressed.connect(_on_guide_button_pressed)
+	menu_button.pressed.connect(_on_menu_button_pressed)
+	menu_close_button.pressed.connect(_on_menu_close_button_pressed)
 	setup_toggle_button.pressed.connect(_on_setup_toggle_button_pressed)
 	setup_close_button.pressed.connect(_on_setup_close_button_pressed)
-	setup_explore_button.pressed.connect(_on_setup_close_button_pressed)
 	game_summary_close_button.pressed.connect(_hide_game_summary)
 	onboarding_close_button.pressed.connect(_on_onboarding_close_button_pressed)
 	onboarding_skip_button.pressed.connect(_on_onboarding_skip_button_pressed)
@@ -754,7 +757,6 @@ func _hide_game_setup(restore_focus: bool = true) -> void:
 	game_setup_overlay.visible = false
 	game_setup_overlay.remove_from_group("dialog_open")
 	setup_close_button.release_focus()
-	setup_explore_button.release_focus()
 	start_game_button.release_focus()
 	_release_movement_actions()
 	_update_ui_safe_area()
@@ -1556,6 +1558,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		_set_intel_panel_open(false)
 		get_viewport().set_input_as_handled()
 		return
+	if event.is_action_pressed("ui_cancel") and menu_overlay.visible:
+		_on_menu_close_button_pressed()
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed("ui_cancel") and knowledge_overlay.visible:
 		_on_knowledge_close_button_pressed()
 		get_viewport().set_input_as_handled()
@@ -1786,7 +1792,6 @@ func _on_start_game_button_pressed() -> void:
 	wolf_menu_summary_label.text = "正在开始..."
 	start_game_button.disabled = true
 	setup_close_button.disabled = true
-	setup_explore_button.disabled = true
 	setup_status_label.text = "正在连接后端并创建十二人局..."
 	wolf_status_label.text = "后端状态：正在创建 12 人局..."
 	wolf_game_info_label.text = "正在随机分配身份。"
@@ -1820,7 +1825,6 @@ func _on_start_game_button_pressed() -> void:
 		_is_starting_wolf_game = false
 		start_game_button.disabled = false
 		setup_close_button.disabled = false
-		setup_explore_button.disabled = false
 		setup_status_label.text = "连接失败：请先手动启动 FastAPI 后端。"
 		wolf_status_label.text = "后端状态：连接失败"
 		wolf_game_info_label.text = "请先启动 FastAPI 后端。"
@@ -2503,7 +2507,6 @@ func _on_game_start_request_completed(result: int, response_code: int, _headers:
 	_is_starting_wolf_game = false
 	start_game_button.disabled = false
 	setup_close_button.disabled = false
-	setup_explore_button.disabled = false
 
 	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
 		setup_status_label.text = "创建失败：请确认 FastAPI 后端已手动启动。"
@@ -3246,6 +3249,20 @@ func _apply_audio_volumes() -> void:
 		_audio_bgm_night.volume_db = lerpf(-30.0, -8.0, _bgm_volume / 100.0)
 	if _audio_sfx != null:
 		_audio_sfx.volume_db = lerpf(-20.0, -2.0, _sfx_volume / 100.0)
+
+
+func _on_menu_button_pressed() -> void:
+	menu_overlay.visible = true
+	menu_overlay.add_to_group("dialog_open")
+	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
+	call_deferred("_focus_control_if_available", menu_close_button)
+
+
+func _on_menu_close_button_pressed() -> void:
+	menu_overlay.visible = false
+	menu_overlay.remove_from_group("dialog_open")
+	menu_close_button.release_focus()
+	_release_focus_to_world()
 
 
 func _on_night_action_request_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
@@ -5838,6 +5855,7 @@ func _configure_ui_focus_navigation() -> void:
 		dialog_box,
 		knowledge_overlay,
 		stats_overlay,
+		menu_overlay,
 	]
 	for ui_root in ui_roots:
 		for node in ui_root.find_children("*", "BaseButton", true, false):
