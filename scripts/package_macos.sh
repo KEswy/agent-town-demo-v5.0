@@ -90,13 +90,35 @@ chmod +x "$PACKAGE_DIR/启动 Agent Town Demo.command"
     printf 'godot=%s\n' "$("$GODOT_BIN" --version)"
     printf 'backend_arch=%s\n' "$(uname -m)"
     printf 'git_commit=%s\n' "$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || printf unknown)"
-    printf 'signed=ad-hoc\n'
-    printf 'notarized=no\n'
+    printf 'signed=%s\n' \
+        "${AGENT_TOWN_CODESIGN_IDENTITY:-ad-hoc}"
+    printf 'notarized=%s\n' \
+        "${AGENT_TOWN_NOTARY_PROFILE:-no}"
 } >"$PACKAGE_DIR/BUILD_INFO.txt"
 
+if [[ -n "${AGENT_TOWN_CODESIGN_IDENTITY:-}" ]]; then
+    # Developer ID distribution signing; requires a paid Apple Developer
+    # account.  Set AGENT_TOWN_CODESIGN_IDENTITY (e.g. "Developer ID Application:
+    # Your Name (TEAMID)") before running.
+    codesign --force --options runtime \
+        --sign "$AGENT_TOWN_CODESIGN_IDENTITY" \
+        --deep "$PACKAGE_DIR/Agent Town Demo.app"
+fi
 codesign --verify --deep --strict "$PACKAGE_DIR/Agent Town Demo.app"
 test -x "$PACKAGE_DIR/backend/agent-town-backend"
 test -x "$PACKAGE_DIR/Agent Town Demo.app/Contents/MacOS/Agent Town Demo"
+
+if [[ -n "${AGENT_TOWN_NOTARY_PROFILE:-}" ]]; then
+    # Upload to Apple notary after signing.  The profile must be configured
+    # with `xcrun notarytool store-credentials <profile> --apple-id ...`.
+    ditto -c -k --keepParent \
+        "$PACKAGE_DIR/Agent Town Demo.app" "$PACKAGE_DIR/Agent Town Demo.zip"
+    xcrun notarytool submit \
+        "$PACKAGE_DIR/Agent Town Demo.zip" \
+        --keychain-profile "$AGENT_TOWN_NOTARY_PROFILE" \
+        --wait
+    xcrun stapler staple "$PACKAGE_DIR/Agent Town Demo.app"
+fi
 
 AGENT_TOWN_DATA_DIR="$WORK_DIR/runtime-data" \
 AGENT_TOWN_GAME_SAVE_DIR="$WORK_DIR/runtime-data/games" \

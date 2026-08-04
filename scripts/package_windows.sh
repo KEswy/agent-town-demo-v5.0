@@ -115,7 +115,8 @@ cp "$ROOT_DIR/packaging/windows/README.md" \
     printf 'client_arch=x86_64\n'
     printf 'backend_python=3.12.10-embed-amd64\n'
     printf 'git_commit=%s\n' "$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || printf unknown)"
-    printf 'signed=no\n'
+    printf 'signed=%s\n' \
+        "${AGENT_TOWN_WINDOWS_CERT:-no}"
     printf 'windows_runtime_verified=no\n'
 } >"$PACKAGE_DIR/BUILD_INFO.txt"
 
@@ -124,6 +125,28 @@ test -f "$PACKAGE_DIR/backend/python/python.exe"
 test -f "$PACKAGE_DIR/backend/python/python312.dll"
 test -f "$PACKAGE_DIR/backend/python/Lib/site-packages/numpy/__init__.py"
 test -f "$PACKAGE_DIR/backend/app/main.py"
+
+if [[ -n "${AGENT_TOWN_WINDOWS_CERT:-}" ]]; then
+    # Authenticode signing; requires a Windows code-signing certificate.
+    # Set AGENT_TOWN_WINDOWS_CERT (path to the .pfx) and
+    # AGENT_TOWN_WINDOWS_CERT_PASSWORD before running on a Windows host (or
+    # via osxcross/osslsigncode on macOS).
+    if command -v signtool >/dev/null 2>&1; then
+        signtool sign /f "$AGENT_TOWN_WINDOWS_CERT" \
+            /p "${AGENT_TOWN_WINDOWS_CERT_PASSWORD:-}" \
+            "$PACKAGE_DIR/Agent Town Demo.exe"
+    elif command -v osslsigncode >/dev/null 2>&1; then
+        osslsigncode sign \
+            -pkcs12 "$AGENT_TOWN_WINDOWS_CERT" \
+            -pass "${AGENT_TOWN_WINDOWS_CERT_PASSWORD:-}" \
+            -in "$PACKAGE_DIR/Agent Town Demo.exe" \
+            -out "$PACKAGE_DIR/Agent Town Demo.signed.exe"
+        mv "$PACKAGE_DIR/Agent Town Demo.signed.exe" \
+            "$PACKAGE_DIR/Agent Town Demo.exe"
+    else
+        printf 'warning: no signtool/osslsigncode found; cert not applied\n' >&2
+    fi
+fi
 file "$PACKAGE_DIR/Agent Town Demo.exe" | grep -q "PE32+"
 file "$PACKAGE_DIR/backend/python/python.exe" | grep -q "PE32+"
 if [ -e "$PACKAGE_DIR/.env" ] || [ -d "$PACKAGE_DIR/backend/data" ]; then

@@ -1222,6 +1222,33 @@ min_value = 0.0
 max_value = 100.0
 value = 80.0
 
+[node name="SlotRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="SlotLabel" type="Label" parent="UI/GameSetupOverlay/Panel/Margin/VBox/SlotRow"]
+custom_minimum_size = Vector2(92, 0)
+layout_mode = 2
+text = "存档槽位"
+vertical_alignment = 1
+
+[node name="SlotOption" type="OptionButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/SlotRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+item_count = 3
+selected = 0
+popup/item_0/text = "槽位 1"
+popup/item_1/text = "槽位 2"
+popup/item_2/text = "槽位 3"
+
+[node name="TutorialHintRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+
+[node name="TutorialHintsToggle" type="CheckButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/TutorialHintRow"]
+layout_mode = 2
+button_pressed = true
+text = "新手阶段提示"
+
 [node name="PlayerRoleRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
 layout_mode = 2
 theme_override_constants/separation = 10
@@ -1592,6 +1619,102 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 8
 
+[node name="ReplayOverlay" type="Control" parent="UI"]
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+theme = SubResource("Theme_light_ui")
+
+[node name="Shade" type="ColorRect" parent="UI/ReplayOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.08, 0.22, 0.31, 0.58)
+
+[node name="Panel" type="PanelContainer" parent="UI/ReplayOverlay"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -400.0
+offset_top = -260.0
+offset_right = 400.0
+offset_bottom = 260.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_setup")
+
+[node name="Margin" type="MarginContainer" parent="UI/ReplayOverlay/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 24
+theme_override_constants/margin_top = 20
+theme_override_constants/margin_right = 24
+theme_override_constants/margin_bottom = 20
+
+[node name="VBox" type="VBoxContainer" parent="UI/ReplayOverlay/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="HeaderRow" type="HBoxContainer" parent="UI/ReplayOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+
+[node name="TitleLabel" type="Label" parent="UI/ReplayOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 20
+text = "对局重播"
+
+[node name="CloseButton" type="Button" parent="UI/ReplayOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+text = "关闭"
+
+[node name="ProgressLabel" type="Label" parent="UI/ReplayOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+text = "第 0 / 0 步"
+
+[node name="BodyScroll" type="ScrollContainer" parent="UI/ReplayOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="BodyLabel" type="Label" parent="UI/ReplayOverlay/Panel/Margin/VBox/BodyScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+autowrap_mode = 3
+text = ""
+
+[node name="NavRow" type="HBoxContainer" parent="UI/ReplayOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 10
+
+[node name="PrevButton" type="Button" parent="UI/ReplayOverlay/Panel/Margin/VBox/NavRow"]
+custom_minimum_size = Vector2(90, 38)
+layout_mode = 2
+text = "上一步"
+
+[node name="PlayButton" type="Button" parent="UI/ReplayOverlay/Panel/Margin/VBox/NavRow"]
+custom_minimum_size = Vector2(110, 38)
+layout_mode = 2
+text = "播放"
+
+[node name="NextButton" type="Button" parent="UI/ReplayOverlay/Panel/Margin/VBox/NavRow"]
+custom_minimum_size = Vector2(90, 38)
+layout_mode = 2
+text = "下一步"
+
 [node name="GameSummaryOverlay" type="Control" parent="UI"]
 visible = false
 layout_mode = 3
@@ -1658,6 +1781,12 @@ custom_minimum_size = Vector2(90, 38)
 layout_mode = 2
 tooltip_text = "把本局高光与时间线导出为文本文件"
 text = "导出复盘"
+
+[node name="ReplayButton" type="Button" parent="UI/GameSummaryOverlay/Panel/Margin/VBox/HeaderRow"]
+custom_minimum_size = Vector2(70, 38)
+layout_mode = 2
+tooltip_text = "逐步重播本局时间线"
+text = "重播"
 
 [node name="WinnerLabel" type="Label" parent="UI/GameSummaryOverlay/Panel/Margin/VBox"]
 layout_mode = 2

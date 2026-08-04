@@ -323,11 +323,21 @@ const CHARACTER_SKIN_PATHS := {
 @onready var highlights_label: Label = $UI/GameSummaryOverlay/Panel/Margin/VBox/HighlightsLabel
 @onready var export_review_button: Button = $UI/GameSummaryOverlay/Panel/Margin/VBox/HeaderRow/ExportReviewButton
 @onready var export_stats_button: Button = $UI/StatsOverlay/Panel/Margin/VBox/HeaderRow/ExportStatsButton
+@onready var replay_button: Button = $UI/GameSummaryOverlay/Panel/Margin/VBox/HeaderRow/ReplayButton
+@onready var replay_overlay: Control = $UI/ReplayOverlay
+@onready var replay_close_button: Button = $UI/ReplayOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
+@onready var replay_progress_label: Label = $UI/ReplayOverlay/Panel/Margin/VBox/ProgressLabel
+@onready var replay_body_label: Label = $UI/ReplayOverlay/Panel/Margin/VBox/BodyScroll/BodyLabel
+@onready var replay_prev_button: Button = $UI/ReplayOverlay/Panel/Margin/VBox/NavRow/PrevButton
+@onready var replay_play_button: Button = $UI/ReplayOverlay/Panel/Margin/VBox/NavRow/PlayButton
+@onready var replay_next_button: Button = $UI/ReplayOverlay/Panel/Margin/VBox/NavRow/NextButton
 @onready var stats_overlay: Control = $UI/StatsOverlay
 @onready var stats_close_button: Button = $UI/StatsOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
 @onready var stats_body_list: VBoxContainer = $UI/StatsOverlay/Panel/Margin/VBox/BodyScroll/BodyList
 @onready var bgm_volume_slider: HSlider = $UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/BGMVolumeBox/BGMVolumeSlider
 @onready var sfx_volume_slider: HSlider = $UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/SFXVolumeBox/SFXVolumeSlider
+@onready var slot_option: OptionButton = $UI/GameSetupOverlay/Panel/Margin/VBox/SlotRow/SlotOption
+@onready var tutorial_hints_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/TutorialHintRow/TutorialHintsToggle
 @onready var save_button: Button = $UI/MenuOverlay/Panel/Margin/VBox/SaveButton
 @onready var save_game_request: HTTPRequest = $SaveGameRequest
 @onready var player_role_option: OptionButton = $UI/GameSetupOverlay/Panel/Margin/VBox/PlayerRoleRow/PlayerRoleOption
@@ -397,6 +407,11 @@ var _is_submitting_vote := false
 var _is_loading_game_summary := false
 var _current_wolf_game_id := ""
 var _resume_pending_game := false
+var _session_slot := 1
+var _replay_events: Array = []
+var _replay_index := 0
+var _replay_playing := false
+var _tutorial_hints := true
 var _recovered_game_ids: Array[String] = []
 var _sound_enabled := true
 var _bgm_volume := 70.0
@@ -539,6 +554,8 @@ func _ready() -> void:
 	knowledge_search_input.text_submitted.connect(_on_knowledge_search_submitted)
 	knowledge_close_button.pressed.connect(_on_knowledge_close_button_pressed)
 	sound_enabled_toggle.toggled.connect(_set_sound_enabled)
+	slot_option.item_selected.connect(_on_slot_selected)
+	tutorial_hints_toggle.toggled.connect(_on_tutorial_hints_toggled)
 	llm_enabled_toggle.toggled.connect(_on_llm_enabled_toggled)
 	llm_validation_toggle.toggled.connect(_on_llm_validation_toggled)
 	refresh_state_button.pressed.connect(_on_refresh_state_button_pressed)
@@ -578,6 +595,11 @@ func _ready() -> void:
 	archive_request.request_completed.connect(_on_archive_request_completed)
 	export_review_button.pressed.connect(_on_export_review_pressed)
 	export_stats_button.pressed.connect(_on_export_stats_pressed)
+	replay_button.pressed.connect(_on_replay_button_pressed)
+	replay_close_button.pressed.connect(_on_replay_close_button_pressed)
+	replay_prev_button.pressed.connect(_on_replay_prev_pressed)
+	replay_next_button.pressed.connect(_on_replay_next_pressed)
+	replay_play_button.pressed.connect(_on_replay_play_pressed)
 	setup_toggle_button.pressed.connect(_on_setup_toggle_button_pressed)
 	setup_close_button.pressed.connect(_on_setup_close_button_pressed)
 	game_summary_close_button.pressed.connect(_hide_game_summary)
@@ -1579,6 +1601,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event.is_action_pressed("ui_cancel") and archive_overlay.visible:
 		_on_archive_close_button_pressed()
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("ui_cancel") and replay_overlay.visible:
+		_on_replay_close_button_pressed()
 		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("ui_cancel") and knowledge_overlay.visible:
@@ -2597,12 +2623,16 @@ func _load_session_preferences() -> void:
 	var config := ConfigFile.new()
 	if config.load(SESSION_SETTINGS_PATH) != OK:
 		return
-	var last_game_id: Variant = config.get_value(SESSION_SETTINGS_SECTION, "last_game_id", "")
-	if typeof(last_game_id) == TYPE_STRING and not str(last_game_id).is_empty():
-		_current_wolf_game_id = str(last_game_id)
-	var last_player_name: Variant = config.get_value(SESSION_SETTINGS_SECTION, "player_name", "")
-	if typeof(last_player_name) == TYPE_STRING and not str(last_player_name).is_empty():
-		player_name_input.text = str(last_player_name)
+	# Migrate the legacy single-slot keys into slot 1 on first load.
+	var legacy_game_id: Variant = config.get_value(SESSION_SETTINGS_SECTION, "last_game_id", "")
+	var legacy_player_name: Variant = config.get_value(SESSION_SETTINGS_SECTION, "player_name", "")
+	if typeof(legacy_game_id) == TYPE_STRING and not str(legacy_game_id).is_empty():
+		config.set_value(SESSION_SETTINGS_SECTION, "slot_1_game_id", str(legacy_game_id))
+		config.set_value(SESSION_SETTINGS_SECTION, "last_game_id", "")
+	if typeof(legacy_player_name) == TYPE_STRING and not str(legacy_player_name).is_empty():
+		config.set_value(SESSION_SETTINGS_SECTION, "slot_1_player_name", str(legacy_player_name))
+		config.set_value(SESSION_SETTINGS_SECTION, "player_name", "")
+	_apply_session_slot(config)
 	var sound_value: Variant = config.get_value(SESSION_SETTINGS_SECTION, "sound_enabled", true)
 	_sound_enabled = true if typeof(sound_value) != TYPE_BOOL else bool(sound_value)
 	sound_enabled_toggle.button_pressed = _sound_enabled
@@ -2612,16 +2642,57 @@ func _load_session_preferences() -> void:
 	var sfx_value: Variant = config.get_value(SESSION_SETTINGS_SECTION, "sfx_volume", 80.0)
 	_sfx_volume = 80.0 if typeof(sfx_value) != TYPE_FLOAT else float(sfx_value)
 	sfx_volume_slider.value = _sfx_volume
+	var tutorial_value: Variant = config.get_value(SESSION_SETTINGS_SECTION, "tutorial_hints", true)
+	_tutorial_hints = true if typeof(tutorial_value) != TYPE_BOOL else bool(tutorial_value)
+	tutorial_hints_toggle.button_pressed = _tutorial_hints
+
+
+func _apply_session_slot(config: ConfigFile) -> void:
+	var game_id: Variant = config.get_value(
+		SESSION_SETTINGS_SECTION,
+		"slot_" + str(_session_slot) + "_game_id",
+		"",
+	)
+	_current_wolf_game_id = (
+		str(game_id) if typeof(game_id) == TYPE_STRING else ""
+	)
+	var player_name: Variant = config.get_value(
+		SESSION_SETTINGS_SECTION,
+		"slot_" + str(_session_slot) + "_player_name",
+		"",
+	)
+	if typeof(player_name) == TYPE_STRING and not str(player_name).is_empty():
+		player_name_input.text = str(player_name)
+	slot_option.selected = _session_slot - 1
+	continue_game_button.disabled = _current_wolf_game_id.is_empty()
+
+
+func _on_slot_selected(index: int) -> void:
+	_session_slot = index + 1
+	var config := ConfigFile.new()
+	config.load(SESSION_SETTINGS_PATH)
+	_apply_session_slot(config)
+	_save_session_preferences()
 
 
 func _save_session_preferences() -> void:
 	var config := ConfigFile.new()
-	config.set_value(SESSION_SETTINGS_SECTION, "schema_version", "agent_town_session.v1")
-	config.set_value(SESSION_SETTINGS_SECTION, "last_game_id", _current_wolf_game_id)
-	config.set_value(SESSION_SETTINGS_SECTION, "player_name", player_name_input.text.strip_edges())
+	config.load(SESSION_SETTINGS_PATH)
+	config.set_value(SESSION_SETTINGS_SECTION, "schema_version", "agent_town_session.v2")
+	config.set_value(
+		SESSION_SETTINGS_SECTION,
+		"slot_" + str(_session_slot) + "_game_id",
+		_current_wolf_game_id,
+	)
+	config.set_value(
+		SESSION_SETTINGS_SECTION,
+		"slot_" + str(_session_slot) + "_player_name",
+		player_name_input.text.strip_edges(),
+	)
 	config.set_value(SESSION_SETTINGS_SECTION, "sound_enabled", _sound_enabled)
 	config.set_value(SESSION_SETTINGS_SECTION, "bgm_volume", _bgm_volume)
 	config.set_value(SESSION_SETTINGS_SECTION, "sfx_volume", _sfx_volume)
+	config.set_value(SESSION_SETTINGS_SECTION, "tutorial_hints", _tutorial_hints)
 	var save_error := config.save(SESSION_SETTINGS_PATH)
 	if save_error != OK:
 		push_warning("无法保存会话设置；本次运行内仍可继续上局。")
@@ -3561,6 +3632,118 @@ func _on_export_stats_pressed() -> void:
 		_append_stats_line("已导出：" + path, false)
 
 
+func _on_replay_button_pressed() -> void:
+	_replay_events = []
+	var timeline: Variant = _game_summary_data.get("timeline", [])
+	if typeof(timeline) == TYPE_ARRAY:
+		_replay_events = timeline
+	_replay_index = 0
+	_replay_playing = false
+	replay_play_button.text = "播放"
+	replay_overlay.visible = true
+	replay_overlay.add_to_group("dialog_open")
+	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
+	_render_replay_step()
+	call_deferred("_focus_control_if_available", replay_next_button)
+
+
+func _on_replay_close_button_pressed() -> void:
+	_replay_playing = false
+	replay_overlay.visible = false
+	replay_overlay.remove_from_group("dialog_open")
+	replay_close_button.release_focus()
+	_release_focus_to_world()
+
+
+func _render_replay_step() -> void:
+	if _replay_events.is_empty():
+		replay_progress_label.text = "本局没有可回放的事件"
+		replay_body_label.text = ""
+		return
+	var index := clampi(_replay_index, 0, _replay_events.size() - 1)
+	replay_progress_label.text = "第 " + str(index + 1) + " / " + str(_replay_events.size()) + " 步"
+	var event: Dictionary = _replay_events[index]
+	var text := _format_summary_event(event)
+	var day := int(event.get("day", 0))
+	var phase := str(event.get("phase", ""))
+	var is_night := phase == "NIGHT" or phase == "NIGHT_RESULT"
+	var prefix := "🌙 " if is_night else ""
+	replay_body_label.text = prefix + text
+
+
+func _on_replay_prev_pressed() -> void:
+	if _replay_events.is_empty():
+		return
+	_replay_index = maxi(0, _replay_index - 1)
+	_render_replay_step()
+
+
+func _on_replay_next_pressed() -> void:
+	if _replay_events.is_empty():
+		return
+	_replay_index = mini(_replay_events.size() - 1, _replay_index + 1)
+	_render_replay_step()
+
+
+func _on_replay_play_pressed() -> void:
+	_replay_playing = not _replay_playing
+	replay_play_button.text = "暂停" if _replay_playing else "播放"
+	if _replay_playing:
+		_replay_autoplay_loop()
+
+
+func _replay_autoplay_loop() -> void:
+	while _replay_playing:
+		await get_tree().create_timer(1.4).timeout
+		if not _replay_playing:
+			return
+		if _replay_index >= _replay_events.size() - 1:
+			_replay_playing = false
+			replay_play_button.text = "播放"
+			return
+		_replay_index += 1
+		_render_replay_step()
+
+
+func _on_tutorial_hints_toggled(enabled: bool) -> void:
+	_tutorial_hints = enabled
+	_save_session_preferences()
+
+
+func _phase_tutorial_hint(phase: String) -> String:
+	match phase:
+		"NIGHT":
+			return "🌙 夜晚：按你的身份选择行动目标，然后点“结算夜晚”。"
+		"HUNTER_SHOT":
+			return "🔫 猎人触发：选择开枪目标或选择不开枪。"
+		"SHERIFF_SIGNUP":
+			return "🚨 警上报名：决定是否上警竞选警长。"
+		"SHERIFF_SPEECH":
+			return "🚨 竞选发言：轮到你在面板填写警上发言。"
+		"SHERIFF_WITHDRAWAL":
+			return "🚨 退水阶段：点“继续竞选”或“退水”。"
+		"SHERIFF_VOTE":
+			return "🗳 警长投票：警下玩家为候选人投票。"
+		"SHERIFF_RUNOFF_SPEECH", "SHERIFF_RUNOFF_VOTE":
+			return "⚖️ 平票 PK：候选人再次发言并重新投票。"
+		"MEETING_ORDER":
+			return "🗣 警长选择发言方向（出局左/右或警左/右）。"
+		"DAY_MEETING":
+			return "☀️ 白天会议：轮到你时在面板发言，NPC 轮到走近按 E。"
+		"SHERIFF_NOMINATION":
+			return "🗣 警长确认暂时/最终归票。"
+		"FREE_ACTIVITY":
+			return "🚶 自由活动：走近 NPC 按 E 私聊追问，结束点“结束自由活动”。"
+		"VOTE":
+			return "🗳 放逐投票：选择目标并写下理由后一次提交。"
+		"BADGE_TRANSFER":
+			return "🎖 警长出局：移交或撕毁警徽。"
+		"GAME_OVER":
+			return "🏁 游戏结束：查看复盘与高光。"
+		_:
+			return ""
+
+
 func _on_night_action_request_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
 	_is_submitting_night_action = false
 	_update_night_controls_from_current_state()
@@ -3979,6 +4162,10 @@ func _render_wolf_game(game_data: Dictionary) -> void:
 	var phase = game_data.get("phase", "")
 	var phase_changed := _current_wolf_phase != str(phase)
 	var message = game_data.get("message", "游戏已开始。")
+	if _tutorial_hints:
+		var hint := _phase_tutorial_hint(str(phase))
+		if not hint.is_empty():
+			message = hint + "\n" + message
 	var characters = game_data.get("characters", [])
 	var public_logs = game_data.get("public_logs", [])
 	var llm_enabled: bool = bool(game_data.get("llm_enabled", false))
@@ -6154,6 +6341,7 @@ func _configure_ui_focus_navigation() -> void:
 		stats_overlay,
 		menu_overlay,
 		archive_overlay,
+		replay_overlay,
 	]
 	for ui_root in ui_roots:
 		for node in ui_root.find_children("*", "BaseButton", true, false):
