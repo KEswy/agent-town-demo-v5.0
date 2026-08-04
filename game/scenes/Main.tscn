@@ -862,6 +862,11 @@ layout_mode = 2
 disabled = true
 text = "结束自由活动"
 
+[node name="FastForwardButton" type="Button" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/DaySpeechRow"]
+layout_mode = 2
+disabled = true
+text = "快进会议"
+
 [node name="SpeechPreviewPanel" type="PanelContainer" parent="UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox"]
 visible = false
 layout_mode = 2
@@ -2011,6 +2016,8 @@ text = "下一步"
 [node name="PlayerSpeechPreviewRequest" type="HTTPRequest" parent="."]
 
 [node name="NpcSpeechRequest" type="HTTPRequest" parent="."]
+
+[node name="NpcSpeechesBatchRequest" type="HTTPRequest" parent="."]
 
 [node name="EndFreeActivityRequest" type="HTTPRequest" parent="."]
 

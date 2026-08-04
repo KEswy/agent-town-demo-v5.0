@@ -763,7 +763,7 @@ curl -s -X POST \
 隔离 replay 和直接导入规则模块不会落盘。当前只允许一个 uvicorn worker，也不能
 运行多个进程共用该目录。
 
-V4.3-B 的 20 个开局后规则写接口可在 JSON body 传可选 `idempotency_key`。例如在
+V4.3-B 的 21 个开局后规则写接口可在 JSON body 传可选 `idempotency_key`。例如在
 合法 `NIGHT` 阶段结算一次夜晚（请替换 game ID；这个命令会真实推进对局）：
 
 ```bash

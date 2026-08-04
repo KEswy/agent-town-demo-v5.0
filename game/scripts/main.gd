@@ -11,6 +11,7 @@ const WOLF_HUNTER_SHOT_URL := "http://127.0.0.1:8000/api/hunter/shot"
 const WOLF_PLAYER_SPEECH_URL := "http://127.0.0.1:8000/api/day/player-speech"
 const WOLF_PLAYER_SPEECH_PREVIEW_URL := "http://127.0.0.1:8000/api/player-speech/preview"
 const WOLF_NPC_SPEECH_URL := "http://127.0.0.1:8000/api/day/npc-speech"
+const WOLF_NPC_SPEECHES_BATCH_URL := "http://127.0.0.1:8000/api/day/npc-speeches-batch"
 const WOLF_END_FREE_ACTIVITY_URL := "http://127.0.0.1:8000/api/day/end-free-activity"
 const WOLF_PRIVATE_CHAT_URL := "http://127.0.0.1:8000/api/day/private-chat"
 const WOLF_SHERIFF_SIGNUP_URL := "http://127.0.0.1:8000/api/sheriff/signup"
@@ -277,6 +278,7 @@ const CHARACTER_SKIN_PATHS := {
 @onready var player_speech_input: LineEdit = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/DaySpeechRow/PlayerSpeechInput
 @onready var submit_speech_button: Button = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/DaySpeechRow/SubmitSpeechButton
 @onready var end_free_activity_button: Button = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/DaySpeechRow/EndFreeActivityButton
+@onready var fast_forward_button: Button = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/DaySpeechRow/FastForwardButton
 @onready var speech_preview_panel: PanelContainer = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel
 @onready var speech_preview_summary: Label = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel/Margin/VBox/Summary
 @onready var speech_preview_edit_button: Button = $UI/WolfPanel/ContentPanel/ScrollContainer/Margin/VBox/SpeechPreviewPanel/Margin/VBox/Actions/EditButton
@@ -376,6 +378,7 @@ const CHARACTER_SKIN_PATHS := {
 @onready var player_speech_request: HTTPRequest = $PlayerSpeechRequest
 @onready var player_speech_preview_request: HTTPRequest = $PlayerSpeechPreviewRequest
 @onready var npc_speech_request: HTTPRequest = $NpcSpeechRequest
+@onready var npc_speeches_batch_request: HTTPRequest = $NpcSpeechesBatchRequest
 @onready var end_free_activity_request: HTTPRequest = $EndFreeActivityRequest
 @onready var private_chat_request: HTTPRequest = $PrivateChatRequest
 @onready var sheriff_action_request: HTTPRequest = $SheriffActionRequest
@@ -399,6 +402,7 @@ var _is_submitting_hunter_shot := false
 var _is_previewing_player_speech := false
 var _is_submitting_player_speech := false
 var _is_generating_npc_speeches := false
+var _is_fast_forwarding_speeches := false
 var _is_ending_free_activity := false
 var _is_private_chat_requesting := false
 var _is_sheriff_action_requesting := false
@@ -541,6 +545,7 @@ func _ready() -> void:
 	player_speech_request.request_completed.connect(_on_player_speech_request_completed)
 	player_speech_preview_request.request_completed.connect(_on_player_speech_preview_request_completed)
 	npc_speech_request.request_completed.connect(_on_npc_speech_request_completed)
+	npc_speeches_batch_request.request_completed.connect(_on_npc_speeches_batch_request_completed)
 	end_free_activity_request.request_completed.connect(_on_end_free_activity_request_completed)
 	private_chat_request.request_completed.connect(_on_private_chat_request_completed)
 	sheriff_action_request.request_completed.connect(_on_sheriff_action_request_completed)
@@ -581,6 +586,7 @@ func _ready() -> void:
 	speech_preview_edit_button.pressed.connect(_on_speech_preview_edit_button_pressed)
 	speech_preview_confirm_button.pressed.connect(_on_speech_preview_confirm_button_pressed)
 	end_free_activity_button.pressed.connect(_on_end_free_activity_button_pressed)
+	fast_forward_button.pressed.connect(_on_fast_forward_button_pressed)
 	submit_vote_button.pressed.connect(_on_submit_vote_button_pressed)
 	vote_reason_input.text_submitted.connect(_on_vote_reason_input_submitted)
 	wolf_menu_toggle_button.pressed.connect(_on_wolf_menu_toggle_button_pressed)
@@ -2224,6 +2230,17 @@ func _close_speech_preview_focus(restore_focus: bool) -> void:
 		)
 	else:
 		call_deferred("_repair_focus_after_modal_close")
+
+
+func _on_fast_forward_button_pressed() -> void:
+	if _is_fast_forwarding_speeches or _current_wolf_game_id.is_empty():
+		return
+
+	if _current_wolf_phase != "DAY_MEETING":
+		wolf_status_label.text = "后端状态：当前不是白天会议"
+		return
+
+	_request_current_npc_speeches_batch()
 
 
 func _on_end_free_activity_button_pressed() -> void:
@@ -3915,6 +3932,58 @@ func _on_npc_speech_request_completed(result: int, response_code: int, _headers:
 	_request_wolf_game_state(true)
 
 
+func _request_current_npc_speeches_batch() -> void:
+	if _is_fast_forwarding_speeches or _current_wolf_game_id.is_empty():
+		return
+
+	_is_fast_forwarding_speeches = true
+	_update_day_speech_controls_from_current_state()
+	wolf_status_label.text = "后端状态：正在快进会议（批量生成 NPC 发言）..."
+	dialog_box.call("show_notice", "会议快进", "正在批量生成 NPC 发言，轮到你会自动停下。")
+
+	var body := {
+		"game_id": _current_wolf_game_id
+	}
+	body = _prepare_idempotent_body("npc_speech", "npc_day_speech", body)
+	var headers = ["Content-Type: application/json"]
+	var error = npc_speeches_batch_request.request(
+		WOLF_NPC_SPEECHES_BATCH_URL,
+		headers,
+		HTTPClient.METHOD_POST,
+		JSON.stringify(body)
+	)
+	if error != OK:
+		_is_fast_forwarding_speeches = false
+		_update_day_speech_controls_from_current_state()
+		wolf_status_label.text = "后端状态：快进会议失败"
+		dialog_box.call("show_notice", "会议快进", "无法连接 Python 后端。")
+
+
+func _on_npc_speeches_batch_request_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	_is_fast_forwarding_speeches = false
+	_update_day_speech_controls_from_current_state()
+
+	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
+		wolf_status_label.text = "后端状态：快进会议失败"
+		if dialog_box.call("is_open"):
+			dialog_box.call("show_notice", "会议快进", _get_http_error_message(body, "当前不能快进会议。"))
+		return
+
+	_complete_idempotent_command("npc_speech")
+	var json = JSON.new()
+	var parse_error = json.parse(body.get_string_from_utf8())
+	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
+		var speeches = json.data.get("speeches", [])
+		wolf_game_info_label.text = _format_npc_speeches(speeches)
+		wolf_status_label.text = "后端状态：会议已快进到你的回合"
+		if dialog_box.call("is_open"):
+			dialog_box.call("show_notice", "会议快进", "NPC 发言已完成，轮到你了。")
+	else:
+		wolf_status_label.text = "后端状态：会议已快进"
+
+	_request_wolf_game_state(true)
+
+
 func _on_end_free_activity_request_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
 	_is_ending_free_activity = false
 	_update_day_speech_controls_from_current_state()
@@ -4516,6 +4585,11 @@ func _update_contextual_panel_visibility() -> void:
 	player_speech_input.visible = _current_wolf_phase == "DAY_MEETING"
 	submit_speech_button.visible = _current_wolf_phase == "DAY_MEETING"
 	end_free_activity_button.visible = _current_wolf_phase == "FREE_ACTIVITY"
+	fast_forward_button.visible = (
+		_current_wolf_phase == "DAY_MEETING"
+		and _current_meeting_speaker_id != 0
+		and _current_meeting_speaker_id != _current_player_character_id
+	)
 	temporary_nomination_row.visible = (
 		_current_wolf_phase == "DAY_MEETING"
 		and _current_meeting_speaker_id == _current_player_character_id
@@ -5319,6 +5393,7 @@ func _update_day_speech_controls_from_current_state() -> void:
 		player_speech_input.editable = false
 		submit_speech_button.disabled = true
 		end_free_activity_button.disabled = _is_ending_free_activity
+		fast_forward_button.disabled = true
 		_update_badge_flow_enabled_state()
 		return
 	if _current_wolf_phase != "DAY_MEETING":
@@ -5333,6 +5408,11 @@ func _update_day_speech_controls_from_current_state() -> void:
 		or _current_sheriff_id != _current_player_character_id
 		or _is_day_speech_requesting()
 	)
+	fast_forward_button.disabled = (
+		is_player_turn
+		or _current_meeting_speaker_id == 0
+		or _is_day_speech_requesting()
+	)
 	end_free_activity_button.disabled = true
 	_update_badge_flow_enabled_state()
 
@@ -5341,6 +5421,7 @@ func _disable_day_speech_controls() -> void:
 	player_speech_input.editable = false
 	submit_speech_button.disabled = true
 	end_free_activity_button.disabled = true
+	fast_forward_button.disabled = true
 	temporary_nomination_option.disabled = true
 	_update_badge_flow_enabled_state()
 
@@ -5350,6 +5431,7 @@ func _set_day_speech_buttons_disabled(disabled: bool) -> void:
 	player_speech_input.editable = not disabled and is_player_turn
 	submit_speech_button.disabled = disabled or not is_player_turn
 	end_free_activity_button.disabled = true
+	fast_forward_button.disabled = true
 	temporary_nomination_option.disabled = disabled or not is_player_turn or _current_sheriff_id != _current_player_character_id
 	_update_badge_flow_enabled_state()
 
@@ -5364,6 +5446,7 @@ func _is_day_speech_requesting() -> bool:
 		or speech_preview_panel.visible
 		or _is_submitting_player_speech
 		or _is_generating_npc_speeches
+		or _is_fast_forwarding_speeches
 		or _is_ending_free_activity
 	)
 

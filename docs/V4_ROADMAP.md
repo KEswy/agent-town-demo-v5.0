@@ -289,7 +289,7 @@ seed 区间检查稳定性，避免为了通过排序而读取隐藏身份或过
 
 - `app/game_persistence.py` 为真实 FastAPI 生命周期中的新局和全部成功规则命令
   保存一份完整私有状态；`GAME_STORE` 继续作为活动缓存，不再是唯一恢复来源。
-- 新局先保存再发布进缓存。20 个规则写入口使用统一 transaction guard；任一
+- 新局先保存再发布进缓存。21 个规则写入口使用统一 transaction guard；任一
   pre-commit helper/模型构造异常或原子写失败都会恢复命令前完整 checkpoint。
 - 同目录临时文件从创建起为 `0600`，flush/fsync 后使用 `os.replace`；目录为
   `0700`。替换成功后的目录同步只做 best effort，不会让内存反向回滚。
@@ -363,7 +363,7 @@ V4.3-A 与 V4.3-B 之间曾生成过一种早期 `game_save.v1`：其合法快�
 ### 已完成范围
 
 - `app/idempotency.py` 定义外部 `game_command_idempotency.v1` 和持久
-  `game_command_result.v1`；18 个请求模型以可选字段覆盖 20 个开局后规则写入口。
+  `game_command_result.v1`；18 个请求模型以可选字段覆盖 21 个开局后规则写入口。
 - 统一 transaction guard 在业务/阶段校验前查找同局结果。相同 key、端点和去 key
   payload 摘要返回原响应；端点或 payload 不同返回 409，且零状态变化。
 - 第一次带 key 的规则函数必须恰好追加一个事件。响应模型校验通过后，事件、响应
@@ -398,7 +398,7 @@ key 的作用域和保留周期是“一份 `game_id` 的完整存档生命周�
 
 ### 验收结果
 
-1. OpenAPI 中 18 个请求 schema 均有可选 key，20 个规则写函数均注册响应模型；
+1. OpenAPI 中 18 个请求 schema 均有可选 key，21 个规则写函数均注册响应模型；
    `GameStartRequest` 明确没有该字段。
 2. 同 key 顺序重复和两个线程并发重复都只追加一个事件、一个结果记录和一次状态
    效果，并返回完全相同的响应 payload。

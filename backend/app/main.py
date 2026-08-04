@@ -5366,6 +5366,63 @@ def generate_npc_speeches(request: NpcSpeechesRequest) -> NpcSpeechesResponse:
     return NpcSpeechesResponse(speeches=[speech_item], memory_updates=[memory_update])
 
 
+@app.post("/api/day/npc-speeches-batch", response_model=NpcSpeechesResponse)
+@transactional_rule_endpoint
+def generate_npc_speeches_batch(
+    request: NpcSpeechesRequest,
+) -> NpcSpeechesResponse:
+    """Fast-forward the meeting through every pending NPC speaker.
+
+    Stops when the player's turn arrives or the meeting ends.  Each generated
+    speech follows the exact same rule path as the sequential flow, so the
+    event chain, replay, and public logs stay consistent.
+    """
+
+    with GAME_LOCK:
+        game_state = get_game_state_or_404(request.game_id)
+        command_checkpoint = begin_game_command(game_state)
+        ensure_day_speech_phase(game_state)
+        if request.day is not None and request.day != game_state.day:
+            raise HTTPException(
+                status_code=400,
+                detail="请求的天数和当前游戏天数不一致。",
+            )
+        speeches = []
+        memory_updates = []
+        while True:
+            current_speaker_id = get_current_meeting_speaker_id(game_state)
+            if current_speaker_id is None:
+                break
+            speaker = get_character(game_state, current_speaker_id)
+            if speaker.is_player:
+                break
+            speech_item, memory_update = generate_current_npc_meeting_speech(
+                game_state,
+                speaker,
+            )
+            speeches.append(speech_item)
+            memory_updates.append(memory_update)
+            advance_day_meeting(game_state)
+            record_rule_command(
+                game_state,
+                request,
+                command_checkpoint,
+                event_type="npc_day_speeches_generated",
+                visibility="public",
+                actor_id=speaker.id,
+            )
+        if not speeches:
+            raise HTTPException(
+                status_code=400,
+                detail="当前没有待发言的 NPC。",
+            )
+        game_state.updated_at = datetime.now(timezone.utc).isoformat()
+    return NpcSpeechesResponse(
+        speeches=speeches,
+        memory_updates=memory_updates,
+    )
+
+
 @app.post("/api/day/end-free-activity", response_model=EndFreeActivityResponse)
 @transactional_rule_endpoint
 def end_free_activity(request: EndFreeActivityRequest) -> EndFreeActivityResponse:

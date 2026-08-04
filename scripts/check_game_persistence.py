@@ -370,6 +370,7 @@ def main() -> int:
             "submit_player_speech",
             "generate_npc_speech",
             "generate_npc_speeches",
+            "generate_npc_speeches_batch",
             "end_free_activity",
             "private_chat",
             "generate_npc_vote_decisions",
@@ -381,7 +382,7 @@ def main() -> int:
             set(rules.IDEMPOTENT_ENDPOINT_RESPONSE_MODELS)
             != expected_idempotent_endpoints
         ):
-            raise AssertionError("V4.3-B must guard the exact 20 commands")
+            raise AssertionError("V4.3-B must guard the exact 21 commands")
 
         rules.deactivate_game_persistence()
         rules.GAME_STORE.clear()

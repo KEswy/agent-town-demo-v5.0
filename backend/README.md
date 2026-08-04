@@ -478,7 +478,7 @@ Godot 公开记录页显示生命周期和候选，并附“需核对，不代�
 ## V4.3-B 幂等规则命令
 
 `app/idempotency.py` 定义 `game_command_idempotency.v1` 与严格的
-`game_command_result.v1`。全部 20 个开局后规则写函数共用同一个
+`game_command_result.v1`。全部 21 个开局后规则写函数共用同一个
 `transactional_rule_endpoint`：对应 18 个请求模型新增可选 body 字段
 `idempotency_key`，旧客户端不传仍按原协议执行。
 
@@ -529,7 +529,7 @@ save/restore 和 replay 也不属于这 20 条命令。无 key 请求保持兼�
 
 - 只有 FastAPI `lifespan` 会启用自动持久化。直接导入 `app.main`、离线 simulation
   和隔离 replay 不注册为持久局，也不会创建或改写存档。
-- 新局发布进 `GAME_STORE` 前先完成首次保存；之后全部 20 个规则写入口共享事务
+- 新局发布进 `GAME_STORE` 前先完成首次保存；之后全部 21 个规则写入口共享事务
   guard。命令提交前任何 helper/校验异常恢复完整 checkpoint；事件封印后若写盘
   失败，则旧文件保持不变、内存回滚并返回 503。
 - `GameSaveStore` 在同目录以 `0600` 独占创建临时文件，flush/fsync 后
