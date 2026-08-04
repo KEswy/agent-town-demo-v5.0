@@ -197,6 +197,7 @@ from .config import (
     MAX_GAME_RANDOM_SEED,
     MAX_LLM_VALIDATION_ATTEMPTS,
     MEMORY_FILE,
+    MEMORY_META_FILE,
     NPC_NAMES,
     NPC_PERSONALITIES,
     NPC_PROFILES_FILE,
@@ -207,6 +208,7 @@ from .config import (
     RESIDENT_CHAT_CONTEXT_SCHEMA_VERSION,
     RESIDENT_CHAT_MAX_LENGTH,
     RESIDENT_CHAT_MEMORY_LIMIT,
+    RESIDENT_MEMORY_SUMMARY_MAX_LENGTH,
     ROLE_LABELS,
     SHERIFF_WINDOW_PHASES,
     VALID_ELIMINATION_SOURCES,
@@ -324,6 +326,7 @@ NPC_TUNING_CONFIG: Optional[NPCTuningConfigV1] = None
 
 
 MEMORY_STORE: dict[str, list[MemoryItem]] = {}
+MEMORY_META_STORE: dict[str, dict[str, object]] = {}
 MEMORY_LOCK = Lock()
 GAME_STORE: dict[str, WolfGameState] = {}
 GAME_LOCK = RLock()
@@ -5587,6 +5590,7 @@ def chat(request: ChatRequest) -> ChatResponse:
     with MEMORY_LOCK:
         memory_snapshot = list(MEMORY_STORE.get(memory_key, []))
 
+    memory_meta = MEMORY_META_STORE.get(memory_key, {})
     expected_memory_count = len(memory_snapshot) + 1
     if profile.use_llm_for_chat:
         fallback_reply = build_resident_fallback_reply(
@@ -5594,6 +5598,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             request.message,
             matched_knowledge,
             memory_snapshot,
+            memory_meta,
         )
         generation = generate_resident_chat_reply(
             profile,
@@ -5603,6 +5608,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             matched_knowledge,
             memory_snapshot,
             fallback_reply,
+            memory_meta,
         )
         reply = generation.text
     else:
@@ -5634,7 +5640,12 @@ def chat(request: ChatRequest) -> ChatResponse:
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
         )
+        MEMORY_META_STORE[memory_key] = build_resident_memory_meta_update(
+            memory_key,
+            request.message,
+        )
         save_memory_store()
+        save_memory_meta_store()
 
     knowledge_title = matched_knowledge[0].title if matched_knowledge else ""
     knowledge_titles = [item.title for item in matched_knowledge]
@@ -5749,6 +5760,7 @@ def build_resident_fallback_reply(
     message: str,
     matched_knowledge: list[KnowledgeItem],
     memories: list[MemoryItem],
+    memory_meta: Optional[dict[str, object]] = None,
 ) -> str:
     """Return a short in-character answer when the resident LLM is unavailable."""
     normalized_message = " ".join(message.split()).strip()
@@ -5763,7 +5775,18 @@ def build_resident_fallback_reply(
             if is_huaihuai
             else "记得呀，我刚从浅蓝邮差包里把那段回忆翻出来。"
         )
-        return f"{lead}你上次提到的是“{previous_message}”。这次想从哪里接着聊？"
+        preferences = (memory_meta or {}).get("preferences") or {}
+        preference_hint = ""
+        if preferences:
+            top_category = max(
+                preferences,
+                key=lambda category: int(preferences[category]),
+            )
+            preference_hint = f"我还记得你常和我聊{top_category}。"
+        return (
+            f"{lead}你上次提到的是“{previous_message}”。"
+            f"{preference_hint}这次想从哪里接着聊？"
+        )
 
     if matched_knowledge:
         lead = (
@@ -5801,6 +5824,7 @@ def generate_resident_chat_reply(
     matched_knowledge: list[KnowledgeItem],
     memories: list[MemoryItem],
     fallback_reply: str,
+    memory_meta: Optional[dict[str, object]] = None,
 ) -> LLMGeneration:
     recent_memories = memories[-RESIDENT_CHAT_MEMORY_LIMIT:]
     context = {
@@ -5827,6 +5851,18 @@ def generate_resident_chat_reply(
             }
             for item in recent_memories
         ],
+        "long_term_memory": {
+            "summary": str((memory_meta or {}).get("summary", "")),
+            "player_preferences": sorted(
+                (
+                    (category, int(count))
+                    for category, count in (
+                        (memory_meta or {}).get("preferences") or {}
+                    ).items()
+                ),
+                key=lambda item: -item[1],
+            )[:3],
+        },
         "legal_knowledge": [
             {"title": item.title, "content": item.content}
             for item in matched_knowledge
@@ -5975,6 +6011,56 @@ def score_knowledge_item(item: KnowledgeItem, message: str) -> int:
 
 def make_memory_key(player_id: str, npc_name: str) -> str:
     return f"{player_id}::{npc_name}"
+
+
+RESIDENT_MEMORY_PREFERENCE_KEYWORDS: dict[str, list[str]] = {
+    "狼人杀": ["狼人杀", "预言家", "女巫", "守卫", "猎人", "投票", "对局", "上警", "查杀", "金水", "警长"],
+    "游戏": ["游戏", "通关", "副本", "开黑", "角色"],
+    "生活": ["工作", "学习", "考试", "上班", "项目", "加班"],
+    "情绪": ["难过", "伤心", "开心", "高兴", "害怕", "焦虑", "生气", "累", "孤单", "压力"],
+    "食物": ["吃", "点心", "饼干", "奶茶", "咖啡", "饭", "好吃"],
+    "朋友": ["朋友", "家人", "同事", "同学"],
+    "音乐": ["音乐", "歌", "唱歌", "旋律"],
+    "天气": ["天气", "下雨", "太阳", "下雪", "太热", "太冷"],
+}
+
+
+def build_resident_memory_meta_update(
+    memory_key: str,
+    player_message: str,
+) -> dict[str, object]:
+    """Fold long-term resident memory into a compact summary and preferences."""
+
+    current = MEMORY_META_STORE.get(memory_key)
+    preferences = dict(current["preferences"]) if current else {}
+    for category, keywords in RESIDENT_MEMORY_PREFERENCE_KEYWORDS.items():
+        if any(keyword in player_message for keyword in keywords):
+            preferences[category] = int(preferences.get(category, 0)) + 1
+    memories = MEMORY_STORE.get(memory_key, [])
+    older_memories = (
+        memories[: -RESIDENT_CHAT_MEMORY_LIMIT]
+        if len(memories) > RESIDENT_CHAT_MEMORY_LIMIT
+        else []
+    )
+    older_text = " | ".join(
+        item.player_message.strip()
+        for item in older_memories
+        if item.player_message.strip()
+    )
+    summary = older_text[:RESIDENT_MEMORY_SUMMARY_MAX_LENGTH]
+    return {
+        "preferences": preferences,
+        "summary": summary,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def save_memory_meta_store() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    MEMORY_META_FILE.write_text(
+        json.dumps(MEMORY_META_STORE, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def count_memory_items(memory_store: dict[str, list[MemoryItem]]) -> int:
@@ -19950,6 +20036,10 @@ def load_memory_store() -> None:
     raw_data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
     for memory_key, items in raw_data.items():
         MEMORY_STORE[memory_key] = [MemoryItem(**item) for item in items]
+    if MEMORY_META_FILE.exists():
+        MEMORY_META_STORE.update(
+            json.loads(MEMORY_META_FILE.read_text(encoding="utf-8"))
+        )
 
 
 def read_npc_profiles() -> dict[str, NPCProfile]:

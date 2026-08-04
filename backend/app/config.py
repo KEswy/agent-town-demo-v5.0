@@ -14,6 +14,7 @@ DATA_DIR = Path(
     os.environ.get("AGENT_TOWN_DATA_DIR", str(DEFAULT_DATA_DIR))
 ).expanduser()
 MEMORY_FILE = DATA_DIR / "memory.json"
+MEMORY_META_FILE = DATA_DIR / "memory_meta.json"
 GAME_SAVE_DIR = Path(
     os.environ.get("AGENT_TOWN_GAME_SAVE_DIR", str(DATA_DIR / "games"))
 )
@@ -26,6 +27,7 @@ MAX_LLM_VALIDATION_ATTEMPTS = 5
 LLM_VALIDATOR_VERSION = "semantic-v3"
 RESIDENT_CHAT_CONTEXT_SCHEMA_VERSION = "resident_chat_context.v1"
 RESIDENT_CHAT_MEMORY_LIMIT = 8
+RESIDENT_MEMORY_SUMMARY_MAX_LENGTH = 280
 RESIDENT_CHAT_MAX_LENGTH = 360
 VALID_ELIMINATION_SOURCES = {
     "night_kill": "werewolf_kill",
@@ -193,5 +195,3 @@ NPC_PERSONALITIES = {
         "leadership": 0.78,
     },
 }
-
-
