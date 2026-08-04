@@ -9545,9 +9545,12 @@ try:
         for summary in selected_signal_summaries
     ):
         raise SystemExit("the Python-rendered speech should preserve the selected signal summary")
-    if not all(
+    if not any(
         marker in llm_speech_response.speech.speech
-        for marker in ["重点怀疑", "问", "不符就改票", "暂票"]
+        for marker in ["重点怀疑", "最在意", "想听"]
+    ) or not all(
+        marker in llm_speech_response.speech.speech
+        for marker in ["问", "不符就改票", "暂票"]
     ):
         raise SystemExit(
             "the Python-rendered V3 body must preserve stance, question, verification, and provisional vote"

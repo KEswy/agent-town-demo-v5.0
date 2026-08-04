@@ -421,6 +421,11 @@ layout_mode = 2
 tooltip_text = "查看个人战绩与各身份胜率"
 text = "战绩"
 
+[node name="SaveButton" type="Button" parent="UI/PhaseHUD/Panel/Margin/Row"]
+layout_mode = 2
+tooltip_text = "保存当前对局进度到本地存档"
+text = "存盘"
+
 [node name="SetupToggleButton" type="Button" parent="UI/PhaseHUD/Panel/Margin/Row"]
 layout_mode = 2
 tooltip_text = "设置并开始新对局"
@@ -1209,11 +1214,42 @@ text = "启用 LLM 输出校验"
 
 [node name="SoundRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
 layout_mode = 2
+theme_override_constants/separation = 14
 
 [node name="SoundEnabledToggle" type="CheckButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow"]
 layout_mode = 2
 button_pressed = true
 text = "启用音效与音乐"
+
+[node name="BGMVolumeBox" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="BGMVolumeLabel" type="Label" parent="UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/BGMVolumeBox"]
+layout_mode = 2
+text = "音乐"
+
+[node name="BGMVolumeSlider" type="HSlider" parent="UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/BGMVolumeBox"]
+custom_minimum_size = Vector2(100, 0)
+layout_mode = 2
+min_value = 0.0
+max_value = 100.0
+value = 70.0
+
+[node name="SFXVolumeBox" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="SFXVolumeLabel" type="Label" parent="UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/SFXVolumeBox"]
+layout_mode = 2
+text = "音效"
+
+[node name="SFXVolumeSlider" type="HSlider" parent="UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/SFXVolumeBox"]
+custom_minimum_size = Vector2(100, 0)
+layout_mode = 2
+min_value = 0.0
+max_value = 100.0
+value = 80.0
 
 [node name="PlayerRoleRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
 layout_mode = 2
@@ -1708,3 +1744,5 @@ text = "下一步"
 [node name="RecoveryStatusRequest" type="HTTPRequest" parent="."]
 
 [node name="KnowledgeSearchRequest" type="HTTPRequest" parent="."]
+
+[node name="SaveGameRequest" type="HTTPRequest" parent="."]

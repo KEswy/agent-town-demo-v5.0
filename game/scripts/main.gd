@@ -314,6 +314,10 @@ const CHARACTER_SKIN_PATHS := {
 @onready var stats_overlay: Control = $UI/StatsOverlay
 @onready var stats_close_button: Button = $UI/StatsOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
 @onready var stats_body_list: VBoxContainer = $UI/StatsOverlay/Panel/Margin/VBox/BodyScroll/BodyList
+@onready var bgm_volume_slider: HSlider = $UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/BGMVolumeBox/BGMVolumeSlider
+@onready var sfx_volume_slider: HSlider = $UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/SFXVolumeBox/SFXVolumeSlider
+@onready var save_button: Button = $UI/PhaseHUD/Panel/Margin/Row/SaveButton
+@onready var save_game_request: HTTPRequest = $SaveGameRequest
 @onready var player_role_option: OptionButton = $UI/GameSetupOverlay/Panel/Margin/VBox/PlayerRoleRow/PlayerRoleOption
 @onready var llm_enabled_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow/LLMEnabledToggle
 @onready var llm_settings_hint: Label = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow/LLMSettingsHint
@@ -383,6 +387,8 @@ var _current_wolf_game_id := ""
 var _resume_pending_game := false
 var _recovered_game_ids: Array[String] = []
 var _sound_enabled := true
+var _bgm_volume := 70.0
+var _sfx_volume := 80.0
 var _last_night_visual := false
 var _animate_eliminations_on_next_render := false
 var _last_alive_ids := {}
@@ -498,6 +504,10 @@ func _ready() -> void:
 	knowledge_search_request.request_completed.connect(_on_knowledge_search_request_completed)
 	stats_button.pressed.connect(_on_stats_button_pressed)
 	stats_close_button.pressed.connect(_on_stats_close_button_pressed)
+	save_button.pressed.connect(_on_save_button_pressed)
+	save_game_request.request_completed.connect(_on_save_game_request_completed)
+	bgm_volume_slider.value_changed.connect(_on_bgm_volume_changed)
+	sfx_volume_slider.value_changed.connect(_on_sfx_volume_changed)
 	night_action_request.request_completed.connect(_on_night_action_request_completed)
 	night_resolve_request.request_completed.connect(_on_night_resolve_request_completed)
 	hunter_shot_request.request_completed.connect(_on_hunter_shot_request_completed)
@@ -624,6 +634,7 @@ func _setup_audio() -> void:
 	add_child(_audio_sfx)
 	for sfx_name in ["confirm", "cancel", "vote", "eliminate", "badge", "night", "day"]:
 		_sfx_streams[sfx_name] = load("res://assets/audio/sfx_%s.wav" % sfx_name)
+	_apply_audio_volumes()
 	_update_bgm(false)
 
 
@@ -726,6 +737,8 @@ func _show_game_setup() -> void:
 		if _current_wolf_phase == "GAME_OVER"
 		else "准备好后开始游戏，也可以先关闭窗口探索小镇。"
 	)
+	if _current_wolf_game_id.is_empty():
+		setup_status_label.text += "\n提示：右上角「规则」「战绩」随时可用；「继续上局」可恢复未完成对局。"
 	player.call("set_menu_safe_area", false, 0.0)
 	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
 	call_deferred("_focus_control_if_available", player_name_input)
@@ -1541,6 +1554,14 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event.is_action_pressed("ui_cancel") and _intel_panel_open:
 		_set_intel_panel_open(false)
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("ui_cancel") and knowledge_overlay.visible:
+		_on_knowledge_close_button_pressed()
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("ui_cancel") and stats_overlay.visible:
+		_on_stats_close_button_pressed()
 		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("ui_cancel") and _ui_focus_scope != UI_FOCUS_SCOPE_WORLD:
@@ -2563,6 +2584,12 @@ func _load_session_preferences() -> void:
 	var sound_value: Variant = config.get_value(SESSION_SETTINGS_SECTION, "sound_enabled", true)
 	_sound_enabled = true if typeof(sound_value) != TYPE_BOOL else bool(sound_value)
 	sound_enabled_toggle.button_pressed = _sound_enabled
+	var bgm_value: Variant = config.get_value(SESSION_SETTINGS_SECTION, "bgm_volume", 70.0)
+	_bgm_volume = 70.0 if typeof(bgm_value) != TYPE_FLOAT else float(bgm_value)
+	bgm_volume_slider.value = _bgm_volume
+	var sfx_value: Variant = config.get_value(SESSION_SETTINGS_SECTION, "sfx_volume", 80.0)
+	_sfx_volume = 80.0 if typeof(sfx_value) != TYPE_FLOAT else float(sfx_value)
+	sfx_volume_slider.value = _sfx_volume
 
 
 func _save_session_preferences() -> void:
@@ -2571,6 +2598,8 @@ func _save_session_preferences() -> void:
 	config.set_value(SESSION_SETTINGS_SECTION, "last_game_id", _current_wolf_game_id)
 	config.set_value(SESSION_SETTINGS_SECTION, "player_name", player_name_input.text.strip_edges())
 	config.set_value(SESSION_SETTINGS_SECTION, "sound_enabled", _sound_enabled)
+	config.set_value(SESSION_SETTINGS_SECTION, "bgm_volume", _bgm_volume)
+	config.set_value(SESSION_SETTINGS_SECTION, "sfx_volume", _sfx_volume)
 	var save_error := config.save(SESSION_SETTINGS_PATH)
 	if save_error != OK:
 		push_warning("无法保存会话设置；本次运行内仍可继续上局。")
@@ -3113,6 +3142,20 @@ func _handle_elimination_animation(characters: Variant) -> void:
 	_last_alive_ids = current_alive
 
 
+func _play_night_pulse() -> void:
+	var rect := ColorRect.new()
+	rect.color = Color(0.02, 0.03, 0.08, 0.0)
+	rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var parent := get_tree().current_scene
+	if parent == null:
+		return
+	parent.add_child(rect)
+	var tween := create_tween()
+	tween.tween_property(rect, "color:a", 0.42, 0.35)
+	tween.tween_property(rect, "color:a", 0.0, 0.9)
+	tween.tween_callback(rect.queue_free)
+
+
 func _animate_character_eliminated(character_id: int) -> void:
 	var target: Node2D = null
 	if character_id == _current_player_character_id:
@@ -3132,6 +3175,7 @@ func _animate_character_eliminated(character_id: int) -> void:
 		flash.tween_property(target, "modulate", original_modulate, 0.12)
 	flash.tween_property(target, "scale", original_scale * 0.8, 0.2)
 	flash.tween_property(target, "scale", original_scale, 0.25)
+	await get_tree().create_timer(0.35).timeout
 	var label := Label.new()
 	label.text = "出局"
 	label.add_theme_font_size_override("font_size", 26)
@@ -3153,6 +3197,55 @@ func _animate_character_eliminated(character_id: int) -> void:
 		float_tween.parallel().tween_property(label, "modulate:a", 0.0, 1.0)
 		float_tween.tween_callback(label.queue_free)
 	_play_sfx("eliminate")
+
+
+func _on_save_button_pressed() -> void:
+	if _current_wolf_game_id.is_empty():
+		wolf_status_label.text = "后端状态：还没有可保存的对局"
+		return
+	if _is_requesting:
+		return
+	_is_requesting = true
+	wolf_status_label.text = "后端状态：正在保存进度..."
+	var url := WOLF_GAME_STATE_URL_PREFIX + _current_wolf_game_id.uri_encode() + "/save"
+	var error := save_game_request.request(url, ["Content-Type: application/json"], HTTPClient.METHOD_POST, "{}")
+	if error != OK:
+		_is_requesting = false
+		wolf_status_label.text = "后端状态：保存失败"
+
+
+func _on_save_game_request_completed(
+	result: int,
+	response_code: int,
+	_headers: PackedStringArray,
+	body: PackedByteArray
+) -> void:
+	_is_requesting = false
+	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
+		wolf_status_label.text = "后端状态：保存失败"
+		return
+	wolf_status_label.text = "后端状态：已保存到本地存档"
+
+
+func _on_bgm_volume_changed(value: float) -> void:
+	_bgm_volume = value
+	_apply_audio_volumes()
+	_save_session_preferences()
+
+
+func _on_sfx_volume_changed(value: float) -> void:
+	_sfx_volume = value
+	_apply_audio_volumes()
+	_save_session_preferences()
+
+
+func _apply_audio_volumes() -> void:
+	if _audio_bgm_day != null:
+		_audio_bgm_day.volume_db = lerpf(-28.0, -6.0, _bgm_volume / 100.0)
+	if _audio_bgm_night != null:
+		_audio_bgm_night.volume_db = lerpf(-30.0, -8.0, _bgm_volume / 100.0)
+	if _audio_sfx != null:
+		_audio_sfx.volume_db = lerpf(-20.0, -2.0, _sfx_volume / 100.0)
 
 
 func _on_night_action_request_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
@@ -3182,6 +3275,7 @@ func _on_night_resolve_request_completed(result: int, response_code: int, _heade
 
 	_complete_idempotent_command("night_resolve")
 	_play_sfx("eliminate")
+	_play_night_pulse()
 	_animate_eliminations_on_next_render = true
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
@@ -5742,6 +5836,8 @@ func _configure_ui_focus_navigation() -> void:
 		game_summary_overlay,
 		onboarding_overlay,
 		dialog_box,
+		knowledge_overlay,
+		stats_overlay,
 	]
 	for ui_root in ui_roots:
 		for node in ui_root.find_children("*", "BaseButton", true, false):

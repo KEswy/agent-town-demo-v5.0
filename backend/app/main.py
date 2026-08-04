@@ -13147,6 +13147,28 @@ def build_public_plan_follow_up_text(
     return "；".join(parts) + "。" if parts else ""
 
 
+def _pick_variant_template(
+    game_state: WolfGameState,
+    speaker: CharacterState,
+    target: Optional[CharacterState],
+    salt: str,
+    variants: list[str],
+) -> str:
+    """Deterministically choose one phrasing so nearby NPCs do not repeat."""
+
+    if not variants:
+        return ""
+    target_id = target.id if target is not None else 0
+    index = deterministic_seed_value(
+        game_state.random_seed,
+        (
+            f"speech_template_v1:{salt}:{speaker.id}:"
+            f"{game_state.day}:{target_id}"
+        ),
+    ) % len(variants)
+    return variants[index]
+
+
 def build_structured_public_speech_rule_text(
     game_state: WolfGameState,
     speaker: CharacterState,
@@ -13173,25 +13195,71 @@ def build_structured_public_speech_rule_text(
         target.id,
     ):
         text = append_public_rag_evidence(
-            (
-                f"{format_full_character_name(target)}给我查杀，我不认这套预言家逻辑，"
-                "请他讲清身份和验人。"
+            _pick_variant_template(
+                game_state,
+                speaker,
+                target,
+                "opposition",
+                [
+                    (
+                        f"{format_full_character_name(target)}给我查杀，我不认这套"
+                        "预言家逻辑，请他讲清身份和验人。"
+                    ),
+                    (
+                        f"我不接受{format_full_character_name(target)}的查杀，"
+                        "这套预言家逻辑站不住，请他把身份和验人讲清楚。"
+                    ),
+                    (
+                        f"{format_full_character_name(target)}对我的查杀我不认可，"
+                        "先请他说清验人逻辑和身份。"
+                    ),
+                ],
             ),
             evidence,
         )
     elif decision.intent == PublicSpeechIntent.DEFEND and target is not None:
         text = append_public_rag_evidence(
-            f"我暂不打{target.name}，质疑者先给逻辑，再看回应和票型。",
+            _pick_variant_template(
+                game_state,
+                speaker,
+                target,
+                "defend",
+                [
+                    f"我暂不打{target.name}，质疑者先给逻辑，再看回应和票型。",
+                    f"我暂时不怀疑{target.name}，想先听质疑者的逻辑，再看他的回应和票型。",
+                    f"我不会急着打{target.name}，质疑请先拿出逻辑，之后看回应和票型。",
+                ],
+            ),
             evidence,
         )
     elif decision.intent == PublicSpeechIntent.PRESSURE and target is not None:
         text = append_public_rag_evidence(
-            f"我重点怀疑{target.name}，请他明确站边和理由。",
+            _pick_variant_template(
+                game_state,
+                speaker,
+                target,
+                "pressure",
+                [
+                    f"我重点怀疑{target.name}，请他明确站边和理由。",
+                    f"目前我最在意{target.name}的站边，希望他给出明确说法。",
+                    f"我更想听{target.name}解释清楚立场和逻辑。",
+                ],
+            ),
             evidence,
         )
     elif decision.intent == PublicSpeechIntent.OBSERVE and target is not None:
         text = append_public_rag_evidence(
-            f"我先观察{target.name}，请他明确站边，后续看票型。",
+            _pick_variant_template(
+                game_state,
+                speaker,
+                target,
+                "observe",
+                [
+                    f"我先观察{target.name}，请他明确站边，后续看票型。",
+                    f"我暂时观望{target.name}，先看他怎么站边，再结合票型判断。",
+                    f"我会盯住{target.name}的后续发言和站边，用票型验证。",
+                ],
+            ),
             evidence,
         )
     else:
