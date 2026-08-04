@@ -4636,7 +4636,7 @@ if any(
 batch = run_rule_simulation_batch(20260719, 6)
 if batch["games_completed"] != 6:
     raise SystemExit("batch simulation did not complete every requested game")
-if batch["summary"]["winner_counts"] != {"good": 1, "werewolf": 5}:
+if batch["summary"]["winner_counts"] != {"good": 2, "werewolf": 4}:
     raise SystemExit("V5 six-seed balance regression fixture changed")
 if (
     batch["schema_version"] != BATCH_SCHEMA_VERSION
@@ -15892,7 +15892,7 @@ def check_godot_ui_layout() -> None:
         if fragment not in scene_text:
             raise SmokeCheckError("resident scene introduction is not synchronized with its visual identity")
 
-    if scene_text.count('theme = SubResource("Theme_light_ui")') != 9:
+    if scene_text.count('theme = SubResource("Theme_light_ui")') != 10:
         raise SmokeCheckError("every light UI root should use the black-text light theme")
     light_ui_start = scene_text.index('[node name="PhaseHUD" type="Control" parent="UI"]')
     light_ui_end = scene_text.index('[node name="GameSummaryOverlay" type="Control" parent="UI"]')

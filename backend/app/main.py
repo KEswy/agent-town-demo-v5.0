@@ -3117,14 +3117,34 @@ def generate_npc_sheriff_speech(
     evidence = choose_public_decision_evidence(rag_context)
     if planned_claims:
         rule_speech = build_public_claim_speech(game_state, speaker, planned_claims)
-        rule_speech += "我上警，后续看结果和票型。"
+        rule_speech += _pick_variant_template(
+            game_state,
+            speaker,
+            target,
+            "sheriff_signup_claims",
+            [
+                "我上警，后续看结果和票型。",
+                "我上警，先看大家的发言和站边。",
+                "我上警，后续再结合票型判断。",
+            ],
+        )
     elif partner_rule_speech:
         rule_speech = partner_rule_speech
     elif speaker.role == "werewolf" and speaker.id == game_state.wolf_fake_seer_id:
         rule_speech = "我不跳预言家，先听起跳位把身份和逻辑说清楚。"
     else:
         target_text = format_full_character_name(target) if target is not None else "场上的身份声明"
-        rule_speech = f"我上警梳理信息，先看{target_text}的逻辑和票型。"
+        rule_speech = _pick_variant_template(
+            game_state,
+            speaker,
+            target,
+            "sheriff_signup_generic",
+            [
+                f"我上警梳理信息，先看{target_text}的逻辑和票型。",
+                f"我上警，主要想听{target_text}把立场说清楚。",
+                f"我上警梳理{target_text}的身份和站边，再决定怎么走。",
+            ],
+        )
     if planned_badge_flow is not None:
         rule_speech += build_badge_flow_input_speech_text(
             game_state,
@@ -6239,6 +6259,23 @@ def build_resident_fallback_reply(
             f"{lead}你上次提到的是“{previous_message}”。"
             f"{preference_hint}这次想从哪里接着聊？"
         )
+
+    if len(memories) >= 3 and len(memories) % 3 == 0:
+        preferences = (memory_meta or {}).get("preferences") or {}
+        if preferences:
+            top_category = max(
+                preferences,
+                key=lambda category: int(preferences[category]),
+            )
+            lead = (
+                "我把我们聊过的事都好好收着呢。"
+                if is_huaihuai
+                else "你寄来的那些信我都留着。"
+            )
+            return (
+                f"{lead}最近你常和我聊{top_category}，"
+                "今天想从哪接着聊？"
+            )
 
     if matched_knowledge:
         lead = (
@@ -12189,7 +12226,17 @@ def generate_current_npc_meeting_speech(
         and game_state.meeting.temporary_nomination_target_id is not None
     ):
         nomination_target = get_character(game_state, game_state.meeting.temporary_nomination_target_id)
-        nomination_sentence = f"我暂时归票给{format_full_character_name(nomination_target)}，听完可改。"
+        nomination_sentence = _pick_variant_template(
+            game_state,
+            speaker,
+            nomination_target,
+            "temporary_nomination",
+            [
+                f"我暂时归票给{format_full_character_name(nomination_target)}，听完可以再改。",
+                f"我先把暂时归票放在{format_full_character_name(nomination_target)}这里，听完再定。",
+                f"我暂时归票给{format_full_character_name(nomination_target)}，最后发言再确认。",
+            ],
+        )
         if nomination_target.name not in speech or "暂时归票" not in speech:
             speech = speech.rstrip("。") + "。" + nomination_sentence
     speech_state = SpeechState(

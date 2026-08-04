@@ -24,6 +24,7 @@ const WOLF_SHERIFF_TRANSFER_URL := "http://127.0.0.1:8000/api/sheriff/transfer"
 const WOLF_COMBINED_VOTE_URL := "http://127.0.0.1:8000/api/vote/submit-and-resolve"
 const WOLF_RECOVERY_STATUS_URL := "http://127.0.0.1:8000/api/game/recovery-status"
 const KNOWLEDGE_SEARCH_URL := "http://127.0.0.1:8000/knowledge/search"
+const NPCS_URL := "http://127.0.0.1:8000/npcs"
 const SESSION_SETTINGS_PATH := "user://agent_town_session.cfg"
 const STATS_PATH := "user://agent_town_stats.json"
 const SESSION_SETTINGS_SECTION := "session"
@@ -313,6 +314,15 @@ const CHARACTER_SKIN_PATHS := {
 @onready var menu_button: Button = $UI/PhaseHUD/Panel/Margin/Row/MenuButton
 @onready var menu_overlay: Control = $UI/MenuOverlay
 @onready var menu_close_button: Button = $UI/MenuOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
+@onready var archive_button: Button = $UI/MenuOverlay/Panel/Margin/VBox/ArchiveButton
+@onready var archive_overlay: Control = $UI/ArchiveOverlay
+@onready var archive_close_button: Button = $UI/ArchiveOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
+@onready var archive_status_label: Label = $UI/ArchiveOverlay/Panel/Margin/VBox/StatusLabel
+@onready var archive_list_box: VBoxContainer = $UI/ArchiveOverlay/Panel/Margin/VBox/ListScroll/ListBox
+@onready var archive_request: HTTPRequest = $ArchiveRequest
+@onready var highlights_label: Label = $UI/GameSummaryOverlay/Panel/Margin/VBox/HighlightsLabel
+@onready var export_review_button: Button = $UI/GameSummaryOverlay/Panel/Margin/VBox/HeaderRow/ExportReviewButton
+@onready var export_stats_button: Button = $UI/StatsOverlay/Panel/Margin/VBox/HeaderRow/ExportStatsButton
 @onready var stats_overlay: Control = $UI/StatsOverlay
 @onready var stats_close_button: Button = $UI/StatsOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
 @onready var stats_body_list: VBoxContainer = $UI/StatsOverlay/Panel/Margin/VBox/BodyScroll/BodyList
@@ -563,6 +573,11 @@ func _ready() -> void:
 	guide_button.pressed.connect(_on_guide_button_pressed)
 	menu_button.pressed.connect(_on_menu_button_pressed)
 	menu_close_button.pressed.connect(_on_menu_close_button_pressed)
+	archive_button.pressed.connect(_on_archive_button_pressed)
+	archive_close_button.pressed.connect(_on_archive_close_button_pressed)
+	archive_request.request_completed.connect(_on_archive_request_completed)
+	export_review_button.pressed.connect(_on_export_review_pressed)
+	export_stats_button.pressed.connect(_on_export_stats_pressed)
 	setup_toggle_button.pressed.connect(_on_setup_toggle_button_pressed)
 	setup_close_button.pressed.connect(_on_setup_close_button_pressed)
 	game_summary_close_button.pressed.connect(_hide_game_summary)
@@ -1560,6 +1575,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event.is_action_pressed("ui_cancel") and menu_overlay.visible:
 		_on_menu_close_button_pressed()
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("ui_cancel") and archive_overlay.visible:
+		_on_archive_close_button_pressed()
 		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("ui_cancel") and knowledge_overlay.visible:
@@ -3022,6 +3041,10 @@ func _render_stats_overlay() -> void:
 		_append_stats_line("暂无记录", false)
 	else:
 		_append_stats_line("、".join(parts), false)
+	_append_stats_line("", false)
+	_append_stats_line("成就：", true)
+	for achievement in _compute_achievements(stats):
+		_append_stats_line(achievement, false)
 
 
 func _role_display_name(role: String) -> String:
@@ -3263,6 +3286,279 @@ func _on_menu_close_button_pressed() -> void:
 	menu_overlay.remove_from_group("dialog_open")
 	menu_close_button.release_focus()
 	_release_focus_to_world()
+
+
+func _on_archive_button_pressed() -> void:
+	archive_overlay.visible = true
+	archive_overlay.add_to_group("dialog_open")
+	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
+	archive_status_label.text = "加载中..."
+	_clear_control_children(archive_list_box)
+	var error := archive_request.request(NPCS_URL, [], HTTPClient.METHOD_GET)
+	if error != OK:
+		archive_status_label.text = "加载失败：请确认后端已启动。"
+	call_deferred("_focus_control_if_available", archive_close_button)
+
+
+func _on_archive_close_button_pressed() -> void:
+	archive_overlay.visible = false
+	archive_overlay.remove_from_group("dialog_open")
+	archive_close_button.release_focus()
+	_release_focus_to_world()
+
+
+func _on_archive_request_completed(
+	result: int,
+	response_code: int,
+	_headers: PackedStringArray,
+	body: PackedByteArray
+) -> void:
+	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
+		archive_status_label.text = "加载失败：后端不可用。"
+		return
+	var json := JSON.new()
+	if json.parse(body.get_string_from_utf8()) != OK or typeof(json.data) != TYPE_ARRAY:
+		archive_status_label.text = "加载失败：响应格式不正确。"
+		return
+	var profiles: Array = json.data
+	archive_status_label.text = "共 " + str(profiles.size()) + " 位角色"
+	for profile in profiles:
+		if typeof(profile) != TYPE_DICTIONARY:
+			continue
+		_append_archive_card(profile)
+
+
+func _append_archive_card(profile: Dictionary) -> void:
+	var panel := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.96, 0.97, 0.99, 1)
+	style.border_width_left = 1
+	style.border_width_top = 1
+	style.border_width_right = 1
+	style.border_width_bottom = 1
+	style.border_color = Color(0.55, 0.62, 0.72, 1)
+	style.corner_radius_top_left = 8
+	style.corner_radius_top_right = 8
+	style.corner_radius_bottom_right = 8
+	style.corner_radius_bottom_left = 8
+	panel.add_theme_stylebox_override("panel", style)
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 12)
+	margin.add_theme_constant_override("margin_top", 10)
+	margin.add_theme_constant_override("margin_right", 12)
+	margin.add_theme_constant_override("margin_bottom", 10)
+	panel.add_child(margin)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	margin.add_child(box)
+	var title := Label.new()
+	title.text = str(profile.get("npc_name", "未知")) + " · " + str(profile.get("role", ""))
+	title.add_theme_font_size_override("font_size", 16)
+	title.add_theme_color_override("font_color", Color(0.05, 0.2, 0.45, 1))
+	box.add_child(title)
+	var personality := Label.new()
+	personality.text = str(profile.get("personality", ""))
+	personality.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	personality.add_theme_color_override("font_color", Color(0.12, 0.16, 0.22, 1))
+	box.add_child(personality)
+	var catchphrases: Variant = profile.get("catchphrases", [])
+	if typeof(catchphrases) == TYPE_ARRAY and not catchphrases.is_empty():
+		var tags := Label.new()
+		var phrase_list: Array[String] = []
+		for phrase in catchphrases:
+			phrase_list.append(str(phrase))
+		tags.text = "口头禅：" + "、".join(phrase_list)
+		tags.add_theme_color_override("font_color", Color(0.3, 0.35, 0.45, 1))
+		box.add_child(tags)
+	archive_list_box.add_child(panel)
+
+
+func _build_highlights(summary: Dictionary) -> Array[String]:
+	var highlights: Array[String] = []
+	var by_id := _summary_character_lookup(summary)
+	var seer_wolf: String = ""
+	var hunter_wolf: String = ""
+	var witch_wolf: String = ""
+	var characters: Variant = summary.get("characters", [])
+	if typeof(characters) == TYPE_ARRAY:
+		for character in characters:
+			if typeof(character) != TYPE_DICTIONARY:
+				continue
+			var role := str(character.get("role", ""))
+			var label := str(character.get("character_id", "?")) + "号 " + str(character.get("name", ""))
+			for action in character.get("actions", []):
+				if typeof(action) != TYPE_DICTIONARY:
+					continue
+				var text := str(action.get("text", ""))
+				if role == "seer" and text.contains("查验") and text.contains("结果为狼人") and seer_wolf.is_empty():
+					seer_wolf = label
+				elif role == "hunter" and text.contains("开枪，"):
+					var hid := _extract_target_id(text, "开枪，")
+					if str(by_id.get(hid, {}).get("camp", "")) == "werewolf" and hunter_wolf.is_empty():
+						hunter_wolf = label
+				elif role == "witch" and text.contains("使用毒药"):
+					var pid := _extract_target_id(text, "对")
+					if str(by_id.get(pid, {}).get("camp", "")) == "werewolf" and witch_wolf.is_empty():
+						witch_wolf = label
+	var first_exile_wolf: String = ""
+	var timeline: Variant = summary.get("timeline", [])
+	if typeof(timeline) == TYPE_ARRAY:
+		for event in timeline:
+			if typeof(event) != TYPE_DICTIONARY:
+				continue
+			var text := str(event.get("text", ""))
+			if text.contains("在白天被投票放逐出局"):
+				var regex := RegEx.new()
+				regex.compile("(\\d+)号")
+				var match := regex.search(text)
+				if match != null:
+					var tid := int(match.get_string(1))
+					if str(by_id.get(tid, {}).get("camp", "")) == "werewolf":
+						first_exile_wolf = str(tid) + "号 " + str(by_id.get(tid, {}).get("name", ""))
+				break
+	if not seer_wolf.is_empty():
+		highlights.append("🌟 预言家 " + seer_wolf + " 验出了狼人。")
+	if not hunter_wolf.is_empty():
+		highlights.append("🌟 猎人 " + hunter_wolf + " 一枪带走了狼人。")
+	if not witch_wolf.is_empty():
+		highlights.append("🌟 女巫 " + witch_wolf + " 毒中了狼人。")
+	if not first_exile_wolf.is_empty():
+		highlights.append("🌟 开局首日就放逐了狼人 " + first_exile_wolf + "。")
+	if highlights.is_empty():
+		highlights.append("本局平稳推进，没有特别戏剧性的场面。")
+	return highlights
+
+
+func _compute_achievements(stats: Dictionary) -> Array[String]:
+	var achievements: Array[String] = []
+	var games: Array = stats.get("games", [])
+	var total := games.size()
+	if total >= 1:
+		achievements.append("✅ 初来乍到：完成 1 局")
+	if total >= 10:
+		achievements.append("✅ 十局老兵：完成 10 局")
+	var wins := 0
+	var best_streak := 0
+	var streak := 0
+	var role_wins := {}
+	var player_mvp := 0
+	var wolf_checks := 0
+	var votes_on_wolves := 0
+	for game in games:
+		var won := bool(game.get("won", false))
+		if won:
+			wins += 1
+			streak += 1
+		else:
+			streak = 0
+		best_streak = maxi(best_streak, streak)
+		if won:
+			var role := str(game.get("player_role", ""))
+			role_wins[role] = int(role_wins.get(role, 0)) + 1
+		var counts: Dictionary = game.get("action_counts", {})
+		wolf_checks += int(counts.get("wolf_checks", 0))
+		votes_on_wolves += int(counts.get("votes_on_wolves", 0))
+		if (
+			int(game.get("mvp_score", 0)) > 0
+			and int(game.get("player_score", 0)) >= int(game.get("mvp_score", 0))
+		):
+			player_mvp += 1
+	if wins >= 1:
+		achievements.append("✅ 首胜")
+	if best_streak >= 3:
+		achievements.append("✅ 常胜将军：连胜 3 局")
+	if int(role_wins.get("seer", 0)) >= 1:
+		achievements.append("✅ 预言家之光")
+	if int(role_wins.get("witch", 0)) >= 1:
+		achievements.append("✅ 女巫救世")
+	if int(role_wins.get("werewolf", 0)) >= 1:
+		achievements.append("✅ 狼王加冕")
+	if player_mvp >= 1:
+		achievements.append("✅ 关键先生：成为本局 MVP")
+	if wolf_checks >= 3:
+		achievements.append("✅ 火眼金睛：累计验到 3 名狼人")
+	if votes_on_wolves >= 10:
+		achievements.append("✅ 放逐大师：累计 10 次放逐票命中狼人")
+	if achievements.is_empty():
+		achievements.append("🔒 完成第一局解锁成就")
+	return achievements
+
+
+func _export_text_file(path_name: String, content: String) -> String:
+	var dir := DirAccess.open("user://")
+	if dir == null or not dir.dir_exists("exports"):
+		if dir != null:
+			dir.make_dir_recursive("exports")
+	var path := "user://exports/" + path_name
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return ""
+	file.store_string(content)
+	return ProjectSettings.globalize_path(path)
+
+
+func _on_export_review_pressed() -> void:
+	var summary := _game_summary_data
+	if summary.is_empty():
+		wolf_status_label.text = "后端状态：还没有本局复盘可导出"
+		return
+	var lines: Array[String] = ["Agent Town Demo 复盘", "=================="]
+	lines.append(str(summary.get("winner_label", "")) + "胜利 | 共 " + str(summary.get("total_days", 0)) + " 天")
+	lines.append("")
+	lines.append("【高光】")
+	for highlight in _build_highlights(summary):
+		lines.append(str(highlight))
+	lines.append("")
+	lines.append("【时间线】")
+	var timeline: Variant = summary.get("timeline", [])
+	if typeof(timeline) == TYPE_ARRAY:
+		for event in timeline:
+			if typeof(event) == TYPE_DICTIONARY:
+				lines.append(_format_summary_event(event))
+	var path := _export_text_file(
+		"review_" + str(summary.get("game_id", "game")) + ".txt",
+		"\n".join(lines),
+	)
+	if path.is_empty():
+		wolf_status_label.text = "后端状态：导出失败"
+	else:
+		wolf_status_label.text = "已导出复盘：" + path
+
+
+func _on_export_stats_pressed() -> void:
+	var stats := _load_game_stats()
+	var games: Array = stats.get("games", [])
+	var lines: Array[String] = ["Agent Town Demo 战绩", "=================="]
+	lines.append("总对局 " + str(games.size()) + " 局")
+	var wins := 0
+	var role_played := {}
+	for game in games:
+		if bool(game.get("won", false)):
+			wins += 1
+		var role := str(game.get("player_role", ""))
+		var entry: Dictionary = role_played.get(role, {"played": 0, "won": 0})
+		entry["played"] = int(entry["played"]) + 1
+		if bool(game.get("won", false)):
+			entry["won"] = int(entry["won"]) + 1
+		role_played[role] = entry
+	lines.append("胜场 " + str(wins) + "（胜率 " + str(int(round(float(wins) / maxf(1.0, float(games.size())) * 100))) + "%）")
+	lines.append("")
+	lines.append("【各身份】")
+	for role in role_played:
+		var entry: Dictionary = role_played[role]
+		lines.append(_role_display_name(role) + "：" + str(entry["played"]) + " 局 " + str(entry["won"]) + " 胜")
+	lines.append("")
+	lines.append("【成就】")
+	for achievement in _compute_achievements(stats):
+		lines.append(str(achievement))
+	var path := _export_text_file(
+		"stats_" + str(Time.get_datetime_string_from_system()).replace(":", "-").replace(" ", "_") + ".txt",
+		"\n".join(lines),
+	)
+	if path.is_empty():
+		_append_stats_line("导出失败", false)
+	else:
+		_append_stats_line("已导出：" + path, false)
 
 
 func _on_night_action_request_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
@@ -5522,6 +5818,7 @@ func _render_game_summary(summary: Dictionary) -> void:
 	game_summary_winner_label.text = (
 		winner_label + "胜利 | 共 " + str(total_days) + " 天\n" + winner_message
 	)
+	highlights_label.text = "\n".join(_build_highlights(summary))
 
 	_clear_control_children(game_summary_character_list)
 	var characters = summary.get("characters", [])
@@ -5856,6 +6153,7 @@ func _configure_ui_focus_navigation() -> void:
 		knowledge_overlay,
 		stats_overlay,
 		menu_overlay,
+		archive_overlay,
 	]
 	for ui_root in ui_roots:
 		for node in ui_root.find_children("*", "BaseButton", true, false):

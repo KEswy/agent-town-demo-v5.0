@@ -1409,6 +1409,11 @@ text = "我的战绩"
 layout_mode = 2
 text = "关闭"
 
+[node name="ExportStatsButton" type="Button" parent="UI/StatsOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+tooltip_text = "把战绩与成就导出为文本文件"
+text = "导出战绩"
+
 [node name="BodyScroll" type="ScrollContainer" parent="UI/StatsOverlay/Panel/Margin/VBox"]
 layout_mode = 2
 size_flags_vertical = 3
@@ -1483,6 +1488,11 @@ custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 text = "规则百科"
 
+[node name="ArchiveButton" type="Button" parent="UI/MenuOverlay/Panel/Margin/VBox"]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+text = "角色档案"
+
 [node name="StatsButton" type="Button" parent="UI/MenuOverlay/Panel/Margin/VBox"]
 custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
@@ -1507,6 +1517,80 @@ text = "新手引导"
 custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 text = "刷新状态"
+
+[node name="ArchiveOverlay" type="Control" parent="UI"]
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+theme = SubResource("Theme_light_ui")
+
+[node name="Shade" type="ColorRect" parent="UI/ArchiveOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.08, 0.22, 0.31, 0.58)
+
+[node name="Panel" type="PanelContainer" parent="UI/ArchiveOverlay"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -380.0
+offset_top = -250.0
+offset_right = 380.0
+offset_bottom = 250.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_setup")
+
+[node name="Margin" type="MarginContainer" parent="UI/ArchiveOverlay/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 24
+theme_override_constants/margin_top = 20
+theme_override_constants/margin_right = 24
+theme_override_constants/margin_bottom = 20
+
+[node name="VBox" type="VBoxContainer" parent="UI/ArchiveOverlay/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="HeaderRow" type="HBoxContainer" parent="UI/ArchiveOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+
+[node name="TitleLabel" type="Label" parent="UI/ArchiveOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 20
+text = "角色档案"
+
+[node name="CloseButton" type="Button" parent="UI/ArchiveOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+text = "关闭"
+
+[node name="StatusLabel" type="Label" parent="UI/ArchiveOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+text = "加载中..."
+
+[node name="ListScroll" type="ScrollContainer" parent="UI/ArchiveOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="ListBox" type="VBoxContainer" parent="UI/ArchiveOverlay/Panel/Margin/VBox/ListScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 8
 
 [node name="GameSummaryOverlay" type="Control" parent="UI"]
 visible = false
@@ -1569,11 +1653,24 @@ layout_mode = 2
 tooltip_text = "关闭复盘"
 text = "X"
 
+[node name="ExportReviewButton" type="Button" parent="UI/GameSummaryOverlay/Panel/Margin/VBox/HeaderRow"]
+custom_minimum_size = Vector2(90, 38)
+layout_mode = 2
+tooltip_text = "把本局高光与时间线导出为文本文件"
+text = "导出复盘"
+
 [node name="WinnerLabel" type="Label" parent="UI/GameSummaryOverlay/Panel/Margin/VBox"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.92, 0.95, 0.97, 1)
 theme_override_font_sizes/font_size = 16
 text = "正在读取对局结果..."
+autowrap_mode = 3
+
+[node name="HighlightsLabel" type="Label" parent="UI/GameSummaryOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.98, 0.84, 0.45, 1)
+theme_override_font_sizes/font_size = 14
+text = ""
 autowrap_mode = 3
 
 [node name="SummaryTabs" type="TabContainer" parent="UI/GameSummaryOverlay/Panel/Margin/VBox"]
@@ -1803,3 +1900,5 @@ text = "下一步"
 [node name="KnowledgeSearchRequest" type="HTTPRequest" parent="."]
 
 [node name="SaveGameRequest" type="HTTPRequest" parent="."]
+
+[node name="ArchiveRequest" type="HTTPRequest" parent="."]

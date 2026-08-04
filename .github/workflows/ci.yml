@@ -1,21 +1,23 @@
-name: V4 offline CI
+name: Agent Town CI
 
 on:
   push:
     branches:
       - main
       - v4-development
+      - v5-development
   pull_request:
     branches:
       - main
       - v4-development
+      - v5-development
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: v4-ci-${{ github.workflow }}-${{ github.ref }}
+  group: agent-town-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -68,6 +70,46 @@ jobs:
           AGENT_TOWN_GAME_SAVE_DIR: ${{ runner.temp }}/agent-town-games
           PYTHONPYCACHEPREFIX: ${{ runner.temp }}/agent-town-pycache
         run: python scripts/smoke_check.py --profile core
+
+      - name: Assert checks did not mutate tracked files
+        run: git diff --exit-code
+
+  policy-training:
+    name: NPC policy training pipeline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Generate small teacher sets and train linear artifacts for every task
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/agent-town-pycache
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/policy-artifacts
+          for task in exile_vote sheriff_vote sheriff_nomination night_target; do
+            python backend/training/generate_policy_dataset.py \
+              --seed 20260701 --games 6 --task "$task" \
+              --output "/tmp/${task}_teacher.jsonl"
+            python backend/training/validate_policy_dataset.py \
+              --input "/tmp/${task}_teacher.jsonl" \
+              --output "/tmp/${task}_normalized.jsonl"
+            python backend/training/train_policy.py \
+              --dataset "/tmp/${task}_teacher.jsonl" \
+              --model-type linear --task "$task" \
+              --output-dir /tmp/policy-artifacts
+          done
 
       - name: Assert checks did not mutate tracked files
         run: git diff --exit-code
