@@ -269,7 +269,7 @@ local 的夜间目标（狼刀、守卫、查验、女巫毒、猎人）消费 a
 警长投票面（V5.5-A 第一步）独立于放逐投票：`npc_sheriff_vote_features.v1`
 26 维 actor-scoped 特征，训练集为 130 局规则仿真共 855 条 teacher
 （好人 543 / 狼人 312），产物在 `backend/policy_artifacts/sheriff_vote/`，
-好人/狼人验证 top-1 分别为 `91.9%` / `96.2%`。生成与训练命令：
+好人/狼人验证 top-1 分别为 `87.5%` / `96.2%`。生成与训练命令：
 
 ```bash
 backend/.venv/bin/python backend/training/generate_policy_dataset.py \
@@ -284,14 +284,14 @@ backend/.venv/bin/python backend/training/train_policy.py \
 警长归票面（V5.5-A 第二步）复用同一 26 维特征（独立 schema
 `npc_sheriff_nomination_features.v1`）：130 局 734 条 teacher
 （好人 638 / 狼人 96），产物在 `backend/policy_artifacts/sheriff_nomination/`，
-好人/狼人验证 top-1 分别为 `85.9%` / `80.0%`。命令把 `--task` 换成
+好人/狼人验证 top-1 分别为 `88.5%` / `90.0%`。命令把 `--task` 换成
 `sheriff_nomination` 即可。
 
 夜技面（V5.5-A 第三步）使用独立的 `npc_night_target_features.v1`（27 维，
 含行动类型 one-hot 与角色合法约束特征），覆盖狼刀/守卫/查验/猎人目标选择：
-130 局 1323 条 teacher（好人 518 / 狼人 805），产物在
+130 局 1313 条 teacher（好人 509 / 狼人 804），产物在
 `backend/policy_artifacts/night_target/`，好人/狼人验证 top-1 分别为
-`72.5%` / `99.0%`。local 模式对护栏后的目标分布取 argmax（保持旧的确定性目标
+`74.8%` / `98.5%`。local 模式对护栏后的目标分布取 argmax（保持旧的确定性目标
 选择风格）；女巫毒药沿用 V5.4-A 信念路径。命令把 `--task` 换成 `night_target`
 即可。
 
@@ -302,8 +302,8 @@ seed `20260601–20260630` 的扩展 30 局 local 金丝雀。Shadow 有 205 条
 `blend=0.5`（护栏封顶）后模型开始真正参与投票。加入
 `AGENT_TOWN_NIGHT_BELIEF_CONFIDENCE=0.80` 置信度门禁后：10 局金丝雀好人胜场
 `2→3`、误投 `62.6%→58.3%`、放逐熵 `25.1%→26.4%`、跨日保持 `77.4%→87.5%`；
-扩展 30 局胜率持平、其余四项核心指标改善：胜场 `43.3%→43.3%`（持平）、误投 `48.3%→43.8%`、
-投狼概率质量 `53.3%→58.2%`、放逐熵 `30.3%→28.0%`、跨日保持 `66.2%→78.2%`；
+扩展 30 局胜率持平、其余四项核心指标改善：胜场 `46.7%→46.7%`（持平）、误投 `47.0%→45.4%`、
+投狼概率质量 `54.4%→56.8%`、放逐熵 `30.3%→28.8%`、跨日保持 `69.5%→76.9%`；
 重放 `30/30`、零 fallback，金丝雀门槛通过。人工标签清洗
 （tonystark 确认 99 条）与模型重训已于 2026-08-04 完成，默认模式已切换为
 `local`；`rule` 仍可通过环境变量或开局选项显式选择。

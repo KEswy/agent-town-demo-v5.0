@@ -3310,6 +3310,16 @@ def complete_sheriff_withdrawal(game_state: WolfGameState) -> None:
         game_state.public_logs.append("退水结束，警下玩家将在以下候选人中投票：" + "、".join(labels) + "。")
 
 
+def _plan_value(plan: object, key: str) -> object:
+    """Read one field from a decision plan (dict or model)."""
+
+    if plan is None:
+        return None
+    if isinstance(plan, dict):
+        return plan.get(key)
+    return getattr(plan, key, None)
+
+
 def get_public_persuasion_strength(
     game_state: WolfGameState,
     speaker: CharacterState,
@@ -3345,20 +3355,6 @@ def get_public_persuasion_strength(
         game_state,
         latest_public_speech,
     )
-    normalized = (
-        ""
-        if unvalidated_display_only
-        else " ".join(latest_public_speech.speech.split()).strip()
-    )
-    parsed = (
-        None
-        if unvalidated_display_only
-        else parse_player_speech(
-            game_state,
-            normalized,
-            speaker_id=speaker.id,
-        )
-    )
     direct_claims = [
         claim
         for claim in game_state.public_claims
@@ -3370,17 +3366,37 @@ def get_public_persuasion_strength(
         for claim in direct_claims
     )
     position = latest_public_speech.public_position
-    mentions_other = (
-        public_position_has_substance(position)
-        if unvalidated_display_only
-        else any(
-            character_id != speaker.id
-            for character_id in parsed.mentioned_characters
+    plan = latest_public_speech.decision_plan
+    if unvalidated_display_only:
+        mentions_other = public_position_has_substance(position)
+    else:
+        # Structured mentions only: literal wording must never affect scores.
+        mentioned_ids: set[int] = set()
+        if plan is not None:
+            for key in (
+                "primary_target_id",
+                "secondary_target_id",
+                "stance_target_id",
+            ):
+                value = _plan_value(plan, key)
+                if value is not None:
+                    mentioned_ids.add(int(value))
+            question = _plan_value(plan, "question")
+            verification = _plan_value(plan, "verification")
+            if isinstance(question, dict):
+                mentioned_ids.add(int(question["target_id"]))
+            elif question is not None:
+                mentioned_ids.add(int(question.target_id))
+            if isinstance(verification, dict):
+                mentioned_ids.add(int(verification["target_id"]))
+            elif verification is not None:
+                mentioned_ids.add(int(verification.target_id))
+        mentions_other = any(
+            character_id != speaker.id for character_id in mentioned_ids
         )
-    )
     speech_quality = 0.28
     if unvalidated_display_only:
-        if latest_public_speech.decision_plan:
+        if plan:
             speech_quality += 0.16
         if position is not None and (
             position.provisional_vote_target_id is not None
@@ -3389,10 +3405,15 @@ def get_public_persuasion_strength(
         ):
             speech_quality += 0.08
     else:
-        if len(normalized) >= 12:
-            speech_quality += 0.06
-        if 24 <= len(normalized) <= 260:
-            speech_quality += 0.10
+        has_question = _plan_value(plan, "question") is not None
+        has_verification = _plan_value(plan, "verification") is not None
+        has_provisional = (
+            _plan_value(plan, "provisional_vote_target_id") is not None
+        )
+        # Mirrors the old length bonuses (>=12 and 24-260 chars) that used to
+        # fire for every validated speech, now wording-invariant.
+        if plan is not None or public_position_has_substance(position):
+            speech_quality += 0.16
     if mentions_other:
         speech_quality += 0.12
     if direct_claims:
@@ -3400,11 +3421,16 @@ def get_public_persuasion_strength(
     if has_role_claim and has_check_claim:
         speech_quality += 0.14
     if not unvalidated_display_only:
-        if any(marker in normalized for marker in ["因为", "所以", "依据", "理由", "矛盾", "逻辑"]):
+        # Reasoning/commitment bonuses come from the structured plan only.
+        if has_question or has_verification:
             speech_quality += 0.10
-        if any(
-            marker in normalized
-            for marker in ["警徽", "后续", "票型", "投票", "暂票", "验证", "负责"]
+        if has_provisional or (
+            position is not None
+            and (
+                position.question_target_id is not None
+                or position.badge_flow_version is not None
+                or position.provisional_vote_target_id is not None
+            )
         ):
             speech_quality += 0.08
     if latest_public_speech.evidence_titles:
@@ -12454,54 +12480,22 @@ def is_low_information_public_speech(
     game_state: WolfGameState,
     speech: SpeechState,
 ) -> bool:
-    """Conservatively identify an already-finished speech with no contribution."""
+    """Conservatively identify a speech with no structured contribution."""
 
-    if is_unvalidated_npc_speech(game_state, speech):
-        return not (
-            speech.focus_target_id is not None
-            or speech.claim_count > 0
-            or bool(speech.decision_plan)
-            or bool(speech.evidence_titles)
-            or public_position_has_substance(speech.public_position)
-        )
-    normalized = " ".join(speech.speech.split()).strip()
-    if not normalized or len(normalized) > 56:
-        return False
-    if (
+    # Structured-only: validated speeches carry plans/claims/evidence; the
+    # literal wording never matters.
+    no_contribution_evidence_marker = "已检索但没有形成实际贡献的资料"
+    has_real_evidence = any(
+        title != no_contribution_evidence_marker
+        for title in (speech.evidence_titles or [])
+    )
+    return not (
         speech.focus_target_id is not None
         or speech.claim_count > 0
-    ):
-        return False
-    parsed = parse_player_speech(
-        game_state,
-        normalized,
-        speaker_id=speech.character_id,
+        or bool(speech.decision_plan)
+        or has_real_evidence
+        or public_position_has_substance(speech.public_position)
     )
-    if parsed.claims or parsed.accusations or any(
-        character_id != speech.character_id
-        for character_id in parsed.mentioned_characters
-    ):
-        return False
-    passive_markers = [
-        "没什么信息",
-        "没有什么信息",
-        "没信息",
-        "信息不多",
-        "信息还少",
-        "先听",
-        "再听",
-        "先看",
-        "再看",
-        "过吧",
-        "过麦",
-        "我过",
-        "继续观察",
-        "暂不评价",
-        "不下结论",
-    ]
-    return any(marker in normalized for marker in passive_markers)
-
-
 def is_unvalidated_npc_speech(
     game_state: WolfGameState,
     speech: SpeechState,
