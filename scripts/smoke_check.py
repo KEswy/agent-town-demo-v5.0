@@ -2744,6 +2744,8 @@ from app.main import (
     PublicClaimState,
     SheriffEventState,
     SheriffElectionState,
+    _belief_usable,
+    _night_belief_confidence_threshold,
     build_npc_reasoning_observation,
     build_public_evidence_analysis,
     build_public_evidence_timeline,
@@ -2990,6 +2992,23 @@ if (
     raise SystemExit(
         "entropy guard must preserve the unique consistent seer cap"
     )
+
+if not 0.0 <= _night_belief_confidence_threshold() <= 1.0:
+    raise SystemExit("night belief confidence threshold must stay bounded")
+
+
+class _SmokeConfidentBelief:
+    confidence = 0.999
+
+
+class _SmokeWeakBelief:
+    confidence = 0.001
+
+
+if not _belief_usable(_SmokeConfidentBelief()):
+    raise SystemExit("night belief gate must accept a confident role belief")
+if _belief_usable(_SmokeWeakBelief()):
+    raise SystemExit("night belief gate must reject a weak role belief")
 
 print("NPC reasoning and local policy smoke test passed")
 '''

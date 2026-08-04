@@ -243,6 +243,7 @@ local 金丝雀可使用保守混合（当前仅实验）：
 ```bash
 AGENT_TOWN_NPC_POLICY_TEMPERATURE=0.65 \
 AGENT_TOWN_NPC_POLICY_BLEND=0.10 \
+AGENT_TOWN_NIGHT_BELIEF_CONFIDENCE=0.80 \
   backend/.venv/bin/python scripts/simulate_games.py \
   --seed 20260727 --games 10 --npc-policy-mode local \
   --include-policy-traces --output /tmp/local_t065_blend010.json
@@ -250,10 +251,15 @@ AGENT_TOWN_NPC_POLICY_BLEND=0.10 \
 
 应使用相同 seed 另跑一份 `rule` 对照。运行时的
 `npc_policy_entropy_guard.v1` 会让普通好人逐项等于 teacher，只对方向正确的硬公开
-逻辑纠偏放行，同时限制归一化熵和总变差。当前 379 条 MLP 的 10 局结果为好人胜场
-`2→4`、误投 `62.0%→57.4%`、投狼概率质量 `38.3%→44.7%`，但放逐熵
-`25.8%→26.6%`、跨日正确票保持 `80.6%→78.0%`；仍按门槛停止在 10 局，不继续
-扩大样本，默认模式保持 `rule`。
+逻辑纠偏放行，同时限制归一化熵和总变差。local 夜间目标（狼刀、守卫、查验、女巫毒、
+猎人）消费 belief 前还受 `AGENT_TOWN_NIGHT_BELIEF_CONFIDENCE` 置信度门禁约束
+（默认 `0.80`），低置信场景回退到与 rule 完全一致的选择。当前 379 条 MLP 金丝雀：
+10 局 seed `20260727–20260736` 为好人胜场 `2→3`、误投 `62.0%→58.3%`、投狼概率
+质量 `38.3%→43.8%`、跨日保持 `80.6%→87.5%`、放逐熵 `25.8%→26.3%`；扩展 30 局
+seed `20260601–20260630` 六项核心指标全部改善（胜场 `43.3%→60.0%`、误投
+`47.7%→40.6%`、投狼概率质量 `53.5%→60.5%`、放逐熵 `29.1%→28.5%`、跨日保持
+`67.0%→83.3%`），重放 `30/30`、零 fallback，金丝雀门槛通过。默认模式保持
+`rule`，待人工标签清洗与模型重训后正式切换 `local`。
 
 提取模型与规则分歧最大的样本：
 

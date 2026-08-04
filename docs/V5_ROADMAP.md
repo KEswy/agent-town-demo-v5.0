@@ -56,10 +56,10 @@ B 为真预言家的假设因此与“B 给持续对跳者发金水”的公开�
 | V5.2-C | P0 | 已完成 | `rule / shadow / local` 三种模式；local 仅替换评分层，保留规则采样与失败回退 |
 | V5.3-A | P0 | 已完成 | 将 NPC 策略模式和 artifact 摘要写入 `game_created`，支持旧存档默认 rule 与事件重放 |
 | V5.3-B | P1 | 已完成 | 仿真 CLI、训练数据 CLI、离线验证指标和 smoke 针对性断言 |
-| V5.4-A | P1 | 已完成第一阶段 | 建立完整合法世界边际与 top-world 展示层、修复单 claimant/跨日时序边界；夜间目标 shadow 只计算、local 才消费 belief，rule/shadow 保留既有实际行动基线 |
+| V5.4-A | P1 | 已完成 | 建立完整合法世界边际与 top-world 展示层、修复单 claimant/跨日时序边界；夜间目标 shadow 只计算、local 才消费 belief 且受 `AGENT_TOWN_NIGHT_BELIEF_CONFIDENCE` 置信度门禁约束，rule/shadow 保留既有实际行动基线 |
 | V5.4-B | P1 | 已完成第一阶段 | 增加严格 JSONL validator、观察/人工标签分离合并、整局分组切分、MLP V2 artifact 和离线 reasoning scenario runner |
 | V5.4-C | P1 | 已完成 | 固化 6 条高价值公开逻辑场景及生成器，覆盖对跳金水、单 claimant、退水、跨日证据、已知角色冲突和改验结果 |
-| V5.4-D | P1 | 金丝雀停止 | 280 teacher + 99 审计标签重训为 MLP V2，并增加熵/扰动护栏；shadow 安全检查通过，10 局 local 的胜场、误投改善，但放逐熵/跨日保持仍恶化，未扩大样本 |
+| V5.4-D | P1 | 金丝雀通过（扩展 30 局） | 280 teacher + 99 审计标签重训为 MLP V2，并增加熵/扰动护栏与夜间信念置信度门禁；消融确认放逐 MLP 在 `blend=0.10` 下尚未改变采样票，指标变化来自夜间信念消费；30 局 seed `20260601–20260630` 六项核心指标全部改善，重放 `30/30`、零 fallback |
 | V5.4-E | P1 | 已完成第一阶段 | 增加 `wolf_sheriff_campaign.v1`，支持单狼悍跳、双狼辅助站边和双狼公开拉开距离；搭档发言后退水 |
 | V5.5-A | P2 | 待开始 | 扩展警长投票/归票及全部夜技为 task+role 独立 policy artifact；保持 legal mask、shadow 门禁和 replay 不变 |
 | V5.5-B | P2 | 待开始 | 本地策略模型的版本升级、灰度 shadow、A/B 报告和可恢复 artifact 注册 |
@@ -71,7 +71,7 @@ B 为真预言家的假设因此与“B 给持续对跳者发金水”的公开�
 | `backend/app/npc_reasoning.py` | 严格 observation、belief、hypothesis、signal、plan 模型 |
 | `backend/app/npc_policy.py` | 候选特征、策略分数、artifact 完整性、trace ContextVar |
 | `backend/app/npc_policy_data.py` | V1/V2 JSONL、标签 join、摘要/候选/概率严格校验 |
-| `backend/app/main.py` | 合法知识投影、推理状态缓存、规则评分包装、模式封印和时序事实 |
+| `backend/app/main.py` | 合法知识投影、推理状态缓存、规则评分包装、模式封印、时序事实和夜间信念置信度门禁 |
 | `backend/app/simulation.py` | 离线 trace 捕获、模式指纹、重放兼容和批量报告 |
 | `backend/training/generate_policy_dataset.py` | 规则教师 JSONL 数据生成 |
 | `backend/training/train_policy.py` | NumPy 线性/小型 MLP 候选评分器训练与 manifest 生成 |
@@ -124,11 +124,21 @@ V5 当前仿真输出为 `agent_town_simulation.v18` /
     不新增角色 claim，发言后退水。隐藏策略名不进入公开状态。
 11. 正式训练集保留 280 条 teacher 与 99 条审计标签；`npc_policy_entropy_guard.v1`
     让普通好人逐项等于 teacher，只放行方向正确的硬逻辑纠偏，并封顶熵与总变差。
+12. local 夜间目标（狼刀、守卫、查验、女巫毒、猎人）消费 actor-scoped belief 前
+    必须通过 `AGENT_TOWN_NIGHT_BELIEF_CONFIDENCE` 置信度门禁（默认 `0.80`），
+    低置信场景与 rule 完全一致；`shadow` 只计算不消费。
 
-当前 10 局 local 金丝雀使用 seed `20260727–20260736`、
-`temperature=0.65`、请求 `blend=0.10`。它通过重放、fallback 和合法候选安全检查，
-好人胜场 `2→4`、误投 `62.0%→57.4%`、投狼概率质量 `38.3%→44.7%`；但放逐熵
-`25.8%→26.6%`、跨日正确票保持 `80.6%→78.0%`，所以按门槛停止，不扩大样本。
+金丝雀分两档：seed `20260727–20260736` 的 10 局与 seed `20260601–20260630` 的
+扩展 30 局，均使用 `temperature=0.65`、请求 `blend=0.10`、
+`AGENT_TOWN_NIGHT_BELIEF_CONFIDENCE=0.80`。消融确认 `blend=0.10` 与
+`blend=0.00` 轨迹完全一致，即放逐 MLP 尚未改变采样票，指标变化全部来自夜间
+信念消费；置信度门禁把该消费限制在可信场景。10 局金丝雀：胜场 `2→3`、误投
+`62.0%→58.3%`、投狼概率质量 `38.3%→43.8%`、跨日保持 `80.6%→87.5%`、放逐熵
+`25.8%→26.3%`（唯一未变好的单项，由单局轨迹翻转主导）。扩展 30 局六项核心指标
+全部改善：胜场 `43.3%→60.0%`、误投 `47.7%→40.6%`、投狼概率质量
+`53.5%→60.5%`、放逐熵 `29.1%→28.5%`、跨日保持 `67.0%→83.3%`；重放 `30/30`、
+零 fallback，金丝雀门槛通过。默认模式仍为 `rule`，待人工标签清洗与模型重训后
+正式切换 `local`。
 
 ## 验收门槛
 
@@ -144,6 +154,11 @@ V5 当前仿真输出为 `agent_town_simulation.v18` /
   possible-world 无解时不能把 hidden world 伪装成确定答案。
 - `npc_policy_artifact.v1` 线性产物和 `npc_policy_artifact.v2` MLP 产物都必须能安全
   加载；候选顺序、有限输出、shadow/local 重放和失败回退必须通过。
+- local 金丝雀必须同时在 10 局 seed `20260727–20260736` 与扩展 30 局
+  seed `20260601–20260630` 上比较 rule 对照，且放逐熵、跨日正确票保持、误投率、
+  投狼概率质量、好人胜场五项全部不恶化；重放 `30/30`、零 fallback。
+- `AGENT_TOWN_NIGHT_BELIEF_CONFIDENCE` 必须限定在 `0.0–1.0`，smoke 必须覆盖
+  置信/低置信两类信念的门禁行为。
 - 修改 V5 功能时同步更新根 README、`backend/README.md`、`COMMANDS.md`、本路线表和
   `scripts/smoke_check.py`。
 - V5 不移动、删除或 force-push V4 的 `v4.0.0`、`v4-origin/main` 或历史 remote。

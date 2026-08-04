@@ -1632,6 +1632,11 @@ def build_game_config_fingerprint(
                     if npc_policy_mode in {"shadow", "local"}
                     else 0.0
                 ),
+                "night_belief_confidence": (
+                    _night_belief_confidence_threshold()
+                    if npc_policy_mode == "local"
+                    else None
+                ),
                 "observation_schema_version": (
                     NPC_POLICY_OBSERVATION_SCHEMA_VERSION
                 ),
@@ -2838,7 +2843,7 @@ def choose_npc_hunter_target(
         belief = beliefs.get(character.id)
         wolf_probability = (
             belief.werewolf_probability
-            if belief is not None
+            if _belief_usable(belief)
             else hunter.suspicion.get(str(character.id), 0) / 100.0
         )
         return (
@@ -2853,8 +2858,25 @@ def choose_npc_hunter_target(
         )
 
     # The reasoner supplies a fallible wolf marginal; the rule layer still
-    # owns the legal target list and deterministic tie break.
-    return max(candidates, key=hunter_target_value).id
+    # owns the legal target list and deterministic tie break.  Only consume
+    # the belief when it is confident; otherwise keep the rule choice.
+    best_candidate = max(candidates, key=hunter_target_value)
+    if not _belief_usable(beliefs.get(best_candidate.id)):
+        highest_suspicion = max(
+            hunter.suspicion.get(str(character.id), 0)
+            for character in candidates
+        )
+        likely_targets = [
+            character
+            for character in candidates
+            if hunter.suspicion.get(str(character.id), 0) == highest_suspicion
+        ]
+        return deterministic_game_choice(
+            game_state,
+            sorted(likely_targets, key=lambda character: character.id),
+            f"npc_hunter_target:{hunter.id}:{game_state.pending_hunter_trigger}",
+        ).id
+    return best_candidate.id
 
 def clear_pending_hunter(game_state: WolfGameState) -> None:
     game_state.pending_hunter_id = None
@@ -7407,6 +7429,37 @@ def choose_npc_night_action_type(actor: CharacterState) -> str:
     return "none"
 
 
+def _night_belief_confidence_threshold() -> float:
+    """Bound local-mode belief consumption for night/action targets.
+
+    Below the threshold the exact V4/rule selection is kept; the actor-scoped
+    belief is only consumed when the role marginal is confident enough.  This
+    keeps local trajectories close to the rule teacher on uncertain calls.
+    """
+
+    raw = os.environ.get("AGENT_TOWN_NIGHT_BELIEF_CONFIDENCE", "0.80").strip()
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "AGENT_TOWN_NIGHT_BELIEF_CONFIDENCE must be a finite number"
+        ) from exc
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError(
+            "AGENT_TOWN_NIGHT_BELIEF_CONFIDENCE must be between 0.0 and 1.0"
+        )
+    return value
+
+
+def _belief_usable(belief: object) -> bool:
+    """True only when a role belief is confident enough to be consumed."""
+
+    return (
+        belief is not None
+        and float(belief.confidence) >= _night_belief_confidence_threshold()
+    )
+
+
 def choose_npc_night_target(
     game_state: WolfGameState,
     actor: CharacterState,
@@ -7495,10 +7548,13 @@ def choose_npc_night_target(
                     belief = get_role_belief(belief_state, character.id)
                     # A seer uses public/private suspicion to choose an
                     # informative check; the target's hidden role is not read.
-                    reasoning_bonus = (
-                        (0.5 - abs(belief.werewolf_probability - 0.5)) * 18.0
-                        + belief.confidence * 4.0
-                    )
+                    # Only consume the belief when confident; otherwise keep
+                    # the V4/rule selection exactly.
+                    if _belief_usable(belief):
+                        reasoning_bonus = (
+                            (0.5 - abs(belief.werewolf_probability - 0.5)) * 18.0
+                            + belief.confidence * 4.0
+                        )
                 except (LookupError, ValueError):
                     pass
             return (
@@ -7580,10 +7636,17 @@ def choose_npc_night_target(
             )
             return score, deterministic_noise, -character.id
 
-        return max(
+        best_candidate = max(
             candidates,
             key=night_target_value,
-        ).id
+        )
+        if not _belief_usable(beliefs.get(best_candidate.id)):
+            return deterministic_game_choice(
+                game_state,
+                sorted(candidates, key=lambda character: character.id),
+                f"npc_night_target:{actor.id}:{action_type}",
+            ).id
+        return best_candidate.id
 
     if not candidates:
         return None
@@ -7837,7 +7900,7 @@ def choose_npc_witch_action_decision(
         belief = belief_by_id.get(character.id)
         wolf_belief = (
             belief.werewolf_probability
-            if belief is not None
+            if _belief_usable(belief)
             else witch.suspicion.get(str(character.id), 0) / 100.0
         )
         return (
