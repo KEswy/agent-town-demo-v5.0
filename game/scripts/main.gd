@@ -23,7 +23,9 @@ const WOLF_SHERIFF_NOMINATE_URL := "http://127.0.0.1:8000/api/sheriff/nominate"
 const WOLF_SHERIFF_TRANSFER_URL := "http://127.0.0.1:8000/api/sheriff/transfer"
 const WOLF_COMBINED_VOTE_URL := "http://127.0.0.1:8000/api/vote/submit-and-resolve"
 const WOLF_RECOVERY_STATUS_URL := "http://127.0.0.1:8000/api/game/recovery-status"
+const KNOWLEDGE_SEARCH_URL := "http://127.0.0.1:8000/knowledge/search"
 const SESSION_SETTINGS_PATH := "user://agent_town_session.cfg"
+const STATS_PATH := "user://agent_town_stats.json"
 const SESSION_SETTINGS_SECTION := "session"
 const PLAYER_ID := "player"
 const RESPONSIVE_LAYOUT_SCHEMA_VERSION := "agent_town_responsive_layout.v1"
@@ -300,6 +302,18 @@ const CHARACTER_SKIN_PATHS := {
 @onready var start_game_button: Button = $UI/GameSetupOverlay/Panel/Margin/VBox/ActionRow/StartGameButton
 @onready var continue_game_button: Button = $UI/GameSetupOverlay/Panel/Margin/VBox/ActionRow/ContinueGameButton
 @onready var sound_enabled_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/SoundRow/SoundEnabledToggle
+@onready var knowledge_button: Button = $UI/PhaseHUD/Panel/Margin/Row/KnowledgeButton
+@onready var knowledge_overlay: Control = $UI/KnowledgeOverlay
+@onready var knowledge_search_input: LineEdit = $UI/KnowledgeOverlay/Panel/Margin/VBox/SearchRow/SearchInput
+@onready var knowledge_search_button: Button = $UI/KnowledgeOverlay/Panel/Margin/VBox/SearchRow/SearchButton
+@onready var knowledge_close_button: Button = $UI/KnowledgeOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
+@onready var knowledge_status_label: Label = $UI/KnowledgeOverlay/Panel/Margin/VBox/StatusLabel
+@onready var knowledge_results_list: VBoxContainer = $UI/KnowledgeOverlay/Panel/Margin/VBox/ResultsScroll/ResultsList
+@onready var knowledge_search_request: HTTPRequest = $KnowledgeSearchRequest
+@onready var stats_button: Button = $UI/PhaseHUD/Panel/Margin/Row/StatsButton
+@onready var stats_overlay: Control = $UI/StatsOverlay
+@onready var stats_close_button: Button = $UI/StatsOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
+@onready var stats_body_list: VBoxContainer = $UI/StatsOverlay/Panel/Margin/VBox/BodyScroll/BodyList
 @onready var player_role_option: OptionButton = $UI/GameSetupOverlay/Panel/Margin/VBox/PlayerRoleRow/PlayerRoleOption
 @onready var llm_enabled_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow/LLMEnabledToggle
 @onready var llm_settings_hint: Label = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow/LLMSettingsHint
@@ -370,6 +384,8 @@ var _resume_pending_game := false
 var _recovered_game_ids: Array[String] = []
 var _sound_enabled := true
 var _last_night_visual := false
+var _animate_eliminations_on_next_render := false
+var _last_alive_ids := {}
 var _audio_bgm_day: AudioStreamPlayer
 var _audio_bgm_night: AudioStreamPlayer
 var _audio_sfx: AudioStreamPlayer
@@ -479,6 +495,9 @@ func _ready() -> void:
 	game_start_request.request_completed.connect(_on_game_start_request_completed)
 	game_state_request.request_completed.connect(_on_game_state_request_completed)
 	recovery_status_request.request_completed.connect(_on_recovery_status_request_completed)
+	knowledge_search_request.request_completed.connect(_on_knowledge_search_request_completed)
+	stats_button.pressed.connect(_on_stats_button_pressed)
+	stats_close_button.pressed.connect(_on_stats_close_button_pressed)
 	night_action_request.request_completed.connect(_on_night_action_request_completed)
 	night_resolve_request.request_completed.connect(_on_night_resolve_request_completed)
 	hunter_shot_request.request_completed.connect(_on_hunter_shot_request_completed)
@@ -493,6 +512,10 @@ func _ready() -> void:
 	game_summary_request.request_completed.connect(_on_game_summary_request_completed)
 	start_game_button.pressed.connect(_on_start_game_button_pressed)
 	continue_game_button.pressed.connect(_on_continue_game_button_pressed)
+	knowledge_button.pressed.connect(_on_knowledge_button_pressed)
+	knowledge_search_button.pressed.connect(_on_knowledge_search_submitted)
+	knowledge_search_input.text_submitted.connect(_on_knowledge_search_submitted)
+	knowledge_close_button.pressed.connect(_on_knowledge_close_button_pressed)
 	sound_enabled_toggle.toggled.connect(_set_sound_enabled)
 	llm_enabled_toggle.toggled.connect(_on_llm_enabled_toggled)
 	llm_validation_toggle.toggled.connect(_on_llm_validation_toggled)
@@ -2618,6 +2641,520 @@ func _on_continue_game_button_pressed() -> void:
 	_request_wolf_game_state()
 
 
+func _on_knowledge_button_pressed() -> void:
+	knowledge_overlay.visible = true
+	knowledge_overlay.add_to_group("dialog_open")
+	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
+	call_deferred("_focus_control_if_available", knowledge_search_input)
+
+
+func _on_knowledge_close_button_pressed() -> void:
+	knowledge_overlay.visible = false
+	knowledge_overlay.remove_from_group("dialog_open")
+	knowledge_search_input.release_focus()
+	_release_focus_to_world()
+
+
+func _on_knowledge_search_submitted(_submitted_text: String = "") -> void:
+	var query := knowledge_search_input.text.strip_edges()
+	if query.is_empty():
+		knowledge_status_label.text = "请输入要查询的问题。"
+		return
+	knowledge_status_label.text = "正在搜索知识库..."
+	_clear_knowledge_results()
+	var url := (
+		KNOWLEDGE_SEARCH_URL
+		+ "?npc_name=Guide&message=" + query.uri_encode() + "&limit=8"
+	)
+	var error := knowledge_search_request.request(url, [], HTTPClient.METHOD_GET)
+	if error != OK:
+		knowledge_status_label.text = "搜索失败：请确认后端已启动。"
+
+
+func _on_knowledge_search_request_completed(
+	result: int,
+	response_code: int,
+	_headers: PackedStringArray,
+	body: PackedByteArray
+) -> void:
+	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
+		knowledge_status_label.text = "搜索失败：后端不可用，请先启动 FastAPI。"
+		return
+	var json := JSON.new()
+	if json.parse(body.get_string_from_utf8()) != OK or typeof(json.data) != TYPE_DICTIONARY:
+		knowledge_status_label.text = "搜索失败：后端响应格式不正确。"
+		return
+	var results: Variant = json.data.get("results", [])
+	if typeof(results) != TYPE_ARRAY or results.is_empty():
+		knowledge_status_label.text = "没有找到相关内容，换个说法再试试。"
+		return
+	knowledge_status_label.text = (
+		"找到 " + str(results.size()) + " 条相关内容（检索模式："
+		+ str(json.data.get("retrieval_mode", "keyword")) + "）"
+	)
+	for item in results:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var knowledge_item: Variant = item.get("item", {})
+		if typeof(knowledge_item) != TYPE_DICTIONARY:
+			continue
+		_append_knowledge_result(knowledge_item)
+
+
+func _append_knowledge_result(knowledge_item: Dictionary) -> void:
+	var panel := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.96, 0.97, 0.99, 1)
+	style.border_width_left = 1
+	style.border_width_top = 1
+	style.border_width_right = 1
+	style.border_width_bottom = 1
+	style.border_color = Color(0.55, 0.62, 0.72, 1)
+	style.corner_radius_top_left = 8
+	style.corner_radius_top_right = 8
+	style.corner_radius_bottom_right = 8
+	style.corner_radius_bottom_left = 8
+	panel.add_theme_stylebox_override("panel", style)
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 12)
+	margin.add_theme_constant_override("margin_top", 10)
+	margin.add_theme_constant_override("margin_right", 12)
+	margin.add_theme_constant_override("margin_bottom", 10)
+	panel.add_child(margin)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 5)
+	margin.add_child(box)
+	var title := Label.new()
+	title.text = str(knowledge_item.get("title", "未命名条目"))
+	title.add_theme_font_size_override("font_size", 16)
+	title.add_theme_color_override("font_color", Color(0.05, 0.2, 0.45, 1))
+	box.add_child(title)
+	var content := Label.new()
+	content.text = str(knowledge_item.get("content", ""))
+	content.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_theme_color_override("font_color", Color(0.12, 0.16, 0.22, 1))
+	box.add_child(content)
+	knowledge_results_list.add_child(panel)
+
+
+func _clear_knowledge_results() -> void:
+	for child in knowledge_results_list.get_children():
+		child.queue_free()
+
+
+func _on_stats_button_pressed() -> void:
+	stats_overlay.visible = true
+	stats_overlay.add_to_group("dialog_open")
+	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
+	_render_stats_overlay()
+	call_deferred("_focus_control_if_available", stats_close_button)
+
+
+func _on_stats_close_button_pressed() -> void:
+	stats_overlay.visible = false
+	stats_overlay.remove_from_group("dialog_open")
+	stats_close_button.release_focus()
+	_release_focus_to_world()
+
+
+func _load_game_stats() -> Dictionary:
+	var result: Dictionary = {"games": []}
+	if not FileAccess.file_exists(STATS_PATH):
+		return result
+	var file := FileAccess.open(STATS_PATH, FileAccess.READ)
+	if file == null:
+		return result
+	var parsed = JSON.parse_string(file.get_as_text())
+	if typeof(parsed) == TYPE_DICTIONARY and typeof(parsed.get("games", [])) == TYPE_ARRAY:
+		result = parsed
+	return result
+
+
+func _write_game_stats(stats: Dictionary) -> void:
+	var file := FileAccess.open(STATS_PATH, FileAccess.WRITE)
+	if file == null:
+		push_warning("无法保存战绩文件。")
+		return
+	file.store_string(JSON.stringify(stats, "  "))
+
+
+func _save_game_stats(summary: Dictionary) -> void:
+	var stats := _load_game_stats()
+	var games: Array = stats.get("games", [])
+	var by_id := _summary_character_lookup(summary)
+	var player_character: Dictionary = by_id.get(_current_player_character_id, {})
+	if player_character.is_empty():
+		return
+	var mvp := _compute_mvp_from_summary(summary, by_id)
+	var player_camp := str(player_character.get("camp", ""))
+	var winner := str(summary.get("winner", ""))
+	var record := {
+		"game_id": str(summary.get("game_id", "")),
+		"date": Time.get_datetime_string_from_system(),
+		"player_role": str(player_character.get("role", "")),
+		"player_camp": player_camp,
+		"won": player_camp == winner,
+		"total_days": int(summary.get("total_days", 0)),
+		"mvp_name": str(mvp.get("name", "")),
+		"mvp_role": str(mvp.get("role_label", "")),
+		"mvp_score": int(mvp.get("score", 0)),
+		"player_score": _compute_character_score(player_character, by_id),
+		"action_counts": _collect_player_action_counts(player_character, by_id),
+	}
+	games.append(record)
+	if games.size() > 200:
+		games = games.slice(games.size() - 200, games.size())
+	stats["games"] = games
+	_write_game_stats(stats)
+
+
+func _summary_character_lookup(summary: Dictionary) -> Dictionary:
+	var by_id := {}
+	var characters: Variant = summary.get("characters", [])
+	if typeof(characters) == TYPE_ARRAY:
+		for character in characters:
+			if typeof(character) == TYPE_DICTIONARY:
+				by_id[int(character.get("character_id", 0))] = character
+	return by_id
+
+
+func _compute_mvp_from_summary(summary: Dictionary, by_id: Dictionary) -> Dictionary:
+	var best := {}
+	var characters: Variant = summary.get("characters", [])
+	if typeof(characters) == TYPE_ARRAY:
+		for character in characters:
+			if typeof(character) != TYPE_DICTIONARY:
+				continue
+			var score := _compute_character_score(character, by_id)
+			if best.is_empty() or score > int(best.get("score", -99999)):
+				best = {
+					"name": str(character.get("name", "")),
+					"role_label": str(character.get("role_label", "")),
+					"score": score,
+				}
+	return best
+
+
+func _compute_character_score(character: Dictionary, by_id: Dictionary) -> int:
+	var score := 0
+	var good_camp := str(character.get("camp", "")) == "good"
+	for text in _character_action_texts(character):
+		if text.contains("查验") and text.contains("结果为狼人"):
+			score += 2
+		elif text.contains("成功挡下狼刀"):
+			score += 2
+		elif text.contains("使用毒药"):
+			score += _camp_target_score(text, "对", good_camp, 2, by_id)
+		elif text.contains("使用解药"):
+			score += 1
+		elif text.contains("开枪，"):
+			score += _camp_target_score(text, "开枪，", good_camp, 2, by_id)
+		elif text.contains("投给"):
+			score += _camp_target_score(text, "投给", good_camp, 1, by_id)
+		elif text.contains("选择袭击"):
+			score += 1
+	if str(character.get("outcome", "")).contains("胜利"):
+		score += 1
+	return score
+
+
+func _camp_target_score(
+	action_text: String,
+	marker: String,
+	good_voter: bool,
+	base: int,
+	by_id: Dictionary
+) -> int:
+	var target_id := _extract_target_id(action_text, marker)
+	if target_id <= 0:
+		return 0
+	var target_camp := str(by_id.get(target_id, {}).get("camp", ""))
+	var target_wolf := target_camp == "werewolf"
+	if good_voter:
+		return base if target_wolf else -base
+	return base if not target_wolf else -base
+
+
+func _extract_target_id(action_text: String, marker: String) -> int:
+	var regex := RegEx.new()
+	regex.compile(marker + "(\\d+)号")
+	var match := regex.search(action_text)
+	return int(match.get_string(1)) if match != null else 0
+
+
+func _character_action_texts(character: Dictionary) -> Array[String]:
+	var texts: Array[String] = []
+	var actions: Variant = character.get("actions", [])
+	if typeof(actions) == TYPE_ARRAY:
+		for action in actions:
+			if typeof(action) == TYPE_DICTIONARY:
+				texts.append(str(action.get("text", "")))
+	return texts
+
+
+func _collect_player_action_counts(character: Dictionary, by_id: Dictionary) -> Dictionary:
+	var counts := {
+		"wolf_checks": 0,
+		"poisons_on_wolves": 0,
+		"saves": 0,
+		"blocks": 0,
+		"hunter_kills": 0,
+		"votes_on_wolves": 0,
+	}
+	var good_camp := str(character.get("camp", "")) == "good"
+	for text in _character_action_texts(character):
+		if text.contains("查验") and text.contains("结果为狼人"):
+			counts["wolf_checks"] = int(counts["wolf_checks"]) + 1
+		elif text.contains("成功挡下狼刀"):
+			counts["blocks"] = int(counts["blocks"]) + 1
+		elif text.contains("使用毒药"):
+			var tid := _extract_target_id(text, "对")
+			if str(by_id.get(tid, {}).get("camp", "")) == "werewolf":
+				counts["poisons_on_wolves"] = int(counts["poisons_on_wolves"]) + 1
+		elif text.contains("使用解药"):
+			counts["saves"] = int(counts["saves"]) + 1
+		elif text.contains("开枪，"):
+			var hid := _extract_target_id(text, "开枪，")
+			if str(by_id.get(hid, {}).get("camp", "")) == "werewolf":
+				counts["hunter_kills"] = int(counts["hunter_kills"]) + 1
+		elif text.contains("投给") and good_camp:
+			var vid := _extract_target_id(text, "投给")
+			if str(by_id.get(vid, {}).get("camp", "")) == "werewolf":
+				counts["votes_on_wolves"] = int(counts["votes_on_wolves"]) + 1
+	return counts
+
+
+func _render_stats_overlay() -> void:
+	_clear_control_children(stats_body_list)
+	var stats := _load_game_stats()
+	var games: Array = stats.get("games", [])
+	if games.is_empty():
+		_append_stats_line("还没有完成的游戏记录。玩完一局（游戏结束后）会自动记录。", false)
+		return
+	var total := games.size()
+	var wins := 0
+	var by_role := {}
+	var action_totals := {
+		"wolf_checks": 0, "poisons_on_wolves": 0, "saves": 0,
+		"blocks": 0, "hunter_kills": 0, "votes_on_wolves": 0,
+	}
+	for game in games:
+		if bool(game.get("won", false)):
+			wins += 1
+		var role := str(game.get("player_role", "unknown"))
+		var entry: Dictionary = by_role.get(role, {"played": 0, "won": 0})
+		entry["played"] = int(entry["played"]) + 1
+		if bool(game.get("won", false)):
+			entry["won"] = int(entry["won"]) + 1
+		by_role[role] = entry
+		var counts: Dictionary = game.get("action_counts", {})
+		for key in action_totals:
+			action_totals[key] = int(action_totals[key]) + int(counts.get(key, 0))
+	_append_stats_line(
+		"总对局 " + str(total) + " 局 | 胜 " + str(wins) + " 局 | 胜率 "
+		+ str(int(round(float(wins) / float(total) * 100))) + "%",
+		true
+	)
+	_append_stats_line("", false)
+	_append_stats_line("各身份战绩：", true)
+	for role in by_role:
+		var entry: Dictionary = by_role[role]
+		_append_stats_line(
+			_role_display_name(role) + "：" + str(entry["played"]) + " 局 "
+			+ str(entry["won"]) + " 胜",
+			false
+		)
+	var last_game: Dictionary = games[games.size() - 1]
+	_append_stats_line("", false)
+	_append_stats_line(
+		"最近一局 MVP：" + str(last_game.get("mvp_name", "无")) + "（"
+		+ str(last_game.get("mvp_role", "")) + "，+"
+		+ str(last_game.get("mvp_score", 0)) + "）",
+		true
+	)
+	_append_stats_line("", false)
+	_append_stats_line("我的常用操作（累计）：", true)
+	var action_labels := {
+		"wolf_checks": "验到狼",
+		"poisons_on_wolves": "毒到狼",
+		"saves": "解药救人",
+		"blocks": "成功挡刀",
+		"hunter_kills": "猎人带走狼",
+		"votes_on_wolves": "放逐票命中狼",
+	}
+	var parts: Array[String] = []
+	for key in action_totals:
+		if int(action_totals[key]) > 0:
+			parts.append(str(action_labels[key]) + " " + str(action_totals[key]) + " 次")
+	if parts.is_empty():
+		_append_stats_line("暂无记录", false)
+	else:
+		_append_stats_line("、".join(parts), false)
+
+
+func _role_display_name(role: String) -> String:
+	match role:
+		"seer": return "预言家"
+		"witch": return "女巫"
+		"hunter": return "猎人"
+		"guard": return "守卫"
+		"werewolf": return "狼人"
+		"villager": return "村民"
+		_: return role
+
+
+func _append_stats_line(text: String, bold: bool) -> void:
+	var label := Label.new()
+	label.text = text
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.add_theme_color_override("font_color", Color(0.1, 0.14, 0.2, 1))
+	if bold:
+		label.add_theme_font_size_override("font_size", 17)
+	stats_body_list.add_child(label)
+
+
+func _build_review_suggestions(summary: Dictionary) -> Array[String]:
+	var suggestions: Array[String] = []
+	var by_id := _summary_character_lookup(summary)
+	var player_character: Dictionary = by_id.get(_current_player_character_id, {})
+	if player_character.is_empty():
+		return suggestions
+	var role := str(player_character.get("role", ""))
+	var player_camp := str(player_character.get("camp", ""))
+	var won := str(summary.get("winner", "")) == player_camp
+	var actions := _character_action_texts(player_character)
+	var wolf_checks := 0
+	var blocked := false
+	var saved := false
+	var poisoned_wolf := false
+	var shot_wolf := false
+	var shot_good := false
+	var votes_on_good := 0
+	var votes_on_wolf := 0
+	for text in actions:
+		if text.contains("查验") and text.contains("结果为狼人"):
+			wolf_checks += 1
+		elif text.contains("成功挡下狼刀"):
+			blocked = true
+		elif text.contains("使用解药"):
+			saved = true
+		elif text.contains("使用毒药"):
+			var pid := _extract_target_id(text, "对")
+			if str(by_id.get(pid, {}).get("camp", "")) == "werewolf":
+				poisoned_wolf = true
+		elif text.contains("开枪，"):
+			var hid := _extract_target_id(text, "开枪，")
+			var shot_camp := str(by_id.get(hid, {}).get("camp", ""))
+			if shot_camp == "werewolf":
+				shot_wolf = true
+			elif shot_camp == "good":
+				shot_good = true
+		elif text.contains("投给"):
+			var vid := _extract_target_id(text, "投给")
+			var vote_camp := str(by_id.get(vid, {}).get("camp", ""))
+			if vote_camp == "werewolf":
+				votes_on_wolf += 1
+			elif vote_camp == "good":
+				votes_on_good += 1
+	match role:
+		"seer":
+			if wolf_checks == 0:
+				suggestions.append("预言家：本局没有验到狼。可以优先查验对跳/高嫌疑对象，并在警徽流里提前规划验人顺序。")
+			elif not won:
+				suggestions.append("预言家：你验到了 " + str(wolf_checks) + " 名狼人但好人最终失利；复盘时可以检查验人信息是否在白天被持续推动。")
+		"guard":
+			if not blocked and not won:
+				suggestions.append("守卫：本局没有成功挡刀。可以优先守护唯一一致预言家或已经明身份的神职。")
+		"witch":
+			if not saved and not won:
+				suggestions.append("女巫：本局没有使用解药。留药太久容易错过节奏，首夜自救与否要结合狼刀习惯判断。")
+			if not poisoned_wolf and not won:
+				suggestions.append("女巫：本局毒药没有命中狼人。第二夜后可以根据公开票型焦点压毒。")
+		"hunter":
+			if shot_good:
+				suggestions.append("猎人：本局开枪带走了好人。开枪前建议再核对公开证据链与自己的怀疑对象。")
+			elif not shot_wolf and not won:
+				suggestions.append("猎人：本局没有带走狼人。可以在生前通过发言明确自己的怀疑对象。")
+		"villager":
+			if votes_on_good > votes_on_wolf and not won:
+				suggestions.append("村民：本局放逐票更多落在了好人身上。放逐前建议核对公开证据链、警长归票与对跳关系。")
+			elif votes_on_wolf > 0 and won:
+				suggestions.append("村民：本局关键放逐票命中了狼人，继续保持对公开证据链的追踪。")
+	if player_camp == "werewolf" and not won:
+		var exiled_day := _player_exiled_day(player_character)
+		if exiled_day == 1:
+			suggestions.append("狼人：第一天就被放逐说明暴露过快。可以检查悍跳叙事、站边与队友的公开一致性。")
+		else:
+			suggestions.append("狼人：本局失利。可以复盘控场时机、刀口选择与卖队友的公开叙事是否一致。")
+	return suggestions
+
+
+func _player_exiled_day(character: Dictionary) -> int:
+	var outcome := str(character.get("outcome", ""))
+	if not outcome.contains("被放逐出局"):
+		return 0
+	var regex := RegEx.new()
+	regex.compile("第 (\\d+) 天")
+	var match := regex.search(outcome)
+	return int(match.get_string(1)) if match != null else 0
+
+
+func _handle_elimination_animation(characters: Variant) -> void:
+	var current_alive := {}
+	if typeof(characters) == TYPE_ARRAY:
+		for character in characters:
+			if typeof(character) == TYPE_DICTIONARY:
+				current_alive[int(character.get("id", 0))] = bool(character.get("alive", true))
+	if _animate_eliminations_on_next_render:
+		_animate_eliminations_on_next_render = false
+		for character_id in _last_alive_ids:
+			if not bool(current_alive.get(int(character_id), false)):
+				_animate_character_eliminated(int(character_id))
+	_last_alive_ids = current_alive
+
+
+func _animate_character_eliminated(character_id: int) -> void:
+	var target: Node2D = null
+	if character_id == _current_player_character_id:
+		target = player
+	else:
+		for npc in get_tree().get_nodes_in_group("npc"):
+			if int(npc.call("get_wolf_character_id")) == character_id:
+				target = npc
+				break
+	if target == null:
+		return
+	var original_modulate := target.modulate
+	var original_scale := target.scale
+	var flash := create_tween()
+	for i in range(3):
+		flash.tween_property(target, "modulate", Color(1, 0.25, 0.25, original_modulate.a), 0.12)
+		flash.tween_property(target, "modulate", original_modulate, 0.12)
+	flash.tween_property(target, "scale", original_scale * 0.8, 0.2)
+	flash.tween_property(target, "scale", original_scale, 0.25)
+	var label := Label.new()
+	label.text = "出局"
+	label.add_theme_font_size_override("font_size", 26)
+	label.add_theme_color_override("font_color", Color(1, 0.25, 0.25, 1))
+	label.add_theme_constant_override("outline_size", 8)
+	label.add_theme_color_override("font_outline_color", Color(0.08, 0.04, 0.04, 1))
+	label.z_index = 100
+	var parent := get_tree().current_scene
+	if parent != null:
+		parent.add_child(label)
+		label.global_position = target.global_position + Vector2(-20, -70)
+		var float_tween := create_tween()
+		float_tween.tween_property(
+			label,
+			"global_position",
+			label.global_position + Vector2(0, -38),
+			1.0
+		)
+		float_tween.parallel().tween_property(label, "modulate:a", 0.0, 1.0)
+		float_tween.tween_callback(label.queue_free)
+	_play_sfx("eliminate")
+
+
 func _on_night_action_request_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
 	_is_submitting_night_action = false
 	_update_night_controls_from_current_state()
@@ -2645,6 +3182,7 @@ func _on_night_resolve_request_completed(result: int, response_code: int, _heade
 
 	_complete_idempotent_command("night_resolve")
 	_play_sfx("eliminate")
+	_animate_eliminations_on_next_render = true
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
 	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
@@ -2665,6 +3203,7 @@ func _on_hunter_shot_request_completed(result: int, response_code: int, _headers
 		return
 
 	_complete_idempotent_command("hunter_shot")
+	_animate_eliminations_on_next_render = true
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
 	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
@@ -2933,6 +3472,7 @@ func _on_combined_vote_request_completed(result: int, response_code: int, _heade
 
 	_complete_idempotent_command("combined_vote")
 	_play_sfx("eliminate")
+	_animate_eliminations_on_next_render = true
 	var json = JSON.new()
 	var parse_error = json.parse(body.get_string_from_utf8())
 	if parse_error == OK and typeof(json.data) == TYPE_DICTIONARY:
@@ -2964,6 +3504,7 @@ func _on_game_summary_request_completed(result: int, response_code: int, _header
 		return
 
 	_game_summary_data = json.data
+	_save_game_stats(_game_summary_data)
 	_render_game_summary(_game_summary_data)
 	review_game_button.disabled = false
 	_show_game_summary()
@@ -3055,6 +3596,7 @@ func _render_wolf_game(game_data: Dictionary) -> void:
 	_update_sheriff_state(game_data)
 	_update_meeting_state(game_data)
 	_sync_world_npcs(characters)
+	_handle_elimination_animation(characters)
 
 	wolf_status_label.text = "后端状态：connected"
 	if _preserve_wolf_game_info_once:
@@ -4889,9 +5431,13 @@ func _render_game_summary(summary: Dictionary) -> void:
 	game_summary_timeline_label.text = (
 		"暂无行动记录。" if timeline_lines.is_empty() else "\n\n".join(timeline_lines)
 	)
-	game_summary_review_label.text = _format_post_game_explainable_review(
+	var suggestions := _build_review_suggestions(summary)
+	var review_text := _format_post_game_explainable_review(
 		summary.get("explainable_review", {})
 	)
+	if not suggestions.is_empty():
+		review_text = "【复盘建议】\n" + "\n".join(suggestions) + "\n\n" + review_text
+	game_summary_review_label.text = review_text
 
 
 func _format_post_game_explainable_review(review: Variant) -> String:

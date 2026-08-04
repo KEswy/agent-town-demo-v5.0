@@ -411,6 +411,16 @@ layout_mode = 2
 tooltip_text = "打开新手引导（F1）"
 text = "?"
 
+[node name="KnowledgeButton" type="Button" parent="UI/PhaseHUD/Panel/Margin/Row"]
+layout_mode = 2
+tooltip_text = "打开规则百科，搜索 111 条规则与 NPC 知识"
+text = "规则"
+
+[node name="StatsButton" type="Button" parent="UI/PhaseHUD/Panel/Margin/Row"]
+layout_mode = 2
+tooltip_text = "查看个人战绩与各身份胜率"
+text = "战绩"
+
 [node name="SetupToggleButton" type="Button" parent="UI/PhaseHUD/Panel/Margin/Row"]
 layout_mode = 2
 tooltip_text = "设置并开始新对局"
@@ -1246,6 +1256,165 @@ custom_minimum_size = Vector2(150, 42)
 layout_mode = 2
 text = "开始游戏"
 
+[node name="KnowledgeOverlay" type="Control" parent="UI"]
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+theme = SubResource("Theme_light_ui")
+
+[node name="Shade" type="ColorRect" parent="UI/KnowledgeOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.08, 0.22, 0.31, 0.58)
+
+[node name="Panel" type="PanelContainer" parent="UI/KnowledgeOverlay"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -380.0
+offset_top = -250.0
+offset_right = 380.0
+offset_bottom = 250.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_setup")
+
+[node name="Margin" type="MarginContainer" parent="UI/KnowledgeOverlay/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 24
+theme_override_constants/margin_top = 20
+theme_override_constants/margin_right = 24
+theme_override_constants/margin_bottom = 20
+
+[node name="VBox" type="VBoxContainer" parent="UI/KnowledgeOverlay/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="HeaderRow" type="HBoxContainer" parent="UI/KnowledgeOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+
+[node name="TitleLabel" type="Label" parent="UI/KnowledgeOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 20
+text = "规则百科"
+
+[node name="CloseButton" type="Button" parent="UI/KnowledgeOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+text = "关闭"
+
+[node name="SearchRow" type="HBoxContainer" parent="UI/KnowledgeOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="SearchInput" type="LineEdit" parent="UI/KnowledgeOverlay/Panel/Margin/VBox/SearchRow"]
+custom_minimum_size = Vector2(0, 38)
+layout_mode = 2
+size_flags_horizontal = 3
+placeholder_text = "例如：守卫能不能连续守？狼人怎么赢？"
+clear_button_enabled = true
+
+[node name="SearchButton" type="Button" parent="UI/KnowledgeOverlay/Panel/Margin/VBox/SearchRow"]
+custom_minimum_size = Vector2(90, 38)
+layout_mode = 2
+text = "搜索"
+
+[node name="StatusLabel" type="Label" parent="UI/KnowledgeOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+text = "输入问题后按回车搜索。"
+
+[node name="ResultsScroll" type="ScrollContainer" parent="UI/KnowledgeOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="ResultsList" type="VBoxContainer" parent="UI/KnowledgeOverlay/Panel/Margin/VBox/ResultsScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 10
+
+[node name="StatsOverlay" type="Control" parent="UI"]
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+theme = SubResource("Theme_light_ui")
+
+[node name="Shade" type="ColorRect" parent="UI/StatsOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.08, 0.22, 0.31, 0.58)
+
+[node name="Panel" type="PanelContainer" parent="UI/StatsOverlay"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -380.0
+offset_top = -250.0
+offset_right = 380.0
+offset_bottom = 250.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_setup")
+
+[node name="Margin" type="MarginContainer" parent="UI/StatsOverlay/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 24
+theme_override_constants/margin_top = 20
+theme_override_constants/margin_right = 24
+theme_override_constants/margin_bottom = 20
+
+[node name="VBox" type="VBoxContainer" parent="UI/StatsOverlay/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="HeaderRow" type="HBoxContainer" parent="UI/StatsOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+
+[node name="TitleLabel" type="Label" parent="UI/StatsOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 20
+text = "我的战绩"
+
+[node name="CloseButton" type="Button" parent="UI/StatsOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+text = "关闭"
+
+[node name="BodyScroll" type="ScrollContainer" parent="UI/StatsOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="BodyList" type="VBoxContainer" parent="UI/StatsOverlay/Panel/Margin/VBox/BodyScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 10
+
 [node name="GameSummaryOverlay" type="Control" parent="UI"]
 visible = false
 layout_mode = 3
@@ -1537,3 +1706,5 @@ text = "下一步"
 [node name="GameSummaryRequest" type="HTTPRequest" parent="."]
 
 [node name="RecoveryStatusRequest" type="HTTPRequest" parent="."]
+
+[node name="KnowledgeSearchRequest" type="HTTPRequest" parent="."]
