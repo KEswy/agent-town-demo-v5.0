@@ -182,17 +182,20 @@ backend/.venv/bin/python backend/training/compare_teacher_labels.py \
 
 该报告只衡量标注分歧，不代表胜率、平衡或模型质量。
 
-可生成离线可视化审计台：
+可生成离线极简审阅向导（每屏一条：点“采纳审计建议”/“采纳 teacher”，或输入目标号后回车
+确认；进度保存在浏览器本地，完成后导出 JSONL）：
 
 ```bash
 backend/.venv/bin/python backend/training/review_dashboard.py \
   --input backend/training/inbox/logic_review_queue.jsonl \
+  --teacher backend/training/datasets/npc_policy_v1.jsonl \
+  --labels backend/training/inbox/codex_smart_labels.jsonl \
   --output backend/training/inbox/review_dashboard.html
 ```
 
-直接用浏览器打开生成的 HTML。它支持筛选、候选卡片、冲突/唯一预言家可视化、首选动作、
-概率分布、置信度、理由和标签编辑；草稿保存在浏览器本地，点击“导出已填写 JSONL”后再
-交给 `convert_policy_review_queue.py`。
+打开方式：Finder 双击该 HTML，或终端执行
+`open backend/training/inbox/review_dashboard.html`。页面为纯本地单文件、无需联网。
+导出结果文件默认保存到浏览器下载目录，再交给 `convert_policy_review_queue.py`。
 
 如果由 Codex 按“聪明好人 v2 / 聪明狼人 v1”原则生成可解释审计，可运行：
 

@@ -86,7 +86,7 @@ B 为真预言家的假设因此与“B 给持续对跳者发金水”的公开�
 | `backend/training/consensus_policy_labels.py` | 按审阅者独立来源生成共识标签并隔离分歧 |
 | `backend/training/fill_policy_review_queue.py` | 生成明确标注需人工复核的启发式 bootstrap 标签 |
 | `backend/training/compare_teacher_labels.py` | 比较审阅标签与规则 soft teacher 的差异 |
-| `backend/training/review_dashboard.py` | 生成离线可视化审阅页面并导出 JSONL |
+| `backend/training/review_dashboard.py` | 生成离线极简审阅向导：逐条 teacher/审计对照、一键采纳或手填目标号、进度本地保存并导出 JSONL |
 | `backend/training/audit_policy_review_queue.py` | 生成 teacher-anchored 聪明好人 v2；聪明狼人逐项保留 v1 rubric |
 | `backend/training/calibrate_policy_temperature.py` | 离线扫描候选概率温度，不直接修改运行时 |
 | `backend/training/extract_policy_disagreements.py` | 从 shadow 轨迹提取规则/模型分歧样本 |

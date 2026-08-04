@@ -46,7 +46,8 @@ V5 从不可移动的 `v4.0.0` 源码基线开始，主题不是重写狼人杀�
   `needs_human_review`，不会被当作人工金标准。
 - `compare_teacher_labels.py` 可在训练前量化人工标签与规则 soft teacher 的差异，帮助
   发现“标签只是重复规则”或“启发式偏离过大”的问题。
-- `review_dashboard.py` 提供离线浏览器审计台，可筛选样本、比较候选逻辑信号并导出填写结果。
+- `review_dashboard.py` 提供离线浏览器审阅向导：逐条展示 teacher 与审计推荐，支持
+  一键采纳或手填目标号回车确认，进度本地保存并导出 JSONL。
 - `audit_policy_review_queue.py` 的聪明好人标签已升级为 teacher-anchored v2：无硬公开
   逻辑冲突时逐项保持 rule teacher；出现冲突或唯一一致预言家信号时才小幅纠偏、保护
   唯一一致预言家并向已有归票锚点收拢。聪明狼人仍逐项保留 v1 标签与 rubric。

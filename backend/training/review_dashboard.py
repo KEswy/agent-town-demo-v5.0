@@ -1,62 +1,339 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Build a self-contained browser audit dashboard for a review queue."""
+"""Build a minimal step-by-step browser review wizard for a policy queue.
+
+One decision per screen: adopt the audit pick, adopt the rule-teacher pick,
+or type your own target number, then press Enter or click "确认下一条".
+Progress is persisted in the browser (localStorage); the result is exported
+as JSONL for ``convert_policy_review_queue.py``.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
-import html
 from pathlib import Path
 
 
+FEATURE_SHORT = {
+    "candidate_suspicion": "怀疑",
+    "candidate_public_pressure": "公开压力",
+    "candidate_wolf_belief": "狼信念",
+    "candidate_seer_belief": "预言家信念",
+    "candidate_is_sheriff_nomination": "归票",
+    "candidate_is_provisional_vote": "暂定票",
+    "candidate_in_trusted_set": "可信",
+    "candidate_is_known_good": "已知好人",
+    "candidate_is_known_wolf": "已知狼",
+    "candidate_is_wolf_teammate": "狼队友",
+}
+
+
+def _top_action(distribution: dict[str, float]) -> str | None:
+    if not distribution:
+        return None
+
+    def tie_key(action_id: str) -> int:
+        suffix = str(action_id).split(":")[-1]
+        return -int(suffix) if suffix.isdigit() else 0
+
+    return max(
+        distribution,
+        key=lambda action_id: (float(distribution[action_id]), tie_key(action_id)),
+    )
+
+
+def _canonical_action(action_id: object) -> str:
+    text = str(action_id)
+    return text if text.startswith("exile_vote:") else f"exile_vote:{text}"
+
+
+def _join_references(
+    queue: list[dict[str, object]],
+    teacher_path: Path | None,
+    labels_path: Path | None,
+) -> list[dict[str, object]]:
+    """Attach teacher and audit references without touching the queue schema."""
+
+    teacher_by_digest: dict[str, dict[str, object]] = {}
+    if teacher_path is not None:
+        for line in teacher_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            teacher_by_digest[str(record["observation_digest"])] = record
+    label_by_digest: dict[str, dict[str, object]] = {}
+    if labels_path is not None:
+        for line in labels_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            label = json.loads(line)
+            label_by_digest[str(label["observation_digest"])] = label
+
+    for row in queue:
+        digest = str(row["observation_digest"])
+        teacher = teacher_by_digest.get(digest)
+        label = label_by_digest.get(digest)
+        teacher_distribution = (
+            dict(teacher["rule_probabilities"]) if teacher is not None else {}
+        )
+        audit_distribution = (
+            dict(label["target_distribution"]) if label is not None else {}
+        )
+        row["_teacher_top"] = _canonical_action(_top_action(teacher_distribution))
+        row["_teacher_top_prob"] = (
+            float(teacher_distribution.get(row["_teacher_top"].split(":")[-1], 0.0))
+            if row["_teacher_top"] is not None
+            else None
+        )
+        row["_audit_top"] = _canonical_action(_top_action(audit_distribution))
+        row["_audit_top_prob"] = (
+            float(audit_distribution.get(row["_audit_top"], 0.0))
+            if row["_audit_top"] is not None
+            else None
+        )
+        row["_audit_confidence"] = (
+            float(label["confidence"]) if label is not None else None
+        )
+
+        teacher_candidates = {
+            str(candidate["target_id"]): candidate
+            for candidate in (teacher or {}).get("candidates", [])
+        }
+        feature_names = [str(name) for name in (teacher or {}).get("feature_names", [])]
+        for candidate in row["candidates"]:
+            target_id = str(candidate["target_id"])
+            teacher_candidate = teacher_candidates.get(target_id)
+            action_id = str(candidate["action_id"])
+            candidate["teacher_prob"] = float(
+                teacher_distribution.get(target_id, 0.0)
+            )
+            candidate["audit_prob"] = float(audit_distribution.get(action_id, 0.0))
+            values = teacher_candidate.get("feature_values", []) if teacher_candidate else []
+            features: dict[str, float] = {}
+            for short_name, feature_name in FEATURE_SHORT.items():
+                if feature_name in feature_names:
+                    index = feature_names.index(feature_name)
+                    if index < len(values):
+                        features[short_name] = float(values[index])
+            candidate["features"] = features
+    return queue
+
+
 def render(queue: list[dict[str, object]]) -> str:
-    payload = json.dumps(queue, ensure_ascii=False, separators=(",", ":"))
+    payload = json.dumps(
+        {
+            "rows": queue,
+            "featureShort": FEATURE_SHORT,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     return """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NPC 决策审计台</title>
+<title>V5 标签审阅向导</title>
 <style>
-:root{color-scheme:dark;--bg:#0b1020;--panel:#131b31;--panel2:#1a2541;--line:#2d3b61;--text:#edf2ff;--muted:#9eadd0;--good:#54d39b;--warn:#f5b85b;--bad:#ff7185;--blue:#76a9ff}
-*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#0b1020,#111a32 55%,#0a1329);color:var(--text);font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}button,input,select,textarea{font:inherit;color:inherit}button{cursor:pointer;border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:8px 11px}button:hover{border-color:var(--blue)}.app{max-width:1480px;margin:0 auto;padding:22px}.top{display:flex;justify-content:space-between;gap:16px;align-items:end;margin-bottom:16px}.title{font-size:25px;font-weight:700}.sub{color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap}.primary{background:#315da8;border-color:#5e91ed}.danger{border-color:#8e4050}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}.stat,.panel{background:rgba(19,27,49,.9);border:1px solid var(--line);border-radius:12px}.stat{padding:13px}.stat b{display:block;font-size:24px}.stat span{color:var(--muted)}.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.filters input,.filters select,.field input,.field select,.field textarea{background:#0e162b;border:1px solid var(--line);border-radius:7px;padding:8px}.filters input{min-width:260px}.workspace{display:grid;grid-template-columns:360px minmax(0,1fr);gap:14px;min-height:650px}.panel{padding:12px}.queue{max-height:730px;overflow:auto}.row{padding:11px;border-bottom:1px solid #253250;cursor:pointer}.row:hover{background:#172341}.row.active{background:#203965;border-left:3px solid var(--blue)}.rowline{display:flex;justify-content:space-between;gap:8px}.small{font-size:12px;color:var(--muted)}.badge{display:inline-flex;padding:2px 7px;border-radius:99px;font-size:11px;border:1px solid var(--line);margin-right:4px}.badge.good{color:var(--good)}.badge.wolf{color:#ff9aa8}.badge.done{color:var(--good);border-color:#367e65}.badge.pending{color:var(--warn);border-color:#886833}.detail{padding:18px}.detailhead{display:flex;justify-content:space-between;gap:12px;align-items:start}.detail h2{margin:0 0 4px;font-size:20px}.candidate-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin:16px 0}.candidate{border:1px solid var(--line);border-radius:10px;padding:12px;background:#101a30;cursor:pointer}.candidate:hover{border-color:var(--blue)}.candidate.selected{border:2px solid var(--good);background:#142f34}.candidate.logic{box-shadow:inset 0 0 0 1px var(--bad)}.candidate h3{margin:0 0 6px}.meter{height:7px;background:#263452;border-radius:8px;overflow:hidden;margin:5px 0 9px}.meter i{display:block;height:100%;background:var(--bad)}.meter.seer i{background:var(--good)}.evidence{display:grid;grid-template-columns:1fr 1fr;gap:8px}.field{display:flex;flex-direction:column;gap:5px;margin-top:10px}.field label{color:var(--muted)}.field textarea{min-height:100px;resize:vertical}.edit{display:grid;grid-template-columns:1fr 1fr;gap:10px}.wide{grid-column:1/-1}.hint{color:var(--muted);font-size:12px;margin-top:8px}.hidden{display:none!important}.footer{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:14px}.bar{height:8px;background:#263452;border-radius:8px;overflow:hidden}.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),var(--good))}@media(max-width:900px){.workspace{grid-template-columns:1fr}.queue{max-height:330px}.stats{grid-template-columns:repeat(2,1fr)}}@media(max-width:560px){.app{padding:12px}.top{display:block}.actions{margin-top:10px}.edit,.evidence{grid-template-columns:1fr}.filters input{min-width:100%}}
+:root{--bg:#f4f6fb;--panel:#ffffff;--line:#d9e0ec;--text:#1d2733;--muted:#66738a;--good:#128a5b;--goodbg:#e5f6ee;--wolf:#b3424f;--wolfbg:#fbe9eb;--blue:#1f5fc4;--bluebg:#e8f0fd;--amber:#9a6a08;--amberbg:#fdf3df}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+button,input{font:inherit;color:inherit}.app{max-width:900px;margin:0 auto;padding:20px 16px 60px}
+.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.title{font-size:22px;font-weight:700}.sub{color:var(--muted);font-size:13px}
+.bar{height:10px;background:#e3e8f2;border-radius:99px;overflow:hidden;margin:10px 0 6px}.bar i{display:block;height:100%;background:linear-gradient(90deg,#1f5fc4,#2f9e6e)}
+.progress-text{color:var(--muted);font-size:13px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:0 1px 3px rgba(20,35,60,.06)}
+.tag{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;margin-right:6px}
+.tag.good{background:var(--goodbg);color:var(--good)}.tag.wolf{background:var(--wolfbg);color:var(--wolf)}.tag.blue{background:var(--bluebg);color:var(--blue)}.tag.amber{background:var(--amberbg);color:var(--amber)}
+.scenario{background:#f8fafd;border:1px dashed var(--line);border-radius:10px;padding:10px 12px;margin:12px 0;color:#33415c}
+.quick{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}
+.quick button{border:1.5px solid var(--line);background:var(--panel);border-radius:11px;padding:12px;cursor:pointer;text-align:left}
+.quick button:hover{border-color:var(--blue)}
+.quick .which{font-size:12px;color:var(--muted);display:block}.quick .pick{font-size:19px;font-weight:700;display:block;margin-top:3px}
+.quick .prob{font-size:12px;color:var(--muted);display:block;margin-top:3px}
+.cand{width:100%;border:1.5px solid var(--line);background:var(--panel);border-radius:11px;padding:10px 12px;margin:6px 0;cursor:pointer;text-align:left;display:block}
+.cand:hover{border-color:var(--blue)}.cand.sel{border-color:var(--good);background:var(--goodbg)}
+.cand .num{font-size:22px;font-weight:800;color:var(--blue)}
+.cand .flag{font-size:12px;color:var(--amber)}
+.cand .meta{font-size:12px;color:var(--muted);margin-top:3px}
+.row-choose{display:flex;gap:10px;align-items:center;margin:14px 0;flex-wrap:wrap}
+.row-choose input{width:120px;padding:11px 12px;border:1.5px solid var(--line);border-radius:10px;font-size:18px;font-weight:700;text-align:center}
+.row-choose input:focus{outline:none;border-color:var(--blue)}
+.primary{background:var(--blue);color:#fff;border:none;border-radius:10px;padding:12px 22px;font-size:16px;font-weight:700;cursor:pointer}
+.primary:hover{filter:brightness(1.08)}
+.ghost{background:var(--panel);border:1.5px solid var(--line);border-radius:10px;padding:11px 16px;cursor:pointer;color:var(--muted)}
+.ghost:hover{color:var(--text);border-color:var(--muted)}
+.foot{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:16px;flex-wrap:wrap}
+.hint{color:var(--muted);font-size:13px}
+.details{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
+.details summary{cursor:pointer;color:var(--muted);font-size:13px}
+.kv{font-size:13px;color:#33415c;margin:4px 0}
+.done-screen{text-align:center;padding:30px 10px}
+.done-screen h2{font-size:24px}
+.big{font-size:15px;padding:14px 24px}
+.bulk{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.bulk button{border:1.5px solid var(--line);background:var(--panel);border-radius:9px;padding:9px 13px;cursor:pointer}
+.bulk button:hover{border-color:var(--blue)}
+.hidden{display:none!important}
+@media(max-width:560px){.quick{grid-template-columns:1fr}.app{padding:12px}}
 </style></head><body><main class="app">
-<section class="top"><div><div class="title">NPC 决策审计台</div><div class="sub">只审阅公开合法候选；填写结果保存在浏览器本地，可导出 JSONL。</div></div><div class="actions"><button id="export" class="primary">导出已填写 JSONL</button><button id="clear" class="danger">清除本地草稿</button></div></section>
-<section class="stats"><div class="stat"><b id="total">0</b><span>总样本</span></div><div class="stat"><b id="done">0</b><span>已填写</span></div><div class="stat"><b id="pending">0</b><span>待填写</span></div><div class="stat"><b id="conflicts">0</b><span>公开冲突样本</span></div></section>
-<section class="filters"><input id="search" placeholder="搜索 game_id / digest / action_id"><select id="faction"><option value="all">全部阵营</option><option value="good">好人</option><option value="werewolf">狼人</option></select><select id="phase"><option value="all">全部阶段</option><option value="DAY_MEETING">DAY_MEETING</option><option value="VOTE">VOTE</option></select><select id="status"><option value="all">全部状态</option><option value="pending">待审阅</option><option value="done">已填写</option></select></section>
-<section class="workspace"><aside class="panel queue" id="queue"></aside><article class="panel detail" id="detail"><div class="sub">从左侧选择一条样本。</div></article></section>
+<section class="top"><div><div class="title">V5 标签审阅向导</div><div class="sub">每屏一条：选一个目标号，回车确认。进度自动保存在本机浏览器。</div></div>
+<div><button id="exportBtn" class="ghost">导出结果 JSONL</button> <button id="resetBtn" class="ghost">重新开始</button></div></section>
+<div class="bar"><i id="barFill" style="width:0%"></i></div><div class="progress-text" id="progressText"></div>
+
+<section id="startPanel" class="panel">
+  <h2>怎么用（三步）</h2>
+  <p>① 填你的审阅者 ID（默认 <b>tonystark</b>）；② 逐条选择目标：可以直接点<b>“采纳审计建议”</b>或<b>“采纳 teacher”</b>，也可以自己输入目标号；③ 点<b>“确认下一条”</b>（或直接按回车），直到完成，最后点右上角<b>“导出结果 JSONL”</b>。</p>
+  <div class="row-choose"><label>你的审阅者 ID：</label><input id="sourceInput" value="tonystark" style="width:200px;text-align:left"></div>
+  <div class="bulk">
+    <button id="bulkAudit">一键采纳全部审计建议</button>
+    <button id="bulkTeacher">一键采纳全部 teacher 建议</button>
+    <button id="startBtn" class="primary">开始 / 继续审阅</button>
+  </div>
+</section>
+
+<section id="reviewPanel" class="panel hidden">
+  <div><span class="tag good" id="factionTag"></span><span class="tag blue">第 <span id="dayText"></span> 天 · <span id="phaseText"></span> · actor <span id="actorText"></span></span></div>
+  <div class="scenario" id="scenario"></div>
+  <div class="quick" id="quickRow"></div>
+  <div id="candList"></div>
+  <div class="row-choose"><label>我的选择（目标号）：</label><input id="numberInput" type="number" min="1" max="12" placeholder="如 9"><button id="confirmBtn" class="primary">确认下一条 ↵</button></div>
+  <div class="foot">
+    <div class="hint" id="navHint"></div>
+    <div><button id="skipBtn" class="ghost">跳过此条</button></div>
+  </div>
+  <details class="details"><summary>查看特征与理由（高级，可编辑）</summary>
+    <div class="kv" id="featureBlock"></div>
+    <div class="row-choose"><label>理由：</label><input id="rationaleInput" type="text" style="width:auto;min-width:320px;text-align:left;font-size:14px;font-weight:400"></div>
+  </details>
+</section>
+
+<section id="donePanel" class="panel done-screen hidden">
+  <h2>全部完成 🎉</h2>
+  <p id="doneSummary"></p>
+  <p class="sub">请点击“导出结果 JSONL”保存文件，然后告诉我文件路径，我来完成后续转换、合并与重训。</p>
+  <button id="exportBtn2" class="primary big">导出结果 JSONL</button>
+</section>
 </main><script>
-const SOURCE = __QUEUE__;
-const KEY='agent-town-review-draft-v2';
-function readDraft(){try{return JSON.parse(localStorage.getItem(KEY)||'null')}catch(e){return null}}
-function writeDraft(value){try{localStorage.setItem(KEY,JSON.stringify(value))}catch(e){}}
-const stored=readDraft();
-let rows=Array.isArray(stored)&&stored.length?stored:SOURCE.map(x=>({...x})); let selected=0;
-const $=id=>document.getElementById(id); const esc=x=>String(x??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-function done(x){return !!(x.preferred_action_id||x.target_distribution)}
-function save(){writeDraft(rows);updateStats()}
-function updateStats(){const q=rows.filter(match);$('total').textContent=rows.length;$('done').textContent=rows.filter(done).length;$('pending').textContent=rows.filter(x=>!done(x)).length;$('conflicts').textContent=rows.filter(x=>x.candidates.some(c=>+c.logic_conflict>0)).length}
-function match(x){const s=$('search').value.toLowerCase();return (!s||JSON.stringify(x).toLowerCase().includes(s))&&($('faction').value==='all'||x.faction===$('faction').value)&&($('phase').value==='all'||x.phase===$('phase').value)&&($('status').value==='all'||($('status').value==='done'?done(x):!done(x)))}
-function renderQueue(){const visible=rows.map((x,i)=>({x,i})).filter(z=>match(z.x));$('queue').innerHTML=visible.map(({x,i})=>`<div class="row ${i===selected?'active':''}" data-i="${i}"><div class="rowline"><b>#${i+1} · ${esc(x.game_id)}</b><span class="badge ${x.faction==='good'?'good':'wolf'}">${x.faction==='good'?'好人':'狼人'}</span></div><div class="small">D${x.day} · ${esc(x.phase)} · actor ${x.actor_id}</div><div class="small">${done(x)?'<span class="badge done">已填写</span>':'<span class="badge pending">待审阅</span>'} ${x.candidates.length} 个候选</div></div>`).join('')||'<div class="sub">没有匹配样本</div>';document.querySelectorAll('.row').forEach(el=>el.onclick=()=>{selected=+el.dataset.i;render()})}
-function candidateCard(c,x){const logic=+c.logic_conflict, seer=+c.sole_consistent_seer;const chosen=x.preferred_action_id===c.action_id||(x.target_distribution&&x.target_distribution[c.action_id]>0);return `<div class="candidate ${logic?'logic':''} ${chosen?'selected':''}" data-action="${esc(c.action_id)}"><h3>${esc(c.action_id)}</h3><div class="small">target_id: ${c.target_id}</div><div class="small">逻辑冲突 ${logic.toFixed(2)}</div><div class="meter"><i style="width:${logic*100}%"></i></div><div class="small">唯一一致预言家 ${seer.toFixed(2)}</div><div class="meter seer"><i style="width:${seer*100}%"></i></div><div class="small">点击选择首选动作</div></div>`}
-function explain(x){const conflict=x.candidates.filter(c=>+c.logic_conflict>0),seer=x.candidates.filter(c=>+c.sole_consistent_seer>0);const side=x.faction==='good'?'好人':'狼人';let scene=`这是第 ${x.day} 天的 ${x.phase} 阶段：actor ${x.actor_id}（${side}）正在从 ${x.candidates.length} 个 Python 已确认合法的放逐候选中选择目标。`;let signal='当前没有结构化硬冲突标记。';if(conflict.length)signal=`发现 ${conflict.length} 个公开逻辑冲突候选：${conflict.map(c=>c.action_id).join('、')}。这表示公开证据链对这些候选不利，但不是隐藏身份真值。`;if(seer.length)signal+=` ${seer.map(c=>c.action_id).join('、')} 被标记为唯一一致预言家候选；好人通常应把它当作需要保护/继续观察的对象，狼人则应评估其威胁。`;let advice=side==='好人'?(conflict.length?'审阅建议：优先比较逻辑冲突候选；只有在其他公开证据更强时才改投。':'审阅建议：比较怀疑、公开压力、可信度和已知合法私有信息，不要因为没有冲突标记就强行投票。'):(seer.length?'审阅建议：狼人需要评估是否压制稳定核心候选，同时检查队友保护、公开压力和伪装收益；不能直接写“他是真预言家”。':'审阅建议：按狼队合法私有视角评估生存、误导和队友关系，但仍只能选择页面列出的合法候选。');return `<div class="hint"><b>场景说明</b><div>${scene}</div><div>${signal}</div><b>审阅建议</b><div>${advice}</div><div>这是基于公开/合法特征的审阅提示，不是赛后身份答案；最终标签请以你的独立判断为准。</div></div>`}
-function renderDetail(){const x=rows[selected];if(!x){$('detail').innerHTML='<div class="sub">没有样本。</div>';return}$('detail').innerHTML=`<div class="detailhead"><div><h2>${esc(x.game_id)} · 第 ${x.day} 天 · ${esc(x.phase)}</h2><div class="small">actor ${x.actor_id} · ${x.faction==='good'?'好人':'狼人'} · digest ${esc(x.observation_digest)}</div></div><span class="badge ${done(x)?'done':'pending'}">${done(x)?'已填写':'待审阅'}</span></div>${explain(x)}<div class="candidate-grid">${x.candidates.map(c=>candidateCard(c,x)).join('')}</div><div class="hint">红框=公开逻辑冲突，绿色=唯一一致预言家。候选集合由 Python 固定，不能新增。</div><div class="edit"><div class="field"><label>首选 action_id（与概率分布二选一）</label><select id="preferred"><option value="">不使用首选</option>${x.candidates.map(c=>`<option value="${esc(c.action_id)}" ${x.preferred_action_id===c.action_id?'selected':''}>${esc(c.action_id)}</option>`).join('')}</select></div><div class="field"><label>confidence（0–1）</label><input id="confidence" type="number" min="0" max="1" step="0.05" value="${x.confidence??1}"></div><div class="field"><label>weight（0.1–100）</label><input id="weight" type="number" min="0.1" max="100" step="0.1" value="${x.weight??1}"></div><div class="field"><label>source_id</label><input id="source" value="${esc(x.source_id==='human_review_pending'?'':x.source_id)}" placeholder="例如 tonystark"></div><div class="field wide"><label>target_distribution（填写 JSON；填写后会清空首选）</label><textarea id="distribution" placeholder='例如 {"exile_vote:3":0.3,"exile_vote:12":0.7}'>${x.target_distribution?esc(JSON.stringify(x.target_distribution)):''}</textarea></div><div class="field wide"><label>rationale（只写公开证据和合法推理）</label><textarea id="rationale" placeholder="说明为什么选择该候选，以及不确定性。">${esc(x.rationale||'')}</textarea></div><div class="field wide"><label>tags（逗号分隔）</label><input id="tags" value="${esc((x.tags||[]).join(', '))}"></div></div><div class="footer"><span class="small">快捷键：←/→切换样本，1–9选择候选，Ctrl/Cmd+S保存</span><div><button id="prev">上一条</button> <button id="next">下一条</button> <button id="save" class="primary">保存当前</button></div></div>`;document.querySelectorAll('.candidate').forEach(el=>el.onclick=()=>{$('preferred').value=el.dataset.action;$('distribution').value='';});$('preferred').onchange=()=>{if($('preferred').value)$('distribution').value=''};$('save').onclick=saveCurrent;$('prev').onclick=()=>{selected=Math.max(0,selected-1);render()};$('next').onclick=()=>{selected=Math.min(rows.length-1,selected+1);render()}}
-function saveCurrent(){const x=rows[selected], preferred=$('preferred').value.trim(), raw=$('distribution').value.trim();x.preferred_action_id=preferred||null;x.target_distribution=null;if(raw){try{x.target_distribution=JSON.parse(raw);x.preferred_action_id=null}catch(e){alert('target_distribution 不是有效 JSON');return}}x.confidence=Number($('confidence').value);x.weight=Number($('weight').value);x.source_id=$('source').value.trim()||'tonystark';x.rationale=$('rationale').value.trim();x.tags=$('tags').value.split(',').map(s=>s.trim()).filter(Boolean);save();render()}
-function render(){renderQueue();renderDetail();updateStats()}
-function exportJsonl(){saveCurrent();const filled=rows.filter(done);const text=filled.map(x=>JSON.stringify(x)).join('\\n')+'\\n';const blob=new Blob([text],{type:'application/x-ndjson'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='reviewed_policy_queue.jsonl';a.click();URL.revokeObjectURL(a.href)}
-['search','faction','phase','status'].forEach(id=>$(id).oninput=renderQueue);$('export').onclick=exportJsonl;$('clear').onclick=()=>{if(confirm('清除浏览器本地草稿？不会删除原始队列。')){try{localStorage.removeItem(KEY)}catch(e){}rows=SOURCE.map(x=>({...x}));render()}};document.onkeydown=e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveCurrent()}else if(e.key==='ArrowLeft'){selected=Math.max(0,selected-1);render()}else if(e.key==='ArrowRight'){selected=Math.min(rows.length-1,selected+1);render()}else if(/^[1-9]$/.test(e.key)){const c=rows[selected]?.candidates[+e.key-1],p=$('preferred'),d=$('distribution');if(c&&p&&d){p.value=c.action_id;d.value=''}}};render();
+const DATA = __QUEUE__;
+const KEY = "agent-town-review-wizard-v3";
+let rows = DATA.rows.map(x => ({...x, _done:false, _source:""}));
+let sourceId = "tonystark";
+let index = 0;
+let started = false;
+const $ = id => document.getElementById(id);
+const esc = v => String(v ?? "").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+function persist(){ try{ localStorage.setItem(KEY, JSON.stringify({sourceId, started, rows: rows.map(r=>({observation_digest:r.observation_digest, preferred_action_id:r.preferred_action_id, target_distribution:r.target_distribution, confidence:r.confidence, weight:r.weight, source_id:r.source_id, rationale:r.rationale, tags:r.tags, _done:r._done, _source:r._source}))})) }catch(e){} }
+function load(){ try{ const s=JSON.parse(localStorage.getItem(KEY)); if(s){ if(typeof s.sourceId==="string") sourceId=s.sourceId; started=!!s.started; const by={}; s.rows.forEach(r=>by[r.observation_digest]=r); rows.forEach(r=>{ const saved=by[r.observation_digest]; if(saved){ Object.assign(r, saved); } }); } }catch(e){} }
+load();
+const isDone = r => !!(r.preferred_action_id || r.target_distribution);
+function nextPending(from){ for(let i=from+1;i<rows.length;i++){ if(!isDone(rows[i])) return i; } for(let i=0;i<rows.length;i++){ if(!isDone(rows[i])) return i; } return -1; }
+function applyChoice(row, actionId, source){ const n=String(actionId).split(":")[1]; row.preferred_action_id=String(actionId); row.target_distribution=null; row.confidence=1.0; row.weight=1.0; row.source_id=sourceId; row._source=source; row.tags=["logic_conflict_review","human_review","adopted_"+source]; row.rationale=`人工审阅确认：${row.faction==="good"?"好人":"狼人"} actor ${row.actor_id} 第 ${row.day} 天选择 ${n} 号（来源：${source}）。`; row._done=true; }
+function topN(){ return {audit: rows[index]._audit_top, teacher: rows[index]._teacher_top}; }
+function renderProgress(){ const done=rows.filter(isDone).length; $("barFill").style.width=(done/rows.length*100)+"%"; $("progressText").textContent=`进度：已完成 ${done} / ${rows.length} 条`; }
+function pct(v){ return v==null ? "" : (v*100).toFixed(1)+"%"; }
+function candidateLine(c){
+  const flags=[]; if(+c.sole_consistent_seer>0) flags.push("唯一一致预言家"); if(+c.logic_conflict>0) flags.push("公开冲突");
+  const f=c.features||{}; const feat=DATA.featureShort;
+  const parts=Object.keys(feat).filter(k=>f[k]!=null && +f[k]!==0).map(k=>`${feat[k]} ${+f[k]>1?+f[k].toFixed(2):(+f[k]*100).toFixed(0)+"%"}`);
+  return `<button class="cand" data-n="${c.target_id}"><span class="num">${c.target_id} 号</span> ${flags.map(x=>`<span class="flag">${x}</span>`).join(" ")}<div class="meta">teacher ${pct(c.teacher_prob)} · 审计 ${pct(c.audit_prob)}${parts.length?" · "+esc(parts.join("，")):""}</div></button>`;
+}
+function renderReview(){
+  const x=rows[index];
+  $("factionTag").textContent=x.faction==="good"?"好人":"狼人";
+  $("factionTag").className="tag "+(x.faction==="good"?"good":"wolf");
+  $("dayText").textContent=x.day; $("phaseText").textContent=x.phase; $("actorText").textContent=x.actor_id;
+  const sole=x.candidates.filter(c=>+c.sole_consistent_seer>0).map(c=>c.target_id);
+  const conf=x.candidates.filter(c=>+c.logic_conflict>0).map(c=>c.target_id);
+  let scene=`这是第 ${x.day} 天 ${x.phase} 阶段，${x.faction==="good"?"好人":"狼人"} ${x.actor_id} 号从合法放逐候选中选择目标。`;
+  if(sole.length) scene+=` 唯一一致预言家候选：${sole.join("、")} 号。`;
+  if(conf.length) scene+=` 公开逻辑冲突候选：${conf.join("、")} 号。`;
+  if(!sole.length&&!conf.length) scene+=` 本条没有结构化硬冲突标记。`;
+  $("scenario").textContent=scene;
+  const q=$("quickRow"); q.innerHTML="";
+  const add=(label,which,action,p,cls)=>{ if(!action) return; const b=document.createElement("button"); b.className=cls||""; b.innerHTML=`<span class="which">${esc(label)}</span><span class="pick">投 ${String(action).split(":")[1]} 号</span><span class="prob">${pct(p)}</span>`; b.onclick=()=>{ $("numberInput").value=String(action).split(":")[1]; selectHighlight(); }; q.appendChild(b); };
+  add("采纳审计建议","audit",x._audit_top,x._audit_top_prob);
+  add("采纳 teacher（规则）","teacher",x._teacher_top,x._teacher_top_prob);
+  $("candList").innerHTML=x.candidates.map(candidateLine).join("");
+  document.querySelectorAll(".cand").forEach(el=>el.onclick=()=>{ $("numberInput").value=el.dataset.n; selectHighlight(); });
+  $("rationaleInput").value=x.rationale||"";
+  const fb=$("featureBlock"); fb.innerHTML="";
+  x.candidates.forEach(c=>{ const f=c.features||{}; const parts=Object.keys(DATA.featureShort).filter(k=>f[k]!=null).map(k=>`${DATA.featureShort[k]}=${f[k]}`); fb.innerHTML+=`<div>${c.target_id} 号：${parts.join("  ")||"（无特征）"}</div>`; });
+  $("numberInput").focus(); $("numberInput").select();
+}
+function selectHighlight(){ const v=$("numberInput").value; document.querySelectorAll(".cand").forEach(el=>el.classList.toggle("sel", el.dataset.n===v)); }
+function confirmCurrent(){
+  const x=rows[index]; const v=$("numberInput").value.trim();
+  if(!v){ alert("请先选择目标号（点按钮或输入数字）"); return; }
+  const legal=x.candidates.some(c=>String(c.target_id)===v);
+  if(!legal){ alert(`目标 ${v} 号不在合法候选中`); return; }
+  applyChoice(x, "exile_vote:"+v, "manual"); persist(); next();
+}
+function next(){ const n=nextPending(index); if(n>=0){ index=n; render(); } else { renderDone(); } }
+function renderDone(){
+  $("startPanel").classList.add("hidden"); $("reviewPanel").classList.add("hidden"); $("donePanel").classList.remove("hidden");
+  const done=rows.filter(isDone).length;
+  $("doneSummary").textContent=`已确认 ${done} / ${rows.length} 条（其中采纳审计 ${rows.filter(r=>r._source==="audit").length}、teacher ${rows.filter(r=>r._source==="teacher").length}、手填 ${rows.filter(r=>r._source==="manual").length}）。`;
+  renderProgress();
+}
+function render(){ renderProgress(); if(rows.every(isDone) && rows.length){ renderDone(); return; }
+  if(!started){ $("reviewPanel").classList.add("hidden"); $("donePanel").classList.add("hidden"); $("startPanel").classList.remove("hidden"); return; }
+  $("startPanel").classList.add("hidden"); $("donePanel").classList.add("hidden"); $("reviewPanel").classList.remove("hidden");
+  renderReview();
+}
+function exportJsonl(){
+  const filled=rows.filter(isDone);
+  if(!filled.length){ alert("还没有已确认的条目"); return; }
+  const clean=filled.map(x=>{ const o={...x}; ["_done","_source","_teacher_top","_teacher_top_prob","_audit_top","_audit_top_prob","_audit_confidence"].forEach(k=>delete o[k]); return o; });
+  const text=clean.map(x=>JSON.stringify(x)).join("\\n")+"\\n";
+  const blob=new Blob([text],{type:"application/x-ndjson"}), a=document.createElement("a");
+  a.href=URL.createObjectURL(blob); a.download="reviewed_policy_queue.jsonl"; a.click(); URL.revokeObjectURL(a.href);
+}
+$("startBtn").onclick=()=>{ sourceId=$("sourceInput").value.trim()||"tonystark"; started=true; persist(); index=nextPending(-1); if(index<0){ renderDone(); } else { render(); } };
+$("confirmBtn").onclick=confirmCurrent;
+$("skipBtn").onclick=()=>{ index=nextPending(index); if(index>=0) render(); else renderDone(); };
+$("numberInput").oninput=selectHighlight;
+$("exportBtn").onclick=exportJsonl; $("exportBtn2").onclick=exportJsonl;
+$("resetBtn").onclick=()=>{ if(confirm("清除本机进度并重新开始？")){ try{localStorage.removeItem(KEY)}catch(e){} location.reload(); } };
+$("bulkAudit").onclick=()=>{ if(confirm("把全部尚未确认的条目都采纳“审计建议”？（已确认的不变）")){ rows.forEach(r=>{ if(!isDone(r)&&r._audit_top) applyChoice(r, r._audit_top, "audit"); }); persist(); render(); } };
+$("bulkTeacher").onclick=()=>{ if(confirm("把全部尚未确认的条目都采纳“teacher 建议”？（已确认的不变）")){ rows.forEach(r=>{ if(!isDone(r)&&r._teacher_top) applyChoice(r, r._teacher_top, "teacher"); }); persist(); render(); } };
+document.onkeydown=e=>{ if(e.key==="Enter" && !$("reviewPanel").classList.contains("hidden")){ e.preventDefault(); confirmCurrent(); } };
+render();
 </script></body></html>""".replace("__QUEUE__", payload)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build an offline NPC policy review dashboard.")
+    parser = argparse.ArgumentParser(
+        description="Build a minimal offline review wizard for a policy queue."
+    )
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--teacher",
+        type=Path,
+        help="optional rule-teacher JSONL to show teacher recommendations",
+    )
+    parser.add_argument(
+        "--labels",
+        type=Path,
+        help="optional converted label JSONL to show audit recommendations",
+    )
     args = parser.parse_args()
-    rows = [json.loads(line) for line in args.input.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = [
+        json.loads(line)
+        for line in args.input.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     if not rows:
         raise SystemExit("review queue is empty")
+    rows = _join_references(rows, args.teacher, args.labels)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(render(rows), encoding="utf-8")
-    print(json.dumps({"rows": len(rows), "output": str(args.output)}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {"rows": len(rows), "output": str(args.output)},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

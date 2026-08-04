@@ -178,17 +178,19 @@ backend/.venv/bin/python backend/training/compare_teacher_labels.py \
   --output /tmp/teacher_label_comparison.json
 ```
 
-生成可视化审计台：
+生成极简审阅向导（每屏一条决策，支持一键采纳审计/teacher 或输入目标号回车确认）：
 
 ```bash
 backend/.venv/bin/python backend/training/review_dashboard.py \
   --input backend/training/inbox/logic_review_queue.jsonl \
+  --teacher backend/training/datasets/npc_policy_v1.jsonl \
+  --labels backend/training/inbox/codex_smart_labels.jsonl \
   --output backend/training/inbox/review_dashboard.html
 open backend/training/inbox/review_dashboard.html
 ```
 
-审计台只读入 actor-scoped 合法候选，支持筛选、候选信号对比、概率/置信度/理由填写和
-JSONL 导出；导出后仍必须运行 `convert_policy_review_queue.py`。
+向导只读入 actor-scoped 合法候选，逐条展示 teacher 与审计推荐并可手填目标号，进度自动
+保存在浏览器本地；导出 JSONL 后仍必须运行 `convert_policy_review_queue.py`。
 
 按 teacher-anchored 聪明好人 v2 / 原聪明狼人 v1 生成可解释审计：
 
