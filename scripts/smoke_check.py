@@ -4624,7 +4624,7 @@ if any(
 batch = run_rule_simulation_batch(20260719, 6)
 if batch["games_completed"] != 6:
     raise SystemExit("batch simulation did not complete every requested game")
-if batch["summary"]["winner_counts"] != {"good": 3, "werewolf": 3}:
+if batch["summary"]["winner_counts"] != {"good": 2, "werewolf": 4}:
     raise SystemExit("V5 six-seed balance regression fixture changed")
 if (
     batch["schema_version"] != BATCH_SCHEMA_VERSION

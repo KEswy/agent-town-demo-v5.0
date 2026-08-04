@@ -82,7 +82,7 @@
   "npcs": {
     "梅西": {
       "reasoning_skill": 0.84,
-      "decision_variance": 0.1,
+      "decision_variance": 0.3,
       "plan_consistency": 0.88,
       "team_coordination": 0.81
     },
@@ -97,7 +97,8 @@
       "reasoning_skill": 0.75,
       "social_susceptibility": 0.57,
       "deception_susceptibility": 0.61,
-      "deception_strength": 0.69
+      "deception_strength": 0.69,
+      "decision_variance": 0.4
     },
     "梅长苏": {
       "reasoning_skill": 0.95,
@@ -113,14 +114,14 @@
     },
     "塞尔达": {
       "reasoning_skill": 0.74,
-      "decision_variance": 0.13,
+      "decision_variance": 0.33,
       "plan_consistency": 0.85,
       "deception_strength": 0.38
     },
     "小骑士": {
       "reasoning_skill": 0.7,
       "social_susceptibility": 0.3,
-      "decision_variance": 0.09,
+      "decision_variance": 0.29,
       "plan_consistency": 0.86,
       "team_coordination": 0.78
     },
@@ -134,7 +135,7 @@
     },
     "喜羊羊": {
       "reasoning_skill": 0.87,
-      "decision_variance": 0.12,
+      "decision_variance": 0.32,
       "plan_consistency": 0.87,
       "deception_strength": 0.86,
       "team_coordination": 0.9,
@@ -144,7 +145,7 @@
     "懒羊羊": {
       "reasoning_skill": 0.48,
       "social_susceptibility": 0.74,
-      "decision_variance": 0.4,
+      "decision_variance": 0.6,
       "plan_consistency": 0.44,
       "deception_susceptibility": 0.72,
       "deception_strength": 0.43,
