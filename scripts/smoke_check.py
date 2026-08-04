@@ -63,6 +63,7 @@ NPC_PROFILES_FILE = BACKEND_DIR / "config" / "npc_profiles.json"
 NPC_TUNING_FILE = BACKEND_DIR / "config" / "npc_tuning.json"
 LLM_PRICING_FILE = BACKEND_DIR / "config" / "llm_pricing.json"
 BACKEND_MAIN_FILE = BACKEND_DIR / "app" / "main.py"
+BACKEND_CONFIG_FILE = BACKEND_DIR / "app" / "config.py"
 BACKEND_LLM_FILE = BACKEND_DIR / "app" / "llm.py"
 BACKEND_LLM_OBSERVABILITY_FILE = BACKEND_DIR / "app" / "llm_observability.py"
 BACKEND_LLM_FINGERPRINTING_FILE = BACKEND_DIR / "app" / "llm_fingerprinting.py"
@@ -735,6 +736,7 @@ def check_macos_packaging_contracts() -> None:
         BACKEND_PACKAGING_REQUIREMENTS_FILE.read_text(encoding="utf-8")
     )
     backend_main = BACKEND_MAIN_FILE.read_text(encoding="utf-8")
+    backend_config = BACKEND_CONFIG_FILE.read_text(encoding="utf-8")
     root_readme = ROOT_README_FILE.read_text(encoding="utf-8")
     backend_readme = BACKEND_README_FILE.read_text(encoding="utf-8")
     commands = COMMANDS_FILE.read_text(encoding="utf-8")
@@ -782,7 +784,10 @@ def check_macos_packaging_contracts() -> None:
         )
 
     if (
-        'os.environ.get("AGENT_TOWN_DATA_DIR"' not in backend_main
+        (
+            'os.environ.get("AGENT_TOWN_DATA_DIR"'
+            not in backend_config
+        )
         or "AGENT_TOWN_DISABLE_VECTOR_RAG" not in backend_entry
         or "AGENT_TOWN_NPC_POLICY_MODE" not in backend_entry
         or "pyinstaller==6.21.0" not in packaging_requirements
@@ -846,6 +851,7 @@ def check_windows_packaging_contracts() -> None:
     python_path = WINDOWS_PYTHON_PATH_FILE.read_text(encoding="utf-8")
     windows_requirements = WINDOWS_REQUIREMENTS_FILE.read_text(encoding="utf-8")
     backend_main = BACKEND_MAIN_FILE.read_text(encoding="utf-8")
+    backend_config = BACKEND_CONFIG_FILE.read_text(encoding="utf-8")
     root_readme = ROOT_README_FILE.read_text(encoding="utf-8")
     backend_readme = BACKEND_README_FILE.read_text(encoding="utf-8")
     commands = COMMANDS_FILE.read_text(encoding="utf-8")
@@ -904,7 +910,10 @@ def check_windows_packaging_contracts() -> None:
         )
 
     if (
-        'os.environ.get("AGENT_TOWN_DATA_DIR"' not in backend_main
+        (
+            'os.environ.get("AGENT_TOWN_DATA_DIR"'
+            not in backend_config
+        )
         or 'os.name == "nt"' not in backend_entry
         or "AGENT_TOWN_DISABLE_VECTOR_RAG" not in backend_entry
         or "AGENT_TOWN_NPC_POLICY_MODE" not in backend_entry

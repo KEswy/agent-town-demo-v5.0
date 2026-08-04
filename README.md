@@ -1151,6 +1151,8 @@ agent-town-demo/
     .env.example
     app/
       belief.py
+      config.py
+      determinism.py
       event_log.py
       experiment.py
       game_persistence.py
@@ -1162,10 +1164,16 @@ agent-town-demo/
       llm_pricing.py
       main.py
       npc_decision.py
+      npc_policy.py
+      npc_policy_data.py
+      npc_reasoning.py
       npc_tuning.py
       player_speech.py
       player_strategy.py
+      post_game_review.py
+      public_evidence.py
       rag.py
+      schemas.py
       simulation.py
       simulation_metrics.py
       speech_quality.py
