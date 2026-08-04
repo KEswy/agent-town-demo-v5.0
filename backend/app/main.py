@@ -100,12 +100,15 @@ from .npc_policy import (
     NPC_POLICY_TASK_SHERIFF_NOMINATION,
     NPC_POLICY_TASK_SHERIFF_VOTE,
     NPC_POLICY_TASKS,
+    NPC_POLICY_TASK_NIGHT_TARGET,
     NPC_POLICY_FEATURE_SCHEMA_VERSION,
     NPC_POLICY_OBSERVATION_SCHEMA_VERSION,
     SHERIFF_VOTE_FEATURE_NAMES,
     SHERIFF_VOTE_FEATURE_SCHEMA_VERSION,
     SHERIFF_NOMINATION_FEATURE_NAMES,
     SHERIFF_NOMINATION_FEATURE_SCHEMA_VERSION,
+    NIGHT_TARGET_FEATURE_NAMES,
+    NIGHT_TARGET_FEATURE_SCHEMA_VERSION,
     NPCPolicyCandidateV1,
     NPCPolicyObservationV1,
     emit_policy_trace,
@@ -1820,6 +1823,14 @@ def choose_npc_hunter_target(
     ]
     if not candidates:
         return None
+    policy_target = _resolve_night_target_policy(
+        game_state,
+        hunter,
+        "hunter_shot",
+        candidates,
+    )
+    if policy_target is not None:
+        return policy_target
     if game_state.npc_policy_mode != "local":
         highest_suspicion = max(
             hunter.suspicion.get(str(character.id), 0)
@@ -6970,6 +6981,441 @@ def _belief_usable(belief: object) -> bool:
     )
 
 
+def _night_target_teacher_score(
+    game_state: WolfGameState,
+    actor: CharacterState,
+    action_type: str,
+    candidate: CharacterState,
+    reasoning_state: object,
+    tuning: ResolvedNPCTuningV1,
+    flow: Optional[BadgeFlowState],
+) -> float:
+    """Score one legal night target using the V5.4-A actor-scoped belief."""
+
+    belief = get_role_belief(reasoning_state, candidate.id)  # type: ignore[arg-type]
+    role_claim = get_public_role_claim(game_state, candidate.id)
+    claimed_seer_bonus = (
+        30.0
+        if role_claim is not None and role_claim.claimed_role == "seer"
+        else 0.0
+    )
+    public_pressure = get_public_suspicion_score(game_state, candidate.id)
+    personal_suspicion = actor.suspicion.get(str(candidate.id), 0)
+    trust = float(
+        actor.relationships.get(str(candidate.id), {}).get("trust", 0.5)
+    )
+    if action_type == "werewolf_kill":
+        return (
+            claimed_seer_bonus
+            + public_pressure * 0.25
+            + belief.good_probability * 18.0
+            + (0.5 - trust) * 8.0
+        )
+    if action_type == "guard_protect":
+        return (
+            claimed_seer_bonus
+            + belief.seer_probability * 42.0
+            + public_pressure * 0.18
+            + trust * 8.0
+            + personal_suspicion * 0.08
+        )
+    if action_type == "seer_check":
+        role_claim_bonus = 13.0 if role_claim is not None else 0.0
+        flow_bonus = 0.0
+        if flow is not None:
+            if candidate.id == flow.primary_target_id:
+                flow_bonus = 28.0
+            elif candidate.id == flow.secondary_target_id:
+                flow_bonus = 11.0
+        reasoning_bonus = (
+            (0.5 - abs(belief.werewolf_probability - 0.5)) * 18.0
+            + belief.confidence * 4.0
+        )
+        return (
+            public_pressure * 0.32
+            + personal_suspicion * 0.38
+            + (0.5 - trust) * 16.0
+            + role_claim_bonus
+            + flow_bonus
+            + reasoning_bonus
+        )
+    if action_type == "witch_poison":
+        return belief.werewolf_probability * 100.0 + public_pressure * 0.1
+    if action_type == "hunter_shot":
+        return belief.werewolf_probability * 100.0 + public_pressure * 0.2
+    return 0.0
+
+
+def build_night_target_policy_observation(
+    game_state: WolfGameState,
+    actor: CharacterState,
+    action_type: str,
+    candidates: list[CharacterState],
+) -> NPCPolicyObservationV1:
+    """Build actor-scoped night-target features without hidden-role truth."""
+
+    reasoning_state = get_npc_reasoning_state(
+        game_state,
+        actor,
+        enumerate_possible_worlds=True,
+    )
+    tuning = get_character_strategy_tuning(actor)
+    checked_ids: set[int] = set()
+    last_protected_id = 0
+    if action_type == "seer_check":
+        checked_ids = {
+            target_id
+            for _day, target_id, _result in get_character_seer_checks(
+                game_state,
+                actor.id,
+            )
+        }
+    elif action_type == "guard_protect":
+        resources = get_role_resources(game_state, actor.id)
+        last_protected_id = int(
+            resources.get("last_protected_target_id") or 0
+        )
+    sole_consistent_ids = {
+        signal.subject_id
+        for signal in reasoning_state.reasoning_signals
+        if signal.kind == "sole_consistent_seer_claimant"
+    }
+    inconsistent_ids = {
+        signal.subject_id
+        for signal in reasoning_state.reasoning_signals
+        if signal.hypothesis_status == "inconsistent"
+    }
+    known_good_ids: set[int] = set()
+    known_wolf_ids: set[int] = set()
+    wolf_teammate_ids: set[int] = set()
+    if actor.role == "seer":
+        for _day, target_id, result in get_character_seer_checks(
+            game_state,
+            actor.id,
+        ):
+            (
+                known_wolf_ids
+                if result == "werewolf"
+                else known_good_ids
+            ).add(target_id)
+    elif actor.role == "werewolf":
+        wolf_teammate_ids = {
+            character.id
+            for character in game_state.characters
+            if character.role == "werewolf"
+            and character.id != actor.id
+        }
+        known_wolf_ids.update(wolf_teammate_ids)
+        known_good_ids.update(
+            character.id
+            for character in game_state.characters
+            if character.role != "werewolf"
+        )
+
+    day_progress = min(1.0, float(game_state.day) / 10.0)
+    feature_candidates = []
+    for candidate in sorted(candidates, key=lambda character: character.id):
+        belief = get_role_belief(reasoning_state, candidate.id)
+        role_claim = get_public_role_claim(game_state, candidate.id)
+        feature_map = {
+            "candidate_wolf_belief": belief.werewolf_probability,
+            "candidate_good_belief": belief.good_probability,
+            "candidate_seer_belief": belief.seer_probability,
+            "candidate_belief_confidence": belief.confidence,
+            "candidate_suspicion": max(
+                0.0,
+                min(
+                    1.0,
+                    actor.suspicion.get(str(candidate.id), 0) / 100.0,
+                ),
+            ),
+            "candidate_public_pressure": max(
+                0.0,
+                min(
+                    1.0,
+                    get_public_suspicion_score(
+                        game_state,
+                        candidate.id,
+                    )
+                    / 100.0,
+                ),
+            ),
+            "candidate_trust": max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        actor.relationships.get(
+                            str(candidate.id),
+                            {},
+                        ).get("trust", 0.5)
+                    ),
+                ),
+            ),
+            "candidate_claimed_seer": float(
+                role_claim is not None
+                and role_claim.claimed_role == "seer"
+            ),
+            "candidate_sole_consistent_seer": float(
+                candidate.id in sole_consistent_ids
+            ),
+            "candidate_inconsistent_hypothesis": float(
+                candidate.id in inconsistent_ids
+            ),
+            "candidate_known_good": float(
+                candidate.id in known_good_ids
+            ),
+            "candidate_known_wolf": float(
+                candidate.id in known_wolf_ids
+            ),
+            "candidate_wolf_teammate": float(
+                candidate.id in wolf_teammate_ids
+            ),
+            "candidate_is_attacked_target": 0.0,
+            "candidate_unchecked": float(
+                candidate.id not in checked_ids
+            ),
+            "candidate_not_last_protected": float(
+                candidate.id != last_protected_id
+            ),
+            "action_type_wolf_kill": float(
+                action_type == "werewolf_kill"
+            ),
+            "action_type_guard_protect": float(
+                action_type == "guard_protect"
+            ),
+            "action_type_seer_check": float(
+                action_type == "seer_check"
+            ),
+            "action_type_witch_poison": float(
+                action_type == "witch_poison"
+            ),
+            "action_type_hunter_shot": float(
+                action_type == "hunter_shot"
+            ),
+            "actor_reasoning_skill": tuning.reasoning_skill,
+            "actor_social_susceptibility": tuning.social_susceptibility,
+            "actor_deception_susceptibility": (
+                tuning.deception_susceptibility
+            ),
+            "actor_decision_variance": tuning.decision_variance,
+            "actor_team_coordination": tuning.team_coordination,
+            "day_progress": day_progress,
+        }
+        feature_candidates.append(
+            NPCPolicyCandidateV1(
+                action_id=f"night_target:{candidate.id}",
+                action_type="night_target",
+                target_id=candidate.id,
+                feature_values=[
+                    float(feature_map[name])
+                    for name in NIGHT_TARGET_FEATURE_NAMES
+                ],
+            )
+        )
+    base_payload = {
+        "schema_version": NPC_POLICY_OBSERVATION_SCHEMA_VERSION,
+        "feature_schema_version": NIGHT_TARGET_FEATURE_SCHEMA_VERSION,
+        "game_id": game_state.game_id,
+        "day": game_state.day,
+        "phase": game_state.phase,
+        "task": NPC_POLICY_TASK_NIGHT_TARGET,
+        "actor_id": actor.id,
+        "faction": actor.camp,
+        "reasoning_digest": reasoning_state.belief_digest,
+        "feature_names": list(NIGHT_TARGET_FEATURE_NAMES),
+        "candidates": [
+            candidate.model_dump(mode="json")
+            for candidate in feature_candidates
+        ],
+    }
+    return NPCPolicyObservationV1(
+        **base_payload,
+        observation_digest=policy_observation_digest(base_payload),
+    )
+
+
+def _resolve_night_target_policy(
+    game_state: WolfGameState,
+    actor: CharacterState,
+    action_type: str,
+    candidates: list[CharacterState],
+) -> Optional[int]:
+    """Apply the sealed night-target artifact; rule/shadow return None."""
+
+    if action_type == "seer_check":
+        checked_ids = {
+            target_id
+            for _day, target_id, _result in get_character_seer_checks(
+                game_state,
+                actor.id,
+            )
+        }
+        candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.id not in checked_ids
+        ]
+    if not candidates:
+        return None
+    reasoning_state = get_npc_reasoning_state(
+        game_state,
+        actor,
+        enumerate_possible_worlds=True,
+    )
+    tuning = get_character_strategy_tuning(actor)
+    flow = (
+        get_badge_flow_for_night(game_state, actor.id, game_state.day)
+        if action_type == "seer_check"
+        else None
+    )
+    scores: dict[int, float] = {}
+    for candidate in candidates:
+        scores[candidate.id] = _night_target_teacher_score(
+            game_state,
+            actor,
+            action_type,
+            candidate,
+            reasoning_state,
+            tuning,
+            flow,
+        )
+    max_score = max(scores.values())
+    weights = {
+        target_id: math.exp(max(-60.0, score - max_score))
+        for target_id, score in scores.items()
+    }
+    total_weight = sum(weights.values())
+    rule_probabilities = {
+        target_id: weight / total_weight
+        for target_id, weight in weights.items()
+    }
+    observation = build_night_target_policy_observation(
+        game_state,
+        actor,
+        action_type,
+        candidates,
+    )
+    local_scores: dict[str, float] = {}
+    local_probabilities: dict[int, float] = {}
+    model_probabilities: dict[int, float] = {}
+    entropy_guard: dict[str, object] = {}
+    fallback_reason = ""
+    model_id = ""
+    model_digest = ""
+    try:
+        if game_state.npc_policy_mode in {"shadow", "local"}:
+            policy = LOCAL_POLICY_REGISTRY.get(  # type: ignore[arg-type]
+                NPC_POLICY_TASK_NIGHT_TARGET,
+                actor.camp,
+            )
+            sealed = game_state.npc_policy_descriptors.get(
+                f"{NPC_POLICY_TASK_NIGHT_TARGET}:{actor.camp}",
+                {},
+            )
+            if sealed.get("model_digest") != policy.model_digest:
+                raise ValueError("loaded night policy differs from seal")
+            sealed_manifest_digest = sealed.get("manifest_sha256")
+            if sealed_manifest_digest:
+                manifest_path = (
+                    LOCAL_POLICY_REGISTRY.artifact_dir(  # type: ignore[arg-type]
+                        NPC_POLICY_TASK_NIGHT_TARGET,
+                        actor.camp,
+                    )
+                    / "manifest.json"
+                )
+                if file_sha256(manifest_path) != sealed_manifest_digest:
+                    raise ValueError(
+                        "loaded night policy manifest differs from seal"
+                    )
+            result = policy.score(observation)
+            local_scores = {
+                score.action_id: score.score for score in result.scores
+            }
+            model_probabilities = _model_scores_to_probabilities(
+                observation,
+                local_scores,
+            )
+            local_probabilities, entropy_guard = (
+                entropy_guarded_policy_blend(
+                    observation,
+                    rule_probabilities,
+                    model_probabilities,
+                    policy_blend_from_environment(),
+                )
+            )
+            model_id = result.model_id
+            model_digest = result.model_digest
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        fallback_reason = f"{type(exc).__name__}: {exc}"
+
+    effective_mode = game_state.npc_policy_mode
+    if game_state.npc_policy_mode == "shadow":
+        effective_mode = "rule"
+    elif game_state.npc_policy_mode == "local" and not local_probabilities:
+        effective_mode = "rule_fallback"
+    emit_policy_trace(
+        {
+            "game_id": game_state.game_id,
+            "day": game_state.day,
+            "phase": game_state.phase,
+            "actor_id": actor.id,
+            "faction": actor.camp,
+            "task": NPC_POLICY_TASK_NIGHT_TARGET,
+            "action_type": action_type,
+            "requested_mode": game_state.npc_policy_mode,
+            "effective_mode": effective_mode,
+            "observation": observation.model_dump(mode="json"),
+            "rule_probabilities": {
+                str(target_id): probability
+                for target_id, probability in rule_probabilities.items()
+            },
+            "local_scores": local_scores,
+            "local_probabilities": {
+                str(target_id): probability
+                for target_id, probability in local_probabilities.items()
+            },
+            "model_probabilities": {
+                str(target_id): probability
+                for target_id, probability in model_probabilities.items()
+            },
+            "policy_blend": (
+                policy_blend_from_environment()
+                if local_probabilities
+                else None
+            ),
+            "policy_temperature": (
+                policy_temperature_from_environment()
+                if local_probabilities
+                else None
+            ),
+            "policy_entropy_guard": (
+                entropy_guard if local_probabilities else None
+            ),
+            "model_id": model_id,
+            "model_digest": model_digest,
+            "fallback_reason": fallback_reason,
+        }
+    )
+    if game_state.npc_policy_mode != "local" or not local_probabilities:
+        return None
+    best_teacher_id = max(
+        rule_probabilities,
+        key=lambda target_id: rule_probabilities[target_id],
+    )
+    best_belief = get_role_belief(reasoning_state, best_teacher_id)
+    if (
+        best_belief is not None
+        and float(best_belief.confidence)
+        < _night_belief_confidence_threshold()
+    ):
+        return None
+    return max(
+        local_probabilities,
+        key=lambda target_id: local_probabilities[target_id],
+    )
+
+
 def choose_npc_night_target(
     game_state: WolfGameState,
     actor: CharacterState,
@@ -6999,6 +7445,16 @@ def choose_npc_night_target(
                 for character in candidates
                 if character.id != last_target_id
             ]
+
+    if action_type in {"werewolf_kill", "guard_protect", "seer_check"}:
+        policy_target = _resolve_night_target_policy(
+            game_state,
+            actor,
+            action_type,
+            candidates,
+        )
+        if policy_target is not None:
+            return policy_target
 
     if action_type == "seer_check":
         checked_ids = {
@@ -14090,6 +14546,23 @@ def generate_structured_public_speech_plan(
         continuity_context,
         fallback_decision,
     )
+    legal_target_ids = {
+        target.id for target in decision_context.legal_targets
+    }
+    if (
+        fallback_decision.provisional_vote_target_id is not None
+        and fallback_decision.provisional_vote_target_id
+        not in legal_target_ids
+    ):
+        fallback_decision = fallback_decision.model_copy(
+            update={
+                "provisional_vote_target_id": (
+                    fallback_decision.primary_target_id
+                    if fallback_decision.primary_target_id in legal_target_ids
+                    else None
+                )
+            }
+        )
     fallback_errors = validate_public_speech_plan(
         decision_context,
         fallback_decision,

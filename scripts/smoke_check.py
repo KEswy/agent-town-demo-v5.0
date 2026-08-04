@@ -2902,7 +2902,12 @@ policy_observation = NPCPolicyObservationV1(
 )
 expected_descriptors = {
     f"{task}:{faction}"
-    for task in ("exile_vote", "sheriff_vote", "sheriff_nomination")
+    for task in (
+        "exile_vote",
+        "sheriff_vote",
+        "sheriff_nomination",
+        "night_target",
+    )
     for faction in ("good", "werewolf")
 }
 if LOCAL_POLICY_REGISTRY.descriptors() and set(

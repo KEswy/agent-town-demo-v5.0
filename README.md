@@ -29,12 +29,15 @@ V5 从不可移动的 `v4.0.0` 源码基线开始，主题不是重写狼人杀�
   自动回退规则。
 - 已提供 NumPy 训练/数据脚本和好人/狼人 `backend/policy_artifacts` 产物，模型只替换
   “候选行动评分”层，不生成新规则动作；V1 线性 artifact 保持兼容，当前正式产物为
-  V2 32 隐层 `tanh` MLP。放逐投票（`exile_vote`）与警长投票（`sheriff_vote`，
-  `npc_sheriff_vote_features.v1`，26 维 actor-scoped 特征）分别拥有独立的好人/
-  狼人产物，local 模式按任务替换候选评分层，护栏与规则回退保持一致。放逐训练集
+  V2 32 隐层 `tanh` MLP。四个策略面各拥有独立的好人/狼人产物：放逐投票
+  （`exile_vote`）、警长投票（`sheriff_vote`）、警长归票（`sheriff_nomination`，
+  均 26 维 sheriff 风格特征）与夜间目标（`night_target`，27 维
+  `npc_night_target_features.v1`，覆盖狼刀/守卫/查验/猎人；女巫毒药仍保持 V5.4-A
+  信念路径）。local 模式按任务替换候选评分层，护栏与规则回退保持一致。放逐训练集
   保留 280 条规则 teacher，并叠加 40 条聪明好人 v2
   与 59 条原聪明狼人 v1 审计标签，共 379 条；其中 99 条审计标签已于 2026-08-04
-  由 tonystark 逐条人工确认纳入训练集；警长训练集为 130 局规则仿真共 855 条。
+  由 tonystark 逐条人工确认纳入训练集；警长投票/归票/夜技训练集各为 130 局规则
+  仿真 855 / 734 / 1323 条。
 - `backend/training/README.md`、严格 validator 和 label merger 留出了外部喂数口：
   observation 与人工标签按 `observation_digest` 分离合并，拒绝过期摘要、非法候选、
   概率错误和重复样本；validator 能拒绝结构性非法输入，但无法从 25 个数值语义上

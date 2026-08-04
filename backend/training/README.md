@@ -287,6 +287,14 @@ backend/.venv/bin/python backend/training/train_policy.py \
 好人/狼人验证 top-1 分别为 `85.9%` / `80.0%`。命令把 `--task` 换成
 `sheriff_nomination` 即可。
 
+夜技面（V5.5-A 第三步）使用独立的 `npc_night_target_features.v1`（27 维，
+含行动类型 one-hot 与角色合法约束特征），覆盖狼刀/守卫/查验/猎人目标选择：
+130 局 1323 条 teacher（好人 518 / 狼人 805），产物在
+`backend/policy_artifacts/night_target/`，好人/狼人验证 top-1 分别为
+`72.5%` / `99.0%`。local 模式对护栏后的目标分布取 argmax（保持旧的确定性目标
+选择风格）；女巫毒药沿用 V5.4-A 信念路径。命令把 `--task` 换成 `night_target`
+即可。
+
 当前已完成 seed `20260727–20260736` 的 10 局 shadow 和 local 金丝雀，以及
 seed `20260601–20260630` 的扩展 30 局 local 金丝雀。Shadow 有 205 条策略轨迹、
 零 fallback；原始 MLP 有 38 条会改变 teacher 首选，护栏后为 0。消融确认

@@ -61,7 +61,7 @@ B 为真预言家的假设因此与“B 给持续对跳者发金水”的公开�
 | V5.4-C | P1 | 已完成 | 固化 6 条高价值公开逻辑场景及生成器，覆盖对跳金水、单 claimant、退水、跨日证据、已知角色冲突和改验结果 |
 | V5.4-D | P1 | 已完成 | 280 teacher + 99 人工审阅标签（tonystark 确认）重训为 MLP V2，并增加熵/扰动护栏与夜间信念置信度门禁；消融确认放逐 MLP 在 `blend=0.10` 下尚未改变采样票，指标变化来自夜间信念消费；30 局 seed `20260601–20260630` 六项核心指标全部改善，重放 `30/30`、零 fallback，金丝雀复验通过 |
 | V5.4-E | P1 | 已完成第一阶段 | 增加 `wolf_sheriff_campaign.v1`，支持单狼悍跳、双狼辅助站边和双狼公开拉开距离；搭档发言后退水 |
-| V5.5-A | P2 | 警长投票/归票面已完成 | 扩展警长投票/归票及全部夜技为 task+role 独立 policy artifact；警长投票（`npc_sheriff_vote_features.v1`）与警长归票（`npc_sheriff_nomination_features.v1`）已接入独立产物，130 局 teacher（855 / 734 条），30 局金丝雀零回归；夜技面待做；保持 legal mask、shadow 门禁和 replay 不变 |
+| V5.5-A | P2 | 已完成（女巫毒保留信念路径） | 警长投票、警长归票与夜技面（狼刀/守卫/查验/猎人）均已接入独立 task+role artifact：`npc_sheriff_vote_features.v1`（855 条）、`npc_sheriff_nomination_features.v1`（734 条）、`npc_night_target_features.v1`（1323 条，27 维）；女巫毒药沿用 V5.4-A 信念路径；30 局金丝雀零回归，重放 `30/30`、零 fallback；保持 legal mask、shadow 门禁和 replay 不变 |
 | V5.5-B | P2 | 待开始 | 本地策略模型的版本升级、灰度 shadow、A/B 报告和可恢复 artifact 注册 |
 
 ## 当前实现契约
