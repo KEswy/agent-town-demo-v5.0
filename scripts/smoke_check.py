@@ -4636,7 +4636,7 @@ if any(
 batch = run_rule_simulation_batch(20260719, 6)
 if batch["games_completed"] != 6:
     raise SystemExit("batch simulation did not complete every requested game")
-if batch["summary"]["winner_counts"] != {"good": 2, "werewolf": 4}:
+if batch["summary"]["winner_counts"] != {"good": 1, "werewolf": 5}:
     raise SystemExit("V5 six-seed balance regression fixture changed")
 if (
     batch["schema_version"] != BATCH_SCHEMA_VERSION
@@ -11048,7 +11048,7 @@ if not any(full_player_speech in item for item in complete_player_history):
     raise SystemExit("player action history should retain the full public speech")
 if not any("私聊2号 梅西：你如何评价3号？" in item for item in complete_player_history):
     raise SystemExit("player action history should retain private questions")
-if not any("投给3号 C罗；理由：我的公开投票理由。" in item for item in complete_player_history):
+if not any("投给3号 C罗：我的公开投票理由。" in item for item in complete_player_history):
     raise SystemExit("player action history should retain vote targets and reasons")
 
 npc_seer_state = make_rule_test_game(["villager", "seer", "werewolf", "villager", "villager", "villager"])

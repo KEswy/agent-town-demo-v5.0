@@ -2045,16 +2045,29 @@ def build_badge_flow_display_text(
     else:
         anchor = get_character(game_state, flow.claimed_good_anchor_id)
         wolf_route = f"查杀分支：警徽给{format_full_character_name(anchor)}"
-    reason_label = BADGE_FLOW_REASON_LABELS.get(
-        flow.revision_reason,
-        BADGE_FLOW_REASON_LABELS["other_public_reason"],
-    )
     return (
         f"{format_full_character_name(claimant)}的警徽流："
         f"第{flow.effective_night_day}夜生效，"
         f"{order_text}；金水分支：警徽给{format_full_character_name(primary)}，"
-        f"{wolf_route}。公开理由：{reason_label}。"
+        f"{wolf_route}。{build_badge_flow_reason_text(flow.revision_reason)}"
     )
+
+
+def build_badge_flow_reason_text(reason_key: str) -> str:
+    """Turn a structured badge-flow revision reason into natural speech."""
+
+    natural = {
+        "initial": "这是我最开始的安排，暂时不动。",
+        "target_eliminated": "原目标已经出局，警徽流顺延到这个位置。",
+        "role_reveal": "原目标公开了身份信息，警徽流需要重新安排。",
+        "new_counterclaim": "场上出现了新的对跳，警徽流跟着调整。",
+        "vote_shift": "公开票型起了变化，警徽流顺带修正。",
+        "speech_change": "目标的发言和站边有变化，警徽流也得更新。",
+        "higher_value": "这个位置现在更值得优先定义，警徽流这样排。",
+        "avoid_predictability": "警徽流不能排得太死，免得被狼人摸清刀口。",
+        "other_public_reason": "结合新的公开局势，我把警徽流调整成这样。",
+    }
+    return natural.get(reason_key, natural["other_public_reason"])
 
 
 def build_badge_flow_views(game_state: WolfGameState) -> list[BadgeFlowView]:
@@ -2767,14 +2780,10 @@ def build_badge_flow_input_speech_text(
         wolf_route = (
             f"查杀分支：警徽给{format_full_character_name(claimed_good_anchor)}"
         )
-    reason_label = BADGE_FLOW_REASON_LABELS.get(
-        flow_input.revision_reason,
-        BADGE_FLOW_REASON_LABELS["other_public_reason"],
-    )
     return (
         f"我的警徽流：第{game_state.day + 1}夜生效，{order_text}；"
         f"金水分支：警徽给{format_full_character_name(primary)}，"
-        f"{wolf_route}；理由：{reason_label}。"
+        f"{wolf_route}。{build_badge_flow_reason_text(flow_input.revision_reason)}"
     )
 
 
@@ -6715,7 +6724,7 @@ def build_player_action_history(game_state: WolfGameState) -> list[str]:
         if vote.voter_id != player.id:
             continue
         target = get_character(game_state, vote.target_id)
-        reason = f"；理由：{vote.reason}" if vote.reason else ""
+        reason = f"：{vote.reason}" if vote.reason else ""
         add_item(
             vote.day,
             50,
