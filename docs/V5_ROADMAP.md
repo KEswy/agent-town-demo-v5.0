@@ -66,6 +66,7 @@ B 为真预言家的假设因此与“B 给持续对跳者发金水”的公开�
 | V5.5-A | P2 | 已完成（女巫毒保留信念路径） | 警长投票、警长归票与夜技面（狼刀/守卫/查验/猎人）均已接入独立 task+role artifact：`npc_sheriff_vote_features.v1`（855 条）、`npc_sheriff_nomination_features.v1`（734 条）、`npc_night_target_features.v1`（1323 条，27 维）；女巫毒药沿用 V5.4-A 信念路径；30 局金丝雀零回归，重放 `30/30`、零 fallback；保持 legal mask、shadow 门禁和 replay 不变 |
 | V5.5-B | P2 | 待开始 | 本地策略模型的版本升级、灰度 shadow、A/B 报告和可恢复 artifact 注册 |
 | V5.5-C | P2 | 已完成 | 四合一体验层：会议快进（`POST /api/day/npc-speeches-batch` 批量发言、快进按钮）、多语言框架（`L10n` autoload + 设置切换中/英、核心 UI 英文化）、白痴变体局（`variant=idiot`，1 名白痴替换 1 名村民，翻牌免死一次且翻牌后不能投票）、实时观战（`/spectate` 页面 + `/api/spectate/*` 公开快照，不泄漏隐藏身份/私密信息）；白痴局 30 局金丝雀 50:50，经典 6-seed 夹具零回归，local 模式兼容 |
+| V5.5-D | P2 | 已完成 | 狼战术库扩充与 NPC 个性化：新增自刀银水（`wolf_self_kill.v1`，团队确定性决策，女巫救则成银水、不救则狼出局）与假跳神职（`wolf_fake_god_claim.v1`，狼在压力/后期可跳守卫/女巫/猎人）；怀疑累积、公开声明影响与投票评分接入 aggressiveness/cautiousness 个性（C罗激进、梅西保守等）；设置弹窗新增 NPC 策略模式（规则/影子/本地）切换并持久化，对局信息栏显示当前模式；30 局规则金丝雀好人 43.3%（基线 46.7%），local 53.3%，6-seed 夹具随意图更新 |
 
 ## 当前实现契约
 

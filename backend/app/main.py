@@ -230,6 +230,8 @@ from .config import (
     WITCH_DIRECTIVE_SCHEMA_VERSION,
     WITCH_STRATEGY_SCHEMA_VERSION,
     WOLF_SHERIFF_CAMPAIGN_POLICY_VERSION,
+    WOLF_FAKE_GOD_CLAIM_POLICY_VERSION,
+    WOLF_SELF_KILL_POLICY_VERSION,
 )
 
 from .determinism import (
@@ -7053,7 +7055,13 @@ def validate_night_action(
     if not target.alive:
         raise HTTPException(status_code=400, detail="不能选择已出局角色。")
     if action_type == "werewolf_kill":
-        if target.role == "werewolf":
+        if target.role == "werewolf" and not (
+            target.id == actor.id
+            or (
+                game_state.wolf_self_kill_id is not None
+                and target.id == game_state.wolf_self_kill_id
+            )
+        ):
             raise HTTPException(status_code=400, detail="狼人不能袭击狼队友。")
         return
     if action_type == "seer_check" and target.id == actor.id:
@@ -7106,6 +7114,7 @@ def upsert_night_action(game_state: WolfGameState, new_action: NightActionState)
 
 
 def ensure_npc_night_actions(game_state: WolfGameState) -> None:
+    decide_wolf_self_kill(game_state)
     for actor in game_state.characters:
         if (
             actor.is_player
@@ -7671,6 +7680,68 @@ def _resolve_night_target_policy(
     )
 
 
+def decide_wolf_self_kill(game_state: WolfGameState) -> None:
+    """Deterministically decide whether the wolf team runs a silver-water play.
+
+    One NPC wolf is designated as the self-kill target.  The team uses only
+    lawful knowledge (public pressure, team coordination, deception strength,
+    and the night count); it cannot read the witch's antidote state.  If the
+    witch saves the target, the wolf earns public silver-water evidence; if
+    not, the wolf dies like any other victim.
+    """
+
+    game_state.wolf_self_kill_id = None
+    npc_wolves = [
+        character
+        for character in game_state.characters
+        if character.alive
+        and not character.is_player
+        and character.role == "werewolf"
+    ]
+    if len(npc_wolves) < 2:
+        return
+    coordinator = max(
+        npc_wolves,
+        key=lambda character: (
+            get_character_strategy_tuning(character).team_coordination
+            + get_character_strategy_tuning(character).deception_strength * 0.8,
+            -character.id,
+        ),
+    )
+    tuning = get_character_strategy_tuning(coordinator)
+    pressured_wolf = max(
+        npc_wolves,
+        key=lambda character: (
+            get_public_suspicion_score(game_state, character.id),
+            -character.id,
+        ),
+    )
+    pressure = get_public_suspicion_score(game_state, pressured_wolf.id)
+    base_willingness = 0.04 + min(0.09, max(0.0, game_state.day - 1) * 0.02)
+    willingness = min(
+        0.20,
+        base_willingness
+        + tuning.team_coordination * 0.08
+        + tuning.deception_strength * 0.06
+        + (0.06 if pressure >= 52 else 0.0),
+    )
+    strategy_roll = deterministic_strategy_roll(
+        game_state,
+        coordinator,
+        f"{WOLF_SELF_KILL_POLICY_VERSION}:night:{game_state.day}",
+    )
+    if strategy_roll >= willingness:
+        return
+    target_roll = deterministic_strategy_roll(
+        game_state,
+        coordinator,
+        f"{WOLF_SELF_KILL_POLICY_VERSION}:target:{game_state.day}",
+    )
+    game_state.wolf_self_kill_id = (
+        pressured_wolf.id if target_roll < 0.55 else coordinator.id
+    )
+
+
 def choose_npc_night_target(
     game_state: WolfGameState,
     actor: CharacterState,
@@ -7685,6 +7756,11 @@ def choose_npc_night_target(
         if character.alive and character.id != actor.id
     ]
     if action_type == "werewolf_kill":
+        if (
+            game_state.wolf_self_kill_id is not None
+            and get_character(game_state, game_state.wolf_self_kill_id).alive
+        ):
+            return game_state.wolf_self_kill_id
         candidates = [
             character
             for character in candidates
@@ -9502,6 +9578,8 @@ def apply_public_claim_updates(
             + source_strength * 0.28
             + claim_credibility * 0.35
             - listener_tuning.reasoning_skill * 0.35
+            + (float(listener.personality.get("aggressiveness", 0.5)) - 0.5) * 0.18
+            - (float(listener.personality.get("cautiousness", 0.5)) - 0.5) * 0.18
         )
         influence = max(5, int(round((8 + trust * 20) * influence_factor)))
         if listener.id == target.id:
@@ -11971,6 +12049,64 @@ def should_reveal_power_role(
     return score >= 38
 
 
+def should_fake_god_claim(
+    game_state: WolfGameState,
+    speaker: CharacterState,
+) -> bool:
+    """Deterministically decide whether a non-fake-seer wolf claims a god role.
+
+    The play is most useful when the wolf is under public pressure or late in
+    the game, and more plausible for wolves with strong deception strength.
+    Only lawful knowledge is consumed; the wolf cannot read hidden roles.
+    """
+
+    if not speaker.alive or speaker.role != "werewolf":
+        return False
+    if get_public_role_claim(game_state, speaker.id) is not None:
+        return False
+    alive_wolves = [
+        character
+        for character in game_state.characters
+        if character.alive and character.role == "werewolf"
+    ]
+    if len(alive_wolves) < 2:
+        return False
+    tuning = get_character_strategy_tuning(speaker)
+    pressure = get_public_suspicion_score(game_state, speaker.id)
+    base = 0.04 + min(0.10, max(0.0, game_state.day - 1) * 0.02)
+    willingness = min(
+        0.22,
+        base
+        + tuning.deception_strength * 0.08
+        + speaker.personality.get("aggressiveness", 0.5) * 0.05
+        + (0.06 if pressure >= 45 else 0.0),
+    )
+    roll = deterministic_strategy_roll(
+        game_state,
+        speaker,
+        f"{WOLF_FAKE_GOD_CLAIM_POLICY_VERSION}:night:{game_state.day}",
+    )
+    return roll < willingness
+
+
+def choose_fake_god_claim_role(
+    game_state: WolfGameState,
+    speaker: CharacterState,
+) -> Optional[str]:
+    """Pick which god role a wolf falsely claims; guard is the default bait."""
+
+    roll = deterministic_strategy_roll(
+        game_state,
+        speaker,
+        f"{WOLF_FAKE_GOD_CLAIM_POLICY_VERSION}:role:{game_state.day}",
+    )
+    if roll < 0.58:
+        return "guard"
+    if roll < 0.83:
+        return "witch"
+    return "hunter"
+
+
 def plan_npc_public_claims(
     game_state: WolfGameState,
     speaker: CharacterState,
@@ -12008,6 +12144,24 @@ def plan_npc_public_claims(
                         target_id=target_id,
                         result=result,
                         source="wolf_fake_seer",
+                    )
+                )
+        return claims
+
+    if speaker.role == "werewolf" and speaker.id != game_state.wolf_fake_seer_id:
+        if should_fake_god_claim(game_state, speaker):
+            claimed_role = choose_fake_god_claim_role(game_state, speaker)
+            if (
+                claimed_role is not None
+                and get_public_role_claim(game_state, speaker.id) is None
+            ):
+                claims.append(
+                    PublicClaimState(
+                        day=game_state.day,
+                        character_id=speaker.id,
+                        claim_type="role",
+                        claimed_role=claimed_role,
+                        source="wolf_fake_god",
                     )
                 )
         return claims
@@ -14499,6 +14653,23 @@ def enrich_rule_generated_public_speech_plan(
         SignalRead.RAISES_SUSPICION if plan.signal_ids else SignalRead.NONE
     )
     if speaker.role == "werewolf":
+        fake_god_claim = next(
+            (
+                claim
+                for claim in claims
+                if claim.claim_type == "role"
+                and claim.claimed_role in {"guard", "witch", "hunter"}
+            ),
+            None,
+        )
+        if fake_god_claim is not None:
+            return plan.model_copy(
+                update={
+                    "intent": PublicSpeechIntent.REVEAL,
+                    "tactic": SpeechTactic.WOLF_FAKE_GOD_CLAIM,
+                    "confidence": max(plan.confidence, 70),
+                }
+            )
         if plan.claim_option_ids:
             selected_check = next(
                 (
@@ -18484,7 +18655,10 @@ def score_npc_vote_candidate(
     actor's suspicion map. They are intentionally not added again here.
     """
     tuning = get_character_strategy_tuning(voter)
-    score = float(voter.suspicion.get(str(candidate.id), 0))
+    aggressiveness = float(voter.personality.get("aggressiveness", 0.5))
+    score = float(voter.suspicion.get(str(candidate.id), 0)) * (
+        1.0 + (aggressiveness - 0.5) * 0.6
+    )
     target_trust = float(
         voter.relationships.get(str(candidate.id), {}).get("trust", 0.5)
     )
@@ -19555,6 +19729,14 @@ def count_character_memory(character: CharacterState) -> int:
 
 def adjust_suspicion(observer: CharacterState, target_id: int, amount: int) -> None:
     key = str(target_id)
+    if amount > 0:
+        # Personality scales how fast an observer accumulates suspicion:
+        # aggressive NPCs (C罗) escalate harder, cautious ones (梅西) need more
+        # evidence.  The factor is centered on 1.0 for a neutral personality.
+        aggressiveness = float(observer.personality.get("aggressiveness", 0.5))
+        cautiousness = float(observer.personality.get("cautiousness", 0.5))
+        factor = (0.80 + 0.40 * aggressiveness) * (1.25 - 0.50 * cautiousness)
+        amount = max(1, int(round(amount * factor)))
     observer.suspicion[key] = max(0, min(observer.suspicion.get(key, 0) + amount, 100))
 
 

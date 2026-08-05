@@ -108,6 +108,7 @@ class SpeechTactic(str, Enum):
     WOLF_FRAME_GOOD = "wolf_frame_good"
     WOLF_COUNTERPUSH_GOOD = "wolf_counterpush_good"
     WOLF_FAKE_SEER = "wolf_fake_seer"
+    WOLF_FAKE_GOD_CLAIM = "wolf_fake_god_claim"
     WOLF_DEEP_COVER = "wolf_deep_cover"
     WOLF_MISDIRECTION = "wolf_misdirection"
 
@@ -515,6 +516,7 @@ _WOLF_ONLY_TACTICS = frozenset(
         SpeechTactic.WOLF_FRAME_GOOD,
         SpeechTactic.WOLF_COUNTERPUSH_GOOD,
         SpeechTactic.WOLF_FAKE_SEER,
+        SpeechTactic.WOLF_FAKE_GOD_CLAIM,
         SpeechTactic.WOLF_DEEP_COVER,
         SpeechTactic.WOLF_MISDIRECTION,
     }
@@ -1160,6 +1162,33 @@ def validate_public_speech_plan_v2(
         errors.append(
             "wolf_fake_seer_claim_missing: tactic requires an allowlisted seer role claim"
         )
+    if plan.tactic == SpeechTactic.WOLF_FAKE_GOD_CLAIM:
+        god_claim_matching = any(
+            fact.claim_type == "role"
+            and fact.claimed_role in {"guard", "witch", "hunter"}
+            for fact in selected_claim_facts
+        )
+        if not god_claim_matching:
+            errors.append(
+                "wolf_fake_god_claim_missing: tactic requires an allowlisted "
+                "guard/witch/hunter role claim"
+            )
+        if plan.intent not in {
+            PublicSpeechIntent.REVEAL,
+            PublicSpeechIntent.COUNTERCLAIM,
+        }:
+            errors.append(
+                "tactic_intent_mismatch: wolf_fake_god_claim requires "
+                "reveal or counterclaim intent"
+            )
+        if any(
+            fact.claim_type == "role" and fact.claimed_role == "seer"
+            for fact in selected_claim_facts
+        ):
+            errors.append(
+                "tactic_claim_conflict: wolf_fake_god_claim cannot be combined "
+                "with a seer role claim"
+            )
     if plan.tactic in {
         SpeechTactic.WOLF_FRAME_GOOD,
         SpeechTactic.WOLF_COUNTERPUSH_GOOD,

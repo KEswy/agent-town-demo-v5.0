@@ -363,6 +363,7 @@ const CHARACTER_SKIN_PATHS := {
 @onready var save_game_request: HTTPRequest = $SaveGameRequest
 @onready var player_role_option: OptionButton = $UI/GameSetupOverlay/Panel/Margin/VBox/PlayerRoleRow/PlayerRoleOption
 @onready var variant_option: OptionButton = $UI/GameSetupOverlay/Panel/Margin/VBox/VariantRow/VariantOption
+@onready var npc_policy_option: OptionButton = $UI/GameSetupOverlay/Panel/Margin/VBox/NpcPolicyRow/NpcPolicyOption
 @onready var llm_enabled_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow/LLMEnabledToggle
 @onready var llm_settings_hint: Label = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMSettingsRow/LLMSettingsHint
 @onready var llm_validation_toggle: CheckButton = $UI/GameSetupOverlay/Panel/Margin/VBox/LLMValidationRow/LLMValidationToggle
@@ -437,6 +438,7 @@ var _replay_index := 0
 var _replay_playing := false
 var _tutorial_hints := true
 var _session_variant := "classic"
+var _session_npc_policy_mode := "local"
 var _recovered_game_ids: Array[String] = []
 var _sound_enabled := true
 var _bgm_volume := 70.0
@@ -659,6 +661,8 @@ func _ready() -> void:
 	variant_option.item_selected.connect(_on_variant_option_selected)
 	_populate_variant_options()
 	_populate_player_role_options(_session_variant)
+	npc_policy_option.item_selected.connect(_on_npc_policy_option_selected)
+	_populate_npc_policy_options()
 	_sync_language_option()
 	_apply_ui_translations()
 	_update_responsive_layout()
@@ -982,6 +986,44 @@ func _get_selected_variant() -> String:
 func _on_variant_option_selected(_index: int) -> void:
 	_session_variant = _get_selected_variant()
 	_populate_player_role_options(_session_variant)
+	_save_session_preferences()
+
+
+func _populate_npc_policy_options() -> void:
+	npc_policy_option.clear()
+	npc_policy_option.add_item(L10n.t("规则模式"))
+	npc_policy_option.set_item_metadata(npc_policy_option.get_item_count() - 1, "rule")
+	npc_policy_option.add_item(L10n.t("影子模式"))
+	npc_policy_option.set_item_metadata(npc_policy_option.get_item_count() - 1, "shadow")
+	npc_policy_option.add_item(L10n.t("本地模型"))
+	npc_policy_option.set_item_metadata(npc_policy_option.get_item_count() - 1, "local")
+	for i in range(npc_policy_option.get_item_count()):
+		if str(npc_policy_option.get_item_metadata(i)) == _session_npc_policy_mode:
+			npc_policy_option.select(i)
+			break
+
+
+func _get_selected_npc_policy_mode() -> String:
+	var mode := str(_get_selected_option_metadata(npc_policy_option, "local"))
+	if mode not in ["rule", "shadow", "local"]:
+		return "local"
+	return mode
+
+
+func _format_npc_policy_mode(mode: String) -> String:
+	match mode:
+		"rule":
+			return L10n.t("规则模式")
+		"shadow":
+			return L10n.t("影子模式")
+		"local":
+			return L10n.t("本地模型")
+		_:
+			return mode
+
+
+func _on_npc_policy_option_selected(_index: int) -> void:
+	_session_npc_policy_mode = _get_selected_npc_policy_mode()
 	_save_session_preferences()
 
 
@@ -1996,6 +2038,7 @@ func _on_start_game_button_pressed() -> void:
 		"player_name": player_name,
 		"npc_count": 11,
 		"variant": _get_selected_variant(),
+		"npc_policy_mode": _get_selected_npc_policy_mode(),
 		"player_role": str(_get_selected_option_metadata(player_role_option, "random")),
 		"enable_llm": llm_enabled_toggle.button_pressed,
 		"enable_llm_validation": _llm_validation_requested(),
@@ -2804,6 +2847,13 @@ func _load_session_preferences() -> void:
 		if typeof(variant_value) == TYPE_STRING and str(variant_value) in ["classic", "idiot"]
 		else "classic"
 	)
+	var npc_policy_value: Variant = config.get_value(SESSION_SETTINGS_SECTION, "npc_policy_mode", "local")
+	_session_npc_policy_mode = (
+		str(npc_policy_value)
+		if typeof(npc_policy_value) == TYPE_STRING
+		and str(npc_policy_value) in ["rule", "shadow", "local"]
+		else "local"
+	)
 	var language_value: Variant = config.get_value(SESSION_SETTINGS_SECTION, "language", "zh")
 	L10n.set_language(str(language_value) if typeof(language_value) == TYPE_STRING else "zh")
 
@@ -2855,6 +2905,7 @@ func _save_session_preferences() -> void:
 	config.set_value(SESSION_SETTINGS_SECTION, "sfx_volume", _sfx_volume)
 	config.set_value(SESSION_SETTINGS_SECTION, "tutorial_hints", _tutorial_hints)
 	config.set_value(SESSION_SETTINGS_SECTION, "variant", _session_variant)
+	config.set_value(SESSION_SETTINGS_SECTION, "npc_policy_mode", _session_npc_policy_mode)
 	config.set_value(SESSION_SETTINGS_SECTION, "language", L10n.language)
 	var save_error := config.save(SESSION_SETTINGS_PATH)
 	if save_error != OK:
@@ -4504,6 +4555,9 @@ func _render_wolf_game(game_data: Dictionary) -> void:
 			+ str(phase)
 			+ " | "
 			+ llm_label
+			+ " | "
+			+ L10n.t("策略：")
+			+ _format_npc_policy_mode(str(game_data.get("npc_policy_mode", "")))
 			+ "\n"
 			+ str(message)
 			+ private_note
@@ -4946,7 +5000,11 @@ func _refresh_night_target_options(game_data: Dictionary) -> void:
 				continue
 			if action_type in ["seer_check", "witch_poison"] and character_id == _current_player_character_id:
 				continue
-			if action_type == "werewolf_kill" and str(character.get("role_visible_to_player", "")) == "werewolf":
+			if (
+				action_type == "werewolf_kill"
+				and str(character.get("role_visible_to_player", "")) == "werewolf"
+				and character_id != _current_player_character_id
+			):
 				continue
 			night_target_option.add_item(
 				str(character_id) + "号 " + str(character.get("name", "未知")),

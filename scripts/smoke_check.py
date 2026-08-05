@@ -4636,7 +4636,10 @@ if any(
 batch = run_rule_simulation_batch(20260719, 6)
 if batch["games_completed"] != 6:
     raise SystemExit("batch simulation did not complete every requested game")
-if batch["summary"]["winner_counts"] != {"good": 2, "werewolf": 4}:
+# Updated after V5.5-D wolf tactics + personality scaling: the same 30-seed
+# canary (20260601-20260630) stayed near baseline (good 43.3% vs 46.7% before);
+# these six specific seeds flipped to a good-favored sample.
+if batch["summary"]["winner_counts"] != {"good": 5, "werewolf": 1}:
     raise SystemExit("V5 six-seed balance regression fixture changed")
 if (
     batch["schema_version"] != BATCH_SCHEMA_VERSION

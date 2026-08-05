@@ -1305,6 +1305,26 @@ selected = 0
 popup/item_0/text = "经典局"
 popup/item_1/text = "白痴局"
 
+[node name="NpcPolicyRow" type="HBoxContainer" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="NpcPolicyLabel" type="Label" parent="UI/GameSetupOverlay/Panel/Margin/VBox/NpcPolicyRow"]
+custom_minimum_size = Vector2(92, 0)
+layout_mode = 2
+text = "NPC 策略模式"
+vertical_alignment = 1
+
+[node name="NpcPolicyOption" type="OptionButton" parent="UI/GameSetupOverlay/Panel/Margin/VBox/NpcPolicyRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+item_count = 3
+selected = 2
+tooltip_text = "规则模式：NPC 全部使用 Python 规则评分（确定性、可复现）。本地模型：用已训练的本地策略模型接管候选评分，失败自动回退规则；影子模式只算分不行动，用于对比。"
+popup/item_0/text = "规则模式"
+popup/item_1/text = "影子模式"
+popup/item_2/text = "本地模型"
+
 [node name="SetupStatusLabel" type="Label" parent="UI/GameSetupOverlay/Panel/Margin/VBox"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0, 0, 0, 1)

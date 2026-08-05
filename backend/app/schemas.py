@@ -576,6 +576,7 @@ class WolfGameState(BaseModel):
     pending_hunter_trigger: str = ""
     pending_hunter_continuation: str = ""
     wolf_fake_seer_id: Optional[int] = None
+    wolf_self_kill_id: Optional[int] = None
     witch_strategy_decisions: list[WitchStrategyDecisionState] = Field(
         default_factory=list
     )
