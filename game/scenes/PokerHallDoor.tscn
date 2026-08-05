@@ -1,0 +1,35 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/poker_door.gd" id="1_door"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_door"]
+size = Vector2(96, 96)
+
+[node name="PokerHallDoor" type="Area2D"]
+script = ExtResource("1_door")
+
+[node name="DoorBody" type="Polygon2D" parent="."]
+polygon = PackedVector2Array(-38, -52, 38, -52, 38, 46, -38, 46)
+color = Color(0.3, 0.4, 0.48, 1)
+
+[node name="Sign" type="Polygon2D" parent="."]
+position = Vector2(0, -58)
+polygon = PackedVector2Array(-44, -14, 44, -14, 44, 14, -44, 14)
+color = Color(0.12, 0.55, 0.35, 1)
+
+[node name="NameLabel" type="Label" parent="."]
+offset_left = -44.0
+offset_top = -72.0
+offset_right = 44.0
+offset_bottom = -48.0
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_font_sizes/font_size = 13
+text = "德州扑克馆"
+horizontal_alignment = 1
+
+[node name="NearbyMarker" type="Polygon2D" parent="."]
+polygon = PackedVector2Array(-52, -82, 52, -82, 52, 68, -52, 68)
+color = Color(1, 0.9, 0.32, 0.22)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("RectangleShape2D_door")

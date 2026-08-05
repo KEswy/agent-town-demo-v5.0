@@ -1,4 +1,4 @@
-[gd_scene load_steps=20 format=3]
+[gd_scene load_steps=21 format=3]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1_main_script"]
 [ext_resource type="PackedScene" path="res://scenes/Player.tscn" id="2_player_scene"]
@@ -6,6 +6,7 @@
 [ext_resource type="PackedScene" path="res://scenes/DialogBox.tscn" id="4_dialog_scene"]
 [ext_resource type="FontFile" path="res://assets/fonts/NotoSansSC-Variable.ttf" id="5_main_font"]
 [ext_resource type="PackedScene" path="res://scenes/TownBackground.tscn" id="6_town_background"]
+[ext_resource type="PackedScene" path="res://scenes/PokerHallDoor.tscn" id="7_poker_door_scene"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_wolf_panel"]
 bg_color = Color(1, 0.925, 0.58, 0.97)
@@ -335,6 +336,9 @@ npc_name = "然然"
 dialog_text = "我是然然，心情邮局的熊猫邮差。想寄存一个故事，或者整理一个小计划，都可以来找我。"
 wolf_character_id = 0
 body_color = Color(0.95, 0.93, 0.86, 1)
+
+[node name="PokerHallDoor" parent="." instance=ExtResource("7_poker_door_scene")]
+position = Vector2(900, -260)
 
 [node name="UI" type="CanvasLayer" parent="."]
 
@@ -1912,6 +1916,164 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 6
 
+[node name="PokerTableOverlay" type="Control" parent="UI"]
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+theme = SubResource("Theme_light_ui")
+
+[node name="Shade" type="ColorRect" parent="UI/PokerTableOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.08, 0.22, 0.31, 0.58)
+
+[node name="Panel" type="PanelContainer" parent="UI/PokerTableOverlay"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -500.0
+offset_top = -300.0
+offset_right = 500.0
+offset_bottom = 300.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_setup")
+
+[node name="Margin" type="MarginContainer" parent="UI/PokerTableOverlay/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 22
+theme_override_constants/margin_top = 16
+theme_override_constants/margin_right = 22
+theme_override_constants/margin_bottom = 16
+
+[node name="VBox" type="VBoxContainer" parent="UI/PokerTableOverlay/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="HeaderRow" type="HBoxContainer" parent="UI/PokerTableOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="TitleLabel" type="Label" parent="UI/PokerTableOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 20
+text = "德州扑克"
+vertical_alignment = 1
+
+[node name="ResultLabel" type="Label" parent="UI/PokerTableOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = ""
+vertical_alignment = 1
+text_overrun_behavior = 3
+
+[node name="CloseButton" type="Button" parent="UI/PokerTableOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+text = "离开牌桌"
+
+[node name="StatusRow" type="HBoxContainer" parent="UI/PokerTableOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="PhaseLabel" type="Label" parent="UI/PokerTableOverlay/Panel/Margin/VBox/StatusRow"]
+layout_mode = 2
+text = "等待发牌"
+
+[node name="PotLabel" type="Label" parent="UI/PokerTableOverlay/Panel/Margin/VBox/StatusRow"]
+layout_mode = 2
+text = "底池：0"
+
+[node name="HandLabel" type="Label" parent="UI/PokerTableOverlay/Panel/Margin/VBox/StatusRow"]
+layout_mode = 2
+text = "第 0 手"
+
+[node name="TablePanel" type="PanelContainer" parent="UI/PokerTableOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_styles/panel = SubResource("StyleBoxFlat_light_control")
+
+[node name="Margin" type="MarginContainer" parent="UI/PokerTableOverlay/Panel/Margin/VBox/TablePanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 10
+
+[node name="VBox" type="VBoxContainer" parent="UI/PokerTableOverlay/Panel/Margin/VBox/TablePanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="CommunityLabel" type="Label" parent="UI/PokerTableOverlay/Panel/Margin/VBox/TablePanel/Margin/VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "公共牌：—"
+horizontal_alignment = 1
+
+[node name="PlayersList" type="VBoxContainer" parent="UI/PokerTableOverlay/Panel/Margin/VBox/TablePanel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 6
+
+[node name="ActionRow" type="HBoxContainer" parent="UI/PokerTableOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="FoldButton" type="Button" parent="UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow"]
+custom_minimum_size = Vector2(96, 40)
+layout_mode = 2
+disabled = true
+text = "弃牌"
+
+[node name="CheckCallButton" type="Button" parent="UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow"]
+custom_minimum_size = Vector2(128, 40)
+layout_mode = 2
+disabled = true
+text = "过牌 / 跟注"
+
+[node name="RaiseButton" type="Button" parent="UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow"]
+custom_minimum_size = Vector2(96, 40)
+layout_mode = 2
+disabled = true
+text = "加注"
+
+[node name="AllInButton" type="Button" parent="UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow"]
+custom_minimum_size = Vector2(96, 40)
+layout_mode = 2
+disabled = true
+text = "全下"
+
+[node name="RaiseBox" type="VBoxContainer" parent="UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="RaiseValueLabel" type="Label" parent="UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow/RaiseBox"]
+layout_mode = 2
+text = "加注到 40"
+horizontal_alignment = 1
+
+[node name="RaiseSlider" type="HSlider" parent="UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow/RaiseBox"]
+layout_mode = 2
+size_flags_vertical = 3
+max_value = 2000.0
+step = 5.0
+
+[node name="NextHandButton" type="Button" parent="UI/PokerTableOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+disabled = true
+text = "下一手"
+
 [node name="ArchiveOverlay" type="Control" parent="UI"]
 visible = false
 layout_mode = 3
@@ -2443,6 +2605,8 @@ vertical_alignment = 1
 [node name="SpectateGamesRequest" type="HTTPRequest" parent="."]
 
 [node name="SpectateRequest" type="HTTPRequest" parent="."]
+
+[node name="PokerRequest" type="HTTPRequest" parent="."]
 
 [node name="SpectatePollTimer" type="Timer" parent="."]
 wait_time = 1.5

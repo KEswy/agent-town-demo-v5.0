@@ -28,6 +28,8 @@ const KNOWLEDGE_SEARCH_URL := "http://127.0.0.1:8000/knowledge/search"
 const NPCS_URL := "http://127.0.0.1:8000/npcs"
 const SPECTATE_GAMES_URL := "http://127.0.0.1:8000/api/spectate/active-games"
 const SPECTATE_URL_PREFIX := "http://127.0.0.1:8000/api/spectate/"
+const POKER_TABLE_URL := "http://127.0.0.1:8000/api/poker/table"
+const POKER_URL_PREFIX := "http://127.0.0.1:8000/api/poker/table/"
 const SESSION_SETTINGS_PATH := "user://agent_town_session.cfg"
 const STATS_PATH := "user://agent_town_stats.json"
 const ACHIEVEMENTS_PATH := "user://agent_town_achievements.cfg"
@@ -359,6 +361,23 @@ const CHARACTER_SKIN_PATHS := {
 @onready var spectate_poll_timer: Timer = $SpectatePollTimer
 @onready var achievement_toast: Control = $UI/AchievementToast
 @onready var achievement_toast_label: Label = $UI/AchievementToast/Panel/Margin/Label
+@onready var poker_overlay: Control = $UI/PokerTableOverlay
+@onready var poker_close_button: Button = $UI/PokerTableOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
+@onready var poker_result_label: Label = $UI/PokerTableOverlay/Panel/Margin/VBox/HeaderRow/ResultLabel
+@onready var poker_phase_label: Label = $UI/PokerTableOverlay/Panel/Margin/VBox/StatusRow/PhaseLabel
+@onready var poker_pot_label: Label = $UI/PokerTableOverlay/Panel/Margin/VBox/StatusRow/PotLabel
+@onready var poker_hand_label: Label = $UI/PokerTableOverlay/Panel/Margin/VBox/StatusRow/HandLabel
+@onready var poker_community_label: Label = $UI/PokerTableOverlay/Panel/Margin/VBox/TablePanel/Margin/VBox/CommunityLabel
+@onready var poker_players_list: VBoxContainer = $UI/PokerTableOverlay/Panel/Margin/VBox/TablePanel/Margin/VBox/PlayersList
+@onready var poker_fold_button: Button = $UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow/FoldButton
+@onready var poker_check_call_button: Button = $UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow/CheckCallButton
+@onready var poker_raise_button: Button = $UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow/RaiseButton
+@onready var poker_all_in_button: Button = $UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow/AllInButton
+@onready var poker_raise_value_label: Label = $UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow/RaiseBox/RaiseValueLabel
+@onready var poker_raise_slider: HSlider = $UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow/RaiseBox/RaiseSlider
+@onready var poker_next_hand_button: Button = $UI/PokerTableOverlay/Panel/Margin/VBox/NextHandButton
+@onready var poker_request: HTTPRequest = $PokerRequest
+@onready var poker_hall_door: Area2D = $PokerHallDoor
 @onready var highlights_label: Label = $UI/GameSummaryOverlay/Panel/Margin/VBox/HighlightsLabel
 @onready var export_review_button: Button = $UI/GameSummaryOverlay/Panel/Margin/VBox/HeaderRow/ExportReviewButton
 @onready var export_stats_button: Button = $UI/StatsOverlay/Panel/Margin/VBox/HeaderRow/ExportStatsButton
@@ -461,6 +480,9 @@ var _session_npc_policy_mode := "local"
 var _spectate_current_game_id := ""
 var _achievement_toast_queue: Array[String] = []
 var _achievement_chime: AudioStreamWAV
+var _poker_table_id := ""
+var _poker_requesting := false
+var _poker_state: Dictionary = {}
 var _recovered_game_ids: Array[String] = []
 var _sound_enabled := true
 var _bgm_volume := 70.0
@@ -653,6 +675,15 @@ func _ready() -> void:
 	spectate_poll_timer.timeout.connect(_request_spectate_snapshot)
 	spectate_games_request.request_completed.connect(_on_spectate_games_request_completed)
 	spectate_request.request_completed.connect(_on_spectate_request_completed)
+	poker_close_button.pressed.connect(_on_poker_close_button_pressed)
+	poker_fold_button.pressed.connect(_on_poker_action_pressed.bind("fold", 0))
+	poker_check_call_button.pressed.connect(_on_poker_action_pressed.bind("call", 0))
+	poker_raise_button.pressed.connect(_on_poker_raise_pressed)
+	poker_all_in_button.pressed.connect(_on_poker_all_in_pressed)
+	poker_raise_slider.value_changed.connect(_on_poker_raise_slider_changed)
+	poker_next_hand_button.pressed.connect(_on_poker_next_hand_pressed)
+	poker_request.request_completed.connect(_on_poker_request_completed)
+	poker_hall_door.door_requested.connect(_on_poker_door_requested)
 	archive_close_button.pressed.connect(_on_archive_close_button_pressed)
 	archive_request.request_completed.connect(_on_archive_request_completed)
 	export_review_button.pressed.connect(_on_export_review_pressed)
@@ -1833,10 +1864,23 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 
+	var nearby_door = _get_nearby_poker_door()
+	if nearby_door != null:
+		nearby_door.call("request_entry")
+		get_viewport().set_input_as_handled()
+		return
+
 	var nearby_npc = _get_nearby_npc()
 	if nearby_npc != null:
 		nearby_npc.call("request_dialog")
 		get_viewport().set_input_as_handled()
+
+
+func _get_nearby_poker_door():
+	for door in get_tree().get_nodes_in_group("poker_door"):
+		if door.call("is_player_nearby"):
+			return door
+	return null
 
 
 func _get_nearby_npc():
@@ -3881,6 +3925,260 @@ func _build_spectate_character_card(character: Dictionary) -> Control:
 	meta.add_theme_font_size_override("font_size", 12)
 	box.add_child(meta)
 	return box
+
+
+func _on_poker_door_requested() -> void:
+	_open_poker_table()
+
+
+func _open_poker_table() -> void:
+	if _poker_requesting:
+		return
+	_poker_requesting = true
+	_close_secondary_overlays()
+	poker_overlay.visible = true
+	poker_overlay.add_to_group("dialog_open")
+	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
+	poker_phase_label.text = L10n.t("正在开桌...")
+	_set_poker_controls_enabled(false)
+	var player_name := str(player_name_input.text.strip_edges())
+	if player_name.is_empty():
+		player_name = "玩家"
+	var body := {
+		"player_name": player_name,
+		"npc_count": 5,
+		"buy_in": 1000,
+	}
+	var error := poker_request.request(
+		POKER_TABLE_URL,
+		["Content-Type: application/json"],
+		HTTPClient.METHOD_POST,
+		JSON.stringify(body),
+	)
+	if error != OK:
+		_poker_requesting = false
+		poker_phase_label.text = L10n.t("后端未连接")
+	call_deferred("_focus_control_if_available", poker_close_button)
+
+
+func _close_secondary_overlays() -> void:
+	_hide_menu_overlay()
+	stats_overlay.visible = false
+	archive_overlay.visible = false
+	knowledge_overlay.visible = false
+	load_overlay.visible = false
+	spectate_overlay.visible = false
+	spectate_poll_timer.stop()
+	game_summary_overlay.visible = false
+	if game_setup_overlay.visible:
+		game_setup_overlay.visible = false
+		game_setup_overlay.remove_from_group("dialog_open")
+
+
+func _on_poker_close_button_pressed() -> void:
+	poker_overlay.visible = false
+	poker_overlay.remove_from_group("dialog_open")
+	poker_close_button.release_focus()
+	_release_focus_to_world()
+
+
+func _on_poker_action_pressed(action: String, amount: int) -> void:
+	if _poker_requesting or _poker_table_id.is_empty():
+		return
+	_poker_requesting = true
+	_set_poker_controls_enabled(false)
+	var body := {"action": action, "amount": amount}
+	var error := poker_request.request(
+		POKER_URL_PREFIX + _poker_table_id.uri_encode() + "/act",
+		["Content-Type: application/json"],
+		HTTPClient.METHOD_POST,
+		JSON.stringify(body),
+	)
+	if error != OK:
+		_poker_requesting = false
+		_set_poker_controls_from_state(_poker_state)
+
+
+func _on_poker_raise_pressed() -> void:
+	_on_poker_action_pressed("raise", int(poker_raise_slider.value))
+
+
+func _on_poker_all_in_pressed() -> void:
+	var player := _poker_player_dict(_poker_state)
+	var total := int(player.get("street_bet", 0)) + int(player.get("stack", 0))
+	_on_poker_action_pressed("raise", total)
+
+
+func _on_poker_raise_slider_changed(value: float) -> void:
+	poker_raise_value_label.text = L10n.t("加注到 ") + str(int(value))
+
+
+func _on_poker_next_hand_pressed() -> void:
+	if _poker_requesting or _poker_table_id.is_empty():
+		return
+	_poker_requesting = true
+	_set_poker_controls_enabled(false)
+	var error := poker_request.request(
+		POKER_URL_PREFIX + _poker_table_id.uri_encode() + "/next-hand",
+		["Content-Type: application/json"],
+		HTTPClient.METHOD_POST,
+		"{}",
+	)
+	if error != OK:
+		_poker_requesting = false
+		_set_poker_controls_from_state(_poker_state)
+
+
+func _on_poker_request_completed(
+	result: int,
+	response_code: int,
+	_headers: PackedStringArray,
+	body: PackedByteArray,
+) -> void:
+	_poker_requesting = false
+	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
+		poker_phase_label.text = L10n.t("后端未连接")
+		_set_poker_controls_from_state(_poker_state)
+		return
+	var json := JSON.new()
+	if json.parse(body.get_string_from_utf8()) != OK or typeof(json.data) != TYPE_DICTIONARY:
+		return
+	var data: Dictionary = json.data
+	if data.has("table_id"):
+		_poker_table_id = str(data.get("table_id", ""))
+		_poker_state = data.get("state", {})
+	else:
+		_poker_state = data
+	_render_poker_state(_poker_state)
+
+
+func _poker_player_dict(state: Dictionary) -> Dictionary:
+	for player in state.get("players", []):
+		if typeof(player) == TYPE_DICTIONARY and bool(player.get("is_player", false)):
+			return player
+	return {}
+
+
+func _poker_phase_label(phase: String) -> String:
+	match phase:
+		"preflop":
+			return L10n.t("翻牌前")
+		"flop":
+			return L10n.t("翻牌")
+		"turn":
+			return L10n.t("转牌")
+		"river":
+			return L10n.t("河牌")
+		"showdown":
+			return L10n.t("摊牌")
+		"finished":
+			return L10n.t("本手结束")
+		_:
+			return phase
+
+
+func _render_poker_state(state: Dictionary) -> void:
+	poker_phase_label.text = _poker_phase_label(str(state.get("phase", "")))
+	poker_pot_label.text = L10n.t("底池：") + str(state.get("pot", 0))
+	poker_hand_label.text = L10n.t("手牌 ") + str(state.get("hand_number", 0))
+	poker_result_label.text = str(state.get("result_message", ""))
+
+	var community: Array = state.get("community", [])
+	if typeof(community) == TYPE_ARRAY and not community.is_empty():
+		poker_community_label.text = L10n.t("公共牌：") + " ".join(community)
+	else:
+		poker_community_label.text = L10n.t("公共牌：—")
+
+	_clear_control_children(poker_players_list)
+	var current_actor := int(state.get("current_actor", -1))
+	var phase := str(state.get("phase", ""))
+	for player in state.get("players", []):
+		if typeof(player) != TYPE_DICTIONARY:
+			continue
+		poker_players_list.add_child(_build_poker_player_row(player, current_actor, phase))
+	_set_poker_controls_from_state(state)
+
+
+func _build_poker_player_row(player: Dictionary, current_actor: int, phase: String) -> Control:
+	var row := HBoxContainer.new()
+	var name_label := Label.new()
+	var is_player := bool(player.get("is_player", false))
+	name_label.text = (
+		(L10n.t("玩家") if is_player else str(player.get("name", "?")))
+		+ " "
+		+ L10n.t("筹码：")
+		+ str(player.get("stack", 0))
+	)
+	if bool(player.get("won_this_hand", false)):
+		name_label.text += " " + L10n.t("已胜出")
+	if int(player.get("seat", -1)) == current_actor and phase not in ["showdown", "finished"]:
+		name_label.text += " " + L10n.t("行动中")
+	row.add_child(name_label)
+	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var detail := Label.new()
+	var parts: Array[String] = []
+	if bool(player.get("folded", false)):
+		parts.append(L10n.t("已弃牌"))
+	if bool(player.get("all_in", false)):
+		parts.append(L10n.t("全下"))
+	if int(player.get("street_bet", 0)) > 0:
+		parts.append(L10n.t("本街 ") + str(player.get("street_bet", 0)))
+	if is_player:
+		var hole: Array = player.get("hole_cards", [])
+		if typeof(hole) == TYPE_ARRAY and not hole.is_empty():
+			parts.append(L10n.t("手牌：") + " ".join(hole))
+	detail.text = "  ".join(parts)
+	row.add_child(detail)
+	if bool(player.get("folded", false)):
+		for child in [name_label, detail]:
+			child.add_theme_color_override("font_color", Color(0.55, 0.6, 0.68))
+	return row
+
+
+func _set_poker_controls_enabled(enabled: bool) -> void:
+	poker_fold_button.disabled = not enabled
+	poker_check_call_button.disabled = not enabled
+	poker_raise_button.disabled = not enabled
+	poker_all_in_button.disabled = not enabled
+	poker_raise_slider.editable = enabled
+	poker_next_hand_button.disabled = not enabled
+
+
+func _set_poker_controls_from_state(state: Dictionary) -> void:
+	if state.is_empty():
+		_set_poker_controls_enabled(false)
+		return
+	var phase := str(state.get("phase", ""))
+	if phase in ["showdown", "finished"]:
+		poker_fold_button.disabled = true
+		poker_check_call_button.disabled = true
+		poker_raise_button.disabled = true
+		poker_all_in_button.disabled = true
+		poker_raise_slider.editable = false
+		poker_next_hand_button.disabled = false
+		return
+	var player := _poker_player_dict(state)
+	var is_turn := int(state.get("current_actor", -1)) == int(player.get("seat", -1))
+	var can_act := is_turn and not bool(player.get("folded", false)) and not bool(player.get("all_in", false))
+	poker_fold_button.disabled = not can_act
+	poker_check_call_button.disabled = not can_act
+	poker_raise_button.disabled = not can_act
+	poker_all_in_button.disabled = not can_act
+	poker_raise_slider.editable = can_act
+	poker_next_hand_button.disabled = true
+	if can_act:
+		var to_call := maxi(0, int(state.get("current_bet", 0)) - int(player.get("street_bet", 0)))
+		if to_call == 0:
+			poker_check_call_button.text = L10n.t("过牌")
+		else:
+			poker_check_call_button.text = L10n.t("跟注 ") + str(to_call)
+		var min_raise := maxi(20, int(state.get("min_raise", 20)))
+		var max_raise := int(player.get("street_bet", 0)) + int(player.get("stack", 0))
+		poker_raise_slider.min_value = float(mini(min_raise, max_raise))
+		poker_raise_slider.max_value = float(maxi(min_raise, max_raise))
+		poker_raise_slider.value = float(mini(min_raise, max_raise))
+		poker_raise_value_label.text = L10n.t("加注到 ") + str(int(poker_raise_slider.value))
 
 
 func _on_archive_button_pressed() -> void:
