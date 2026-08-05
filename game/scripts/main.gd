@@ -367,8 +367,7 @@ const CHARACTER_SKIN_PATHS := {
 @onready var poker_phase_label: Label = $UI/PokerTableOverlay/Panel/Margin/VBox/StatusRow/PhaseLabel
 @onready var poker_pot_label: Label = $UI/PokerTableOverlay/Panel/Margin/VBox/StatusRow/PotLabel
 @onready var poker_hand_label: Label = $UI/PokerTableOverlay/Panel/Margin/VBox/StatusRow/HandLabel
-@onready var poker_community_label: Label = $UI/PokerTableOverlay/Panel/Margin/VBox/TablePanel/Margin/VBox/CommunityLabel
-@onready var poker_players_list: VBoxContainer = $UI/PokerTableOverlay/Panel/Margin/VBox/TablePanel/Margin/VBox/PlayersList
+@onready var poker_table_area: Control = $UI/PokerTableOverlay/Panel/Margin/VBox/TablePanel/Margin/VBox/TableArea
 @onready var poker_fold_button: Button = $UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow/FoldButton
 @onready var poker_check_call_button: Button = $UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow/CheckCallButton
 @onready var poker_raise_button: Button = $UI/PokerTableOverlay/Panel/Margin/VBox/ActionRow/RaiseButton
@@ -486,6 +485,8 @@ var _poker_table_id := ""
 var _poker_requesting := false
 var _poker_state: Dictionary = {}
 var _poker_recorded_hand_number := 0
+var _poker_last_seen_bets: Dictionary = {}
+var _poker_last_history_len := 0
 var _recovered_game_ids: Array[String] = []
 var _sound_enabled := true
 var _bgm_volume := 70.0
@@ -4164,21 +4165,225 @@ func _render_poker_state(state: Dictionary) -> void:
 	poker_hand_label.text = L10n.t("手牌 ") + str(state.get("hand_number", 0))
 	poker_result_label.text = str(state.get("result_message", ""))
 
-	var community: Array = state.get("community", [])
-	if typeof(community) == TYPE_ARRAY and not community.is_empty():
-		poker_community_label.text = L10n.t("公共牌：") + " ".join(community)
-	else:
-		poker_community_label.text = L10n.t("公共牌：—")
-
-	_clear_control_children(poker_players_list)
 	var current_actor := _safe_int(state.get("current_actor"), -1)
 	var phase := str(state.get("phase", ""))
-	for player in state.get("players", []):
-		if typeof(player) != TYPE_DICTIONARY:
+	var players: Array = state.get("players", [])
+
+	_clear_control_children(poker_table_area)
+	var area_size := poker_table_area.size
+	if area_size.x < 50.0:
+		area_size = Vector2(900, 420)
+	var center := area_size / 2.0 + Vector2(0, 14)
+
+	var table_graphic: Node2D = load("res://scripts/poker_table_graphic.gd").new()
+	table_graphic.position = center
+	poker_table_area.add_child(table_graphic)
+
+	var positions := _poker_seat_positions(players.size(), center)
+	for i in range(players.size()):
+		if typeof(players[i]) != TYPE_DICTIONARY:
 			continue
-		poker_players_list.add_child(_build_poker_player_row(player, current_actor, phase))
+		var is_acting := (
+			_safe_int(players[i].get("seat"), -1) == current_actor
+			and phase not in ["showdown", "finished"]
+		)
+		poker_table_area.add_child(
+			_build_poker_seat(players[i], positions[i], i == 0, is_acting)
+		)
+
+	_add_community_cards(center, state.get("community", []))
+	_add_pot_label(center, int(state.get("pot", 0)))
+	_poker_animate_chips(state, players, positions, center)
+	_poker_show_action_feedback(state)
 	_set_poker_controls_from_state(state)
 	_record_poker_result(state)
+
+
+func _poker_seat_positions(count: int, center: Vector2) -> Array:
+	var positions: Array = []
+	var radius := 186.0
+	for i in range(count):
+		var angle := PI / 2.0 + TAU * float(i) / float(count)
+		positions.append(center + Vector2(cos(angle), sin(angle)) * radius)
+	return positions
+
+
+func _poker_portrait_path(npc_name: String, is_player: bool) -> String:
+	if is_player:
+		return "res://assets/characters/player.svg"
+	return str(CHARACTER_SKIN_PATHS.get(npc_name, "res://assets/characters/player.svg"))
+
+
+func _poker_card_color(card_text: String) -> Color:
+	if card_text.contains("♥") or card_text.contains("♦"):
+		return Color(0.75, 0.2, 0.2, 1)
+	return Color(0.12, 0.12, 0.14, 1)
+
+
+func _build_poker_seat(player: Dictionary, pos: Vector2, is_player: bool, acting: bool) -> Control:
+	var seat := Control.new()
+	seat.custom_minimum_size = Vector2(140, 172)
+	seat.position = pos - Vector2(70, 86)
+
+	var back := PanelContainer.new()
+	back.set_anchors_preset(Control.PRESET_FULL_RECT)
+	back.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.98, 0.86, 0.45, 0.95) if acting else Color(0.95, 0.93, 0.84, 0.92)
+	style.corner_radius_top_left = 10
+	style.corner_radius_top_right = 10
+	style.corner_radius_bottom_right = 10
+	style.corner_radius_bottom_left = 10
+	style.border_width_left = 3
+	style.border_width_top = 3
+	style.border_width_right = 3
+	style.border_width_bottom = 3
+	style.border_color = Color(0.9, 0.6, 0.15, 1) if acting else Color(0.5, 0.42, 0.28, 0.8)
+	back.add_theme_stylebox_override("panel", style)
+	seat.add_child(back)
+
+	var portrait := Sprite2D.new()
+	var portrait_path := _poker_portrait_path(str(player.get("name", "")), is_player)
+	if ResourceLoader.exists(portrait_path):
+		portrait.texture = load(portrait_path)
+	portrait.position = Vector2(70, 60)
+	portrait.scale = Vector2(0.95, 0.95) if acting else Vector2(0.8, 0.8)
+	seat.add_child(portrait)
+
+	var name_label := Label.new()
+	name_label.text = (L10n.t("玩家") if is_player else str(player.get("name", "?")))
+	name_label.position = Vector2(0, 128)
+	name_label.size = Vector2(140, 22)
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	seat.add_child(name_label)
+
+	var stack_label := Label.new()
+	stack_label.text = L10n.t("筹码：") + str(player.get("stack", 0))
+	stack_label.position = Vector2(0, 149)
+	stack_label.size = Vector2(140, 18)
+	stack_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	stack_label.add_theme_font_size_override("font_size", 12)
+	seat.add_child(stack_label)
+
+	if int(player.get("street_bet", 0)) > 0:
+		var bet_label := Label.new()
+		bet_label.text = L10n.t("本街 ") + str(player.get("street_bet", 0))
+		bet_label.position = Vector2(0, 108)
+		bet_label.size = Vector2(140, 18)
+		bet_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		bet_label.add_theme_font_size_override("font_size", 13)
+		bet_label.add_theme_color_override("font_color", Color(0.65, 0.32, 0.1, 1))
+		seat.add_child(bet_label)
+
+	if bool(player.get("folded", false)):
+		seat.modulate.a = 0.45
+	if bool(player.get("won_this_hand", false)):
+		var win_label := Label.new()
+		win_label.text = "🏆"
+		win_label.position = Vector2(0, 82)
+		win_label.size = Vector2(140, 22)
+		win_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		win_label.add_theme_font_size_override("font_size", 18)
+		seat.add_child(win_label)
+	return seat
+
+
+func _add_community_cards(center: Vector2, community: Variant) -> void:
+	var cards: Array = community
+	var card_width := 52.0
+	var gap := 8.0
+	var start_x := center.x - 2.0 * (card_width + gap)
+	for i in range(5):
+		var card_pos := Vector2(start_x + i * (card_width + gap), center.y - 132.0)
+		var card := PanelContainer.new()
+		card.position = card_pos
+		card.custom_minimum_size = Vector2(card_width, 68)
+		var style := StyleBoxFlat.new()
+		style.bg_color = Color(1, 1, 1, 0.97)
+		style.corner_radius_top_left = 6
+		style.corner_radius_top_right = 6
+		style.corner_radius_bottom_right = 6
+		style.corner_radius_bottom_left = 6
+		style.border_width_left = 1
+		style.border_width_top = 1
+		style.border_width_right = 1
+		style.border_width_bottom = 1
+		style.border_color = Color(0.35, 0.28, 0.2, 0.9)
+		card.add_theme_stylebox_override("panel", style)
+		var label := Label.new()
+		label.set_anchors_preset(Control.PRESET_FULL_RECT)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		label.add_theme_font_size_override("font_size", 18)
+		if i < cards.size():
+			label.text = str(cards[i])
+			label.add_theme_color_override("font_color", _poker_card_color(str(cards[i])))
+		card.add_child(label)
+		poker_table_area.add_child(card)
+
+
+func _add_pot_label(center: Vector2, pot: int) -> void:
+	var pot_label := Label.new()
+	pot_label.text = L10n.t("底池：") + str(pot)
+	pot_label.position = center + Vector2(-80, -42)
+	pot_label.size = Vector2(160, 30)
+	pot_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pot_label.add_theme_font_size_override("font_size", 15)
+	pot_label.add_theme_color_override("font_color", Color(1, 0.9, 0.55, 1))
+	poker_table_area.add_child(pot_label)
+
+
+func _poker_animate_chips(state: Dictionary, players: Array, positions: Array, center: Vector2) -> void:
+	var hand_number := int(state.get("hand_number", 0))
+	if hand_number != _poker_last_seen_bets.get("_hand", 0):
+		_poker_last_seen_bets.clear()
+		_poker_last_seen_bets["_hand"] = hand_number
+	for i in range(players.size()):
+		if typeof(players[i]) != TYPE_DICTIONARY or i >= positions.size():
+			continue
+		var seat_id := int(players[i].get("seat", -1))
+		var bet := int(players[i].get("street_bet", 0))
+		var previous := int(_poker_last_seen_bets.get(seat_id, 0))
+		_poker_last_seen_bets[seat_id] = bet
+		if bet > previous:
+			var chip := ColorRect.new()
+			chip.color = Color(0.95, 0.8, 0.3, 1)
+			chip.size = Vector2(14, 14)
+			chip.position = positions[i] - Vector2(7, 7)
+			poker_table_area.add_child(chip)
+			var tween := create_tween()
+			tween.tween_property(chip, "position", center + Vector2(-7, -22), 0.45).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+			tween.parallel().tween_property(chip, "modulate:a", 0.0, 0.45)
+			tween.tween_callback(chip.queue_free)
+
+
+func _poker_show_action_feedback(state: Dictionary) -> void:
+	var history: Array = state.get("hand_history", [])
+	if history.size() <= _poker_last_history_len:
+		return
+	_poker_last_history_len = history.size()
+	var line := str(history[history.size() - 1])
+	var feedback := Label.new()
+	feedback.text = line
+	feedback.position = poker_table_area.size / 2.0 + Vector2(-190, 64)
+	feedback.size = Vector2(380, 34)
+	feedback.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	feedback.add_theme_font_size_override("font_size", 16)
+	feedback.add_theme_color_override("font_color", Color(0.14, 0.11, 0.08, 1))
+	var fb_style := StyleBoxFlat.new()
+	fb_style.bg_color = Color(1, 0.97, 0.86, 0.94)
+	fb_style.corner_radius_top_left = 8
+	fb_style.corner_radius_top_right = 8
+	fb_style.corner_radius_bottom_right = 8
+	fb_style.corner_radius_bottom_left = 8
+	feedback.add_theme_stylebox_override("normal", fb_style)
+	poker_table_area.add_child(feedback)
+	feedback.scale = Vector2(0.6, 0.6)
+	var tween := create_tween()
+	tween.tween_property(feedback, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.tween_interval(1.2)
+	tween.tween_property(feedback, "modulate:a", 0.0, 0.35)
+	tween.tween_callback(feedback.queue_free)
 
 
 func _safe_int(value: Variant, default_value: int) -> int:
@@ -4245,43 +4450,6 @@ func _poker_sweep(state: Dictionary) -> bool:
 			if int(player.get("stack", 0)) > 0:
 				return false
 	return true
-
-
-func _build_poker_player_row(player: Dictionary, current_actor: int, phase: String) -> Control:
-	var row := HBoxContainer.new()
-	var name_label := Label.new()
-	var is_player := bool(player.get("is_player", false))
-	name_label.text = (
-		(L10n.t("玩家") if is_player else str(player.get("name", "?")))
-		+ " "
-		+ L10n.t("筹码：")
-		+ str(player.get("stack", 0))
-	)
-	if bool(player.get("won_this_hand", false)):
-		name_label.text += " " + L10n.t("已胜出")
-	if int(player.get("seat", -1)) == current_actor and phase not in ["showdown", "finished"]:
-		name_label.text += " " + L10n.t("行动中")
-	row.add_child(name_label)
-	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-
-	var detail := Label.new()
-	var parts: Array[String] = []
-	if bool(player.get("folded", false)):
-		parts.append(L10n.t("已弃牌"))
-	if bool(player.get("all_in", false)):
-		parts.append(L10n.t("全下"))
-	if int(player.get("street_bet", 0)) > 0:
-		parts.append(L10n.t("本街 ") + str(player.get("street_bet", 0)))
-	if is_player:
-		var hole: Array = player.get("hole_cards", [])
-		if typeof(hole) == TYPE_ARRAY and not hole.is_empty():
-			parts.append(L10n.t("手牌：") + " ".join(hole))
-	detail.text = "  ".join(parts)
-	row.add_child(detail)
-	if bool(player.get("folded", false)):
-		for child in [name_label, detail]:
-			child.add_theme_color_override("font_color", Color(0.55, 0.6, 0.68))
-	return row
 
 
 func _set_poker_controls_enabled(enabled: bool) -> void:

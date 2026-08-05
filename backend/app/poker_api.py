@@ -8,6 +8,7 @@ render the returned snapshot directly.
 
 from __future__ import annotations
 
+import random
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -38,7 +39,16 @@ class PokerActionRequest(BaseModel):
 
 
 def _build_npc_players(count: int, buy_in: int) -> list[PokerPlayer]:
-    selected = NPC_NAMES[:count]
+    return _build_npc_players_seeded(count, buy_in, None)
+
+
+def _build_npc_players_seeded(
+    count: int,
+    buy_in: int,
+    seed: Optional[int],
+) -> list[PokerPlayer]:
+    rng = random.Random(seed) if seed is not None else random.SystemRandom()
+    selected = rng.sample(NPC_NAMES, min(count, len(NPC_NAMES)))
     return [
         PokerPlayer(
             seat=index + 1,
@@ -85,7 +95,11 @@ def create_poker_table(request: PokerCreateRequest) -> dict[str, object]:
     global POKER_TABLE_SEQ
     POKER_TABLE_SEQ += 1
     table_id = f"poker_{POKER_TABLE_SEQ:04d}"
-    npc_players = _build_npc_players(request.npc_count, request.buy_in)
+    npc_players = _build_npc_players_seeded(
+        request.npc_count,
+        request.buy_in,
+        request.seed,
+    )
     players = [
         PokerPlayer(
             seat=0,
