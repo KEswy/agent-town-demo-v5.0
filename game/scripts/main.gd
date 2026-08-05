@@ -379,6 +379,7 @@ const CHARACTER_SKIN_PATHS := {
 @onready var poker_request: HTTPRequest = $PokerRequest
 @onready var poker_hall_door: Area2D = $PokerHallDoor
 @onready var board_game_door: Area2D = $BoardGameDoor
+@onready var venue_props: Node2D = $VenueProps
 @onready var highlights_label: Label = $UI/GameSummaryOverlay/Panel/Margin/VBox/HighlightsLabel
 @onready var export_review_button: Button = $UI/GameSummaryOverlay/Panel/Margin/VBox/HeaderRow/ExportReviewButton
 @onready var export_stats_button: Button = $UI/StatsOverlay/Panel/Margin/VBox/HeaderRow/ExportStatsButton
@@ -5594,6 +5595,7 @@ func _update_npc_roaming() -> void:
 		and not _latest_wolf_game_data.is_empty()
 	)
 	var poker_names: Array = _poker_npc_names()
+	venue_props.set_active(not wolf_locked)
 	for npc in get_tree().get_nodes_in_group("npc"):
 		var npc_name := str(npc.get("npc_name"))
 		if wolf_locked:

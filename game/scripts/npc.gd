@@ -44,6 +44,7 @@ var _rng := RandomNumberGenerator.new()
 var _activity_lines: Array = []
 var _next_bubble_at := 0
 var _bubble_visible_until := 0
+var _stationary := false
 
 @onready var body_shape: Polygon2D = $Body
 @onready var character_sprite: Sprite2D = $CharacterSprite
@@ -190,6 +191,10 @@ func _process_activity_bubble() -> void:
 func _init_movement() -> void:
 	_ring_position = VENUE_MAP.RING_SEATS.get(npc_name, position)
 	_rng.randomize()
+	_stationary = VENUE_MAP.STATIONARY_SPOTS.has(npc_name)
+	if _stationary:
+		var home_center := VENUE_MAP.venue_center(VENUE_MAP.home_venue(npc_name))
+		position = home_center + VENUE_MAP.STATIONARY_SPOTS[npc_name]
 	var personality: Dictionary = _npc_personality()
 	var aggressiveness := float(personality.get("aggressiveness", 0.5))
 	var cautiousness := float(personality.get("cautiousness", 0.5))
@@ -204,6 +209,10 @@ func _npc_personality() -> Dictionary:
 
 func _process_movement(delta: float) -> void:
 	if not _roaming_enabled and not _locked:
+		return
+	if _stationary and not _locked:
+		# Stay put and do a gentle idle bob instead of walking.
+		body_shape.position.y = -abs(sin(Time.get_ticks_msec() / 220.0)) * 2.0
 		return
 	if _move_state == "walk_to":
 		var offset := _move_target - position
@@ -242,7 +251,7 @@ func _process_movement(delta: float) -> void:
 
 
 func _choose_walk_target(initial: bool = false) -> void:
-	if not _roaming_enabled:
+	if not _roaming_enabled or (_stationary and not _locked):
 		return
 	var home_venue := VENUE_MAP.home_venue(npc_name)
 	var home_center := VENUE_MAP.venue_center(home_venue)

@@ -15837,7 +15837,7 @@ def check_godot_ui_layout() -> None:
         'text = "确认提交"',
         '[node name="PlayerSpeechPreviewRequest" type="HTTPRequest"',
         '[node name="SheriffOverviewLabel" type="Label"',
-        'position = Vector2(1400, -160)',
+        'position = Vector2(1060, -160)',
         'position = Vector2(-660, -80)',
         'position = Vector2(-1180, -300)',
     ]
