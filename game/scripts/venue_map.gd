@@ -9,55 +9,45 @@ const POKER_DOOR_POSITION := Vector2(900, -260)
 
 const VENUES := {
 	"球场": {
-		"center": Vector2(880, 165),
-		"radius": 92.0,
-		"fill": Color(0.45, 0.7, 0.38, 0.8),
-		"ring": Color(1, 1, 1, 0.85),
+		"center": Vector2(1150, -160),
+		"radius": 150.0,
 		"label": "球场",
 		"kind": "football_field",
 	},
 	"至圣所": {
-		"center": Vector2(-430, -140),
-		"radius": 86.0,
-		"fill": Color(0.24, 0.21, 0.45, 0.85),
-		"ring": Color(0.88, 0.66, 0.26, 0.95),
+		"center": Vector2(-980, -300),
+		"radius": 130.0,
 		"label": "至圣所",
 		"kind": "sanctum",
 	},
 	"点心屋": {
-		"center": Vector2(-170, 0),
-		"radius": 76.0,
-		"fill": Color(0.94, 0.8, 0.58, 0.88),
-		"ring": Color(0.78, 0.5, 0.28, 0.95),
+		"center": Vector2(-80, 420),
+		"radius": 120.0,
 		"label": "点心屋",
 		"kind": "snack_house",
 	},
 	"心情邮局": {
-		"center": Vector2(870, -15),
-		"radius": 78.0,
-		"fill": Color(0.86, 0.72, 0.92, 0.88),
-		"ring": Color(0.52, 0.32, 0.62, 0.95),
+		"center": Vector2(1250, 80),
+		"radius": 120.0,
 		"label": "心情邮局",
 		"kind": "post_office",
 	},
 	"德州扑克馆": {
-		"center": Vector2(900, -260),
-		"radius": 74.0,
-		"fill": Color(0.36, 0.46, 0.56, 0.88),
-		"ring": Color(0.95, 0.78, 0.25, 0.95),
+		"center": Vector2(1420, -450),
+		"radius": 140.0,
 		"label": "德州扑克馆",
 		"kind": "poker_hall",
 	},
 }
 
 const MINI_VENUES := {
-	"练歌台": {"center": Vector2(632, -118), "radius": 46.0, "label": "练歌台", "kind": "stage"},
-	"书房": {"center": Vector2(657, 41), "radius": 46.0, "label": "书房", "kind": "study"},
-	"钟楼": {"center": Vector2(584, 187), "radius": 50.0, "label": "钟楼", "kind": "clock_tower"},
-	"训练场": {"center": Vector2(437, 273), "radius": 52.0, "label": "训练场", "kind": "training"},
-	"工坊": {"center": Vector2(263, 273), "radius": 46.0, "label": "工坊", "kind": "workshop"},
-	"瞭望台": {"center": Vector2(116, 187), "radius": 46.0, "label": "瞭望台", "kind": "lookout"},
-	"野餐点": {"center": Vector2(43, 41), "radius": 48.0, "label": "野餐点", "kind": "picnic"},
+	"练歌台": {"center": Vector2(560, -560), "radius": 90.0, "label": "练歌台", "kind": "stage"},
+	"书房": {"center": Vector2(-820, -80), "radius": 90.0, "label": "书房", "kind": "study"},
+	"钟楼": {"center": Vector2(350, 520), "radius": 100.0, "label": "钟楼", "kind": "clock_tower"},
+	"训练场": {"center": Vector2(760, 520), "radius": 105.0, "label": "训练场", "kind": "training"},
+	"工坊": {"center": Vector2(-420, 500), "radius": 90.0, "label": "工坊", "kind": "workshop"},
+	"瞭望台": {"center": Vector2(1250, 320), "radius": 90.0, "label": "瞭望台", "kind": "lookout"},
+	"野餐点": {"center": Vector2(60, -560), "radius": 100.0, "label": "野餐点", "kind": "picnic"},
 }
 
 const NPC_HOMES := {
@@ -74,6 +64,23 @@ const NPC_HOMES := {
 	"塞尔达": "瞭望台",
 	"喜羊羊": "野餐点",
 	"懒羊羊": "野餐点",
+}
+
+## Fixed werewolf-game ring seats (they gather here in a circle during games).
+const RING_SEATS := {
+	"梅西": Vector2(350, -285),
+	"C罗": Vector2(518, -240),
+	"周深": Vector2(632, -118),
+	"梅长苏": Vector2(657, 41),
+	"塞尔达": Vector2(584, 187),
+	"小骑士": Vector2(437, 273),
+	"大黄蜂": Vector2(263, 273),
+	"喜羊羊": Vector2(116, 187),
+	"懒羊羊": Vector2(43, 41),
+	"洛洛": Vector2(68, -118),
+	"奇异博士": Vector2(182, -240),
+	"坏坏": Vector2(-170, 0),
+	"然然": Vector2(870, 0),
 }
 
 ## Client-side mirror of the backend NPC personalities (movement pacing only).

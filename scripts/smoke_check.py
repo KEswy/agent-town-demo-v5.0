@@ -15804,8 +15804,8 @@ def check_godot_ui_layout() -> None:
         '[node name="DoctorStrange" parent="." instance=ExtResource("3_npc_scene")]',
         '[node name="HuaiHuai" parent="." instance=ExtResource("3_npc_scene")]',
         '[node name="RanRan" parent="." instance=ExtResource("3_npc_scene")]',
-        'position = Vector2(-170, 0)',
-        'position = Vector2(870, 0)',
+        'position = Vector2(-50, 540)',
+        'position = Vector2(1210, 190)',
         '[node name="NightActionOption" type="OptionButton"',
         '[node name="HunterActionRow" type="HBoxContainer"',
         '[node name="HunterShotRequest" type="HTTPRequest"',
@@ -15837,9 +15837,9 @@ def check_godot_ui_layout() -> None:
         'text = "确认提交"',
         '[node name="PlayerSpeechPreviewRequest" type="HTTPRequest"',
         '[node name="SheriffOverviewLabel" type="Label"',
-        'position = Vector2(350, -285)',
-        'position = Vector2(657, 41)',
-        'position = Vector2(182, -240)',
+        'position = Vector2(1280, -120)',
+        'position = Vector2(-900, -200)',
+        'position = Vector2(-860, -370)',
     ]
     for fragment in required_scene_fragments:
         if fragment not in scene_text:

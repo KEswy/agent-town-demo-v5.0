@@ -145,7 +145,7 @@ func _process(_delta: float) -> void:
 
 
 func _init_movement() -> void:
-	_ring_position = position
+	_ring_position = VENUE_MAP.RING_SEATS.get(npc_name, position)
 	_rng.randomize()
 	var personality: Dictionary = _npc_personality()
 	var aggressiveness := float(personality.get("aggressiveness", 0.5))
@@ -205,7 +205,14 @@ func _choose_walk_target(initial: bool = false) -> void:
 	var home_center := VENUE_MAP.venue_center(home_venue)
 	var roll := _rng.randf()
 	if roll < 0.58 or initial:
-		_move_target = home_center
+		var radius := float(VENUE_MAP.VENUES.get(home_venue, {}).get("radius", 90.0))
+		if VENUE_MAP.MINI_VENUES.has(home_venue):
+			radius = float(VENUE_MAP.MINI_VENUES[home_venue].get("radius", 90.0))
+		# Walk around the building rather than standing on top of it.
+		_move_target = home_center + Vector2(
+			(_rng.randf() - 0.5) * radius * 1.7,
+			(_rng.randf() - 0.5) * radius * 1.7,
+		)
 	else:
 		var targets: Array = VENUE_MAP.interest_targets(npc_name)
 		_move_target = targets[_rng.randi_range(0, targets.size() - 1)]
