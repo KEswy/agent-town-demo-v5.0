@@ -7513,8 +7513,14 @@ if sheriff_before_vote is not None:
     )
     if sheriff_ballot is not None and sheriff_ballot.weight != 1.5:
         raise SystemExit("sheriff ballot should count as 1.5 votes")
-if GAME_STORE[response.game_id].phase not in {"NIGHT", "GAME_OVER"}:
-    raise SystemExit("vote resolve should move game to next NIGHT or GAME_OVER")
+phase_after_vote = GAME_STORE[response.game_id].phase
+# The exiled character may be the hunter, which legitimately opens the
+# HUNTER_SHOT window after the ballot; accept it like NIGHT/GAME_OVER.
+if phase_after_vote not in {"NIGHT", "GAME_OVER", "HUNTER_SHOT"}:
+    raise SystemExit(
+        "vote resolve should move game to next NIGHT/GAME_OVER/HUNTER_SHOT, "
+        f"got {phase_after_vote}"
+    )
 
 social_changed = False
 for character in GAME_STORE[response.game_id].characters:
@@ -15896,7 +15902,7 @@ def check_godot_ui_layout() -> None:
         if fragment not in scene_text:
             raise SmokeCheckError("resident scene introduction is not synchronized with its visual identity")
 
-    if scene_text.count('theme = SubResource("Theme_light_ui")') != 12:
+    if scene_text.count('theme = SubResource("Theme_light_ui")') != 13:
         raise SmokeCheckError("every light UI root should use the black-text light theme")
     light_ui_start = scene_text.index('[node name="PhaseHUD" type="Control" parent="UI"]')
     light_ui_end = scene_text.index('[node name="GameSummaryOverlay" type="Control" parent="UI"]')

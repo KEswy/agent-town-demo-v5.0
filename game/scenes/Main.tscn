@@ -1591,6 +1591,11 @@ custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 text = "本局复盘"
 
+[node name="SpectateButton" type="Button" parent="UI/MenuOverlay/Panel/Margin/VBox"]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+text = "观战"
+
 [node name="ResourcesSectionLabel" type="Label" parent="UI/MenuOverlay/Panel/Margin/VBox"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 12
@@ -1757,6 +1762,155 @@ layout_mode = 2
 theme_override_font_sizes/font_size = 12
 text = "提示：也可在“新对局”弹窗选择存档槽位后点击“继续上局”恢复。"
 autowrap_mode = 3
+
+[node name="SpectateOverlay" type="Control" parent="UI"]
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+theme = SubResource("Theme_light_ui")
+
+[node name="Shade" type="ColorRect" parent="UI/SpectateOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.08, 0.22, 0.31, 0.58)
+
+[node name="Panel" type="PanelContainer" parent="UI/SpectateOverlay"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -480.0
+offset_top = -300.0
+offset_right = 480.0
+offset_bottom = 300.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_setup")
+
+[node name="Margin" type="MarginContainer" parent="UI/SpectateOverlay/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 22
+theme_override_constants/margin_top = 18
+theme_override_constants/margin_right = 22
+theme_override_constants/margin_bottom = 18
+
+[node name="VBox" type="VBoxContainer" parent="UI/SpectateOverlay/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="HeaderRow" type="HBoxContainer" parent="UI/SpectateOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="TitleLabel" type="Label" parent="UI/SpectateOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 20
+text = "观战"
+vertical_alignment = 1
+
+[node name="GameSelect" type="OptionButton" parent="UI/SpectateOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+tooltip_text = "选择要观看的进行中对局"
+
+[node name="RefreshButton" type="Button" parent="UI/SpectateOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+text = "刷新"
+
+[node name="CloseButton" type="Button" parent="UI/SpectateOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+text = "关闭"
+
+[node name="Body" type="HBoxContainer" parent="UI/SpectateOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 12
+
+[node name="LeftPanel" type="PanelContainer" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body"]
+custom_minimum_size = Vector2(350, 0)
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_light_control")
+
+[node name="Margin" type="MarginContainer" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body/LeftPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 10
+
+[node name="VBox" type="VBoxContainer" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body/LeftPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="StatusRow" type="HBoxContainer" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body/LeftPanel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="PhaseLabel" type="Label" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body/LeftPanel/Margin/VBox/StatusRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "等待对局"
+vertical_alignment = 1
+
+[node name="DayLabel" type="Label" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body/LeftPanel/Margin/VBox/StatusRow"]
+layout_mode = 2
+text = ""
+vertical_alignment = 1
+
+[node name="WinnerLabel" type="Label" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body/LeftPanel/Margin/VBox/StatusRow"]
+layout_mode = 2
+text = ""
+vertical_alignment = 1
+
+[node name="CharacterScroll" type="ScrollContainer" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body/LeftPanel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="CharacterGrid" type="GridContainer" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body/LeftPanel/Margin/VBox/CharacterScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+columns = 2
+
+[node name="RightPanel" type="PanelContainer" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = SubResource("StyleBoxFlat_light_control")
+
+[node name="Margin" type="MarginContainer" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body/RightPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 10
+
+[node name="VBox" type="VBoxContainer" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body/RightPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="TimelineTitle" type="Label" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body/RightPanel/Margin/VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "公开时间线"
+
+[node name="TimelineScroll" type="ScrollContainer" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body/RightPanel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="TimelineList" type="VBoxContainer" parent="UI/SpectateOverlay/Panel/Margin/VBox/Body/RightPanel/Margin/VBox/TimelineScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 6
 
 [node name="ArchiveOverlay" type="Control" parent="UI"]
 visible = false
@@ -2201,6 +2355,45 @@ text = "下一步"
 
 [node name="DialogBox" parent="UI" instance=ExtResource("4_dialog_scene")]
 
+[node name="AchievementToast" type="Control" parent="UI"]
+visible = false
+layout_mode = 3
+anchors_preset = 10
+anchor_right = 1.0
+offset_bottom = 120.0
+grow_horizontal = 2
+mouse_filter = 2
+
+[node name="Panel" type="PanelContainer" parent="UI/AchievementToast"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -230.0
+offset_top = -34.0
+offset_right = 230.0
+offset_bottom = 34.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_setup")
+
+[node name="Margin" type="MarginContainer" parent="UI/AchievementToast/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 18
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 18
+theme_override_constants/margin_bottom = 10
+
+[node name="Label" type="Label" parent="UI/AchievementToast/Panel/Margin"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 18
+text = "成就解锁"
+horizontal_alignment = 1
+vertical_alignment = 1
+
 [node name="ChatRequest" type="HTTPRequest" parent="."]
 
 [node name="MemoryViewRequest" type="HTTPRequest" parent="."]
@@ -2246,3 +2439,11 @@ text = "下一步"
 [node name="SaveGameRequest" type="HTTPRequest" parent="."]
 
 [node name="ArchiveRequest" type="HTTPRequest" parent="."]
+
+[node name="SpectateGamesRequest" type="HTTPRequest" parent="."]
+
+[node name="SpectateRequest" type="HTTPRequest" parent="."]
+
+[node name="SpectatePollTimer" type="Timer" parent="."]
+wait_time = 1.5
+autostart = false

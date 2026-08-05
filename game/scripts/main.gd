@@ -26,8 +26,12 @@ const WOLF_COMBINED_VOTE_URL := "http://127.0.0.1:8000/api/vote/submit-and-resol
 const WOLF_RECOVERY_STATUS_URL := "http://127.0.0.1:8000/api/game/recovery-status"
 const KNOWLEDGE_SEARCH_URL := "http://127.0.0.1:8000/knowledge/search"
 const NPCS_URL := "http://127.0.0.1:8000/npcs"
+const SPECTATE_GAMES_URL := "http://127.0.0.1:8000/api/spectate/active-games"
+const SPECTATE_URL_PREFIX := "http://127.0.0.1:8000/api/spectate/"
 const SESSION_SETTINGS_PATH := "user://agent_town_session.cfg"
 const STATS_PATH := "user://agent_town_stats.json"
+const ACHIEVEMENTS_PATH := "user://agent_town_achievements.cfg"
+const ACHIEVEMENTS_SECTION := "achievements"
 const SESSION_SETTINGS_SECTION := "session"
 const PLAYER_ID := "player"
 const RESPONSIVE_LAYOUT_SCHEMA_VERSION := "agent_town_responsive_layout.v1"
@@ -340,6 +344,21 @@ const CHARACTER_SKIN_PATHS := {
 	$UI/LoadOverlay/Panel/Margin/VBox/Slot2Row/LoadSlotButton,
 	$UI/LoadOverlay/Panel/Margin/VBox/Slot3Row/LoadSlotButton,
 ]
+@onready var spectate_button: Button = $UI/MenuOverlay/Panel/Margin/VBox/SpectateButton
+@onready var spectate_overlay: Control = $UI/SpectateOverlay
+@onready var spectate_close_button: Button = $UI/SpectateOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
+@onready var spectate_refresh_button: Button = $UI/SpectateOverlay/Panel/Margin/VBox/HeaderRow/RefreshButton
+@onready var spectate_game_select: OptionButton = $UI/SpectateOverlay/Panel/Margin/VBox/HeaderRow/GameSelect
+@onready var spectate_phase_label: Label = $UI/SpectateOverlay/Panel/Margin/VBox/Body/LeftPanel/Margin/VBox/StatusRow/PhaseLabel
+@onready var spectate_day_label: Label = $UI/SpectateOverlay/Panel/Margin/VBox/Body/LeftPanel/Margin/VBox/StatusRow/DayLabel
+@onready var spectate_winner_label: Label = $UI/SpectateOverlay/Panel/Margin/VBox/Body/LeftPanel/Margin/VBox/StatusRow/WinnerLabel
+@onready var spectate_character_grid: GridContainer = $UI/SpectateOverlay/Panel/Margin/VBox/Body/LeftPanel/Margin/VBox/CharacterScroll/CharacterGrid
+@onready var spectate_timeline_list: VBoxContainer = $UI/SpectateOverlay/Panel/Margin/VBox/Body/RightPanel/Margin/VBox/TimelineScroll/TimelineList
+@onready var spectate_games_request: HTTPRequest = $SpectateGamesRequest
+@onready var spectate_request: HTTPRequest = $SpectateRequest
+@onready var spectate_poll_timer: Timer = $SpectatePollTimer
+@onready var achievement_toast: Control = $UI/AchievementToast
+@onready var achievement_toast_label: Label = $UI/AchievementToast/Panel/Margin/Label
 @onready var highlights_label: Label = $UI/GameSummaryOverlay/Panel/Margin/VBox/HighlightsLabel
 @onready var export_review_button: Button = $UI/GameSummaryOverlay/Panel/Margin/VBox/HeaderRow/ExportReviewButton
 @onready var export_stats_button: Button = $UI/StatsOverlay/Panel/Margin/VBox/HeaderRow/ExportStatsButton
@@ -439,6 +458,9 @@ var _replay_playing := false
 var _tutorial_hints := true
 var _session_variant := "classic"
 var _session_npc_policy_mode := "local"
+var _spectate_current_game_id := ""
+var _achievement_toast_queue: Array[String] = []
+var _achievement_chime: AudioStreamWAV
 var _recovered_game_ids: Array[String] = []
 var _sound_enabled := true
 var _bgm_volume := 70.0
@@ -624,6 +646,13 @@ func _ready() -> void:
 	load_close_button.pressed.connect(_on_load_close_button_pressed)
 	for slot_index in range(load_slot_buttons.size()):
 		load_slot_buttons[slot_index].pressed.connect(_on_load_slot_pressed.bind(slot_index + 1))
+	spectate_button.pressed.connect(_on_spectate_button_pressed)
+	spectate_close_button.pressed.connect(_on_spectate_close_button_pressed)
+	spectate_refresh_button.pressed.connect(_on_spectate_refresh_button_pressed)
+	spectate_game_select.item_selected.connect(_on_spectate_game_selected)
+	spectate_poll_timer.timeout.connect(_request_spectate_snapshot)
+	spectate_games_request.request_completed.connect(_on_spectate_games_request_completed)
+	spectate_request.request_completed.connect(_on_spectate_request_completed)
 	archive_close_button.pressed.connect(_on_archive_close_button_pressed)
 	archive_request.request_completed.connect(_on_archive_request_completed)
 	export_review_button.pressed.connect(_on_export_review_pressed)
@@ -3144,6 +3173,7 @@ func _save_game_stats(summary: Dictionary) -> void:
 		games = games.slice(games.size() - 200, games.size())
 	stats["games"] = games
 	_write_game_stats(stats)
+	_check_new_achievements()
 
 
 func _summary_character_lookup(summary: Dictionary) -> Dictionary:
@@ -3646,6 +3676,213 @@ func _on_load_slot_pressed(slot_index: int) -> void:
 	_on_continue_game_button_pressed()
 
 
+func _on_spectate_button_pressed() -> void:
+	_hide_menu_overlay()
+	spectate_overlay.visible = true
+	spectate_overlay.add_to_group("dialog_open")
+	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
+	_request_spectate_games()
+	call_deferred("_focus_control_if_available", spectate_close_button)
+
+
+func _on_spectate_close_button_pressed() -> void:
+	spectate_poll_timer.stop()
+	_spectate_current_game_id = ""
+	spectate_overlay.visible = false
+	spectate_overlay.remove_from_group("dialog_open")
+	spectate_close_button.release_focus()
+	_release_focus_to_world()
+
+
+func _on_spectate_refresh_button_pressed() -> void:
+	_request_spectate_games()
+
+
+func _request_spectate_games() -> void:
+	var error := spectate_games_request.request(SPECTATE_GAMES_URL, [], HTTPClient.METHOD_GET)
+	if error != OK:
+		spectate_phase_label.text = L10n.t("后端未连接")
+
+
+func _on_spectate_games_request_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
+		spectate_phase_label.text = L10n.t("后端未连接")
+		return
+	var json := JSON.new()
+	if json.parse(body.get_string_from_utf8()) != OK or typeof(json.data) != TYPE_ARRAY:
+		spectate_phase_label.text = L10n.t("暂无进行中的对局")
+		return
+	var games: Array = json.data
+	spectate_game_select.clear()
+	if games.is_empty():
+		spectate_game_select.add_item(L10n.t("暂无进行中的对局"), 0)
+		spectate_phase_label.text = L10n.t("暂无进行中的对局")
+		spectate_poll_timer.stop()
+		_spectate_current_game_id = ""
+		_clear_spectate_view()
+		return
+	for game in games:
+		var label := (
+			str(game.get("game_id", ""))
+			+ " · "
+			+ L10n.t("第 ")
+			+ str(game.get("day", 1))
+			+ L10n.t(" 天")
+			+ " · "
+			+ str(game.get("player_name", ""))
+		)
+		spectate_game_select.add_item(label)
+		spectate_game_select.set_item_metadata(
+			spectate_game_select.get_item_count() - 1,
+			str(game.get("game_id", "")),
+		)
+	_spectate_current_game_id = str(spectate_game_select.get_item_metadata(0))
+	spectate_game_select.selected = 0
+	_request_spectate_snapshot()
+	spectate_poll_timer.start()
+
+
+func _on_spectate_game_selected(_index: int) -> void:
+	if spectate_game_select.get_item_count() == 0:
+		return
+	_spectate_current_game_id = str(spectate_game_select.get_item_metadata(spectate_game_select.selected))
+	_request_spectate_snapshot()
+	if spectate_poll_timer.is_stopped():
+		spectate_poll_timer.start()
+
+
+func _request_spectate_snapshot() -> void:
+	if _spectate_current_game_id.is_empty():
+		return
+	spectate_request.request(
+		SPECTATE_URL_PREFIX + _spectate_current_game_id.uri_encode(),
+		[],
+		HTTPClient.METHOD_GET,
+	)
+
+
+func _on_spectate_request_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
+		spectate_phase_label.text = L10n.t("读取失败")
+		return
+	var json := JSON.new()
+	if json.parse(body.get_string_from_utf8()) != OK or typeof(json.data) != TYPE_DICTIONARY:
+		return
+	_render_spectate_view(json.data)
+
+
+func _clear_spectate_view() -> void:
+	_clear_control_children(spectate_character_grid)
+	_clear_control_children(spectate_timeline_list)
+	spectate_day_label.text = ""
+	spectate_winner_label.text = ""
+	spectate_phase_label.text = L10n.t("等待对局")
+
+
+func _spectate_phase_label(phase: String) -> String:
+	match phase:
+		"NIGHT":
+			return "🌙 " + L10n.t("夜晚")
+		"HUNTER_SHOT":
+			return "🔫 " + L10n.t("猎人开枪")
+		"SHERIFF_SIGNUP":
+			return "🚨 " + L10n.t("警上报名")
+		"SHERIFF_SPEECH":
+			return "🚨 " + L10n.t("警上发言")
+		"SHERIFF_WITHDRAWAL":
+			return "🚨 " + L10n.t("退水阶段")
+		"SHERIFF_VOTE":
+			return "🗳 " + L10n.t("警长投票")
+		"SHERIFF_RUNOFF_SPEECH", "SHERIFF_RUNOFF_VOTE":
+			return "⚖️ " + L10n.t("警上 PK")
+		"MEETING_ORDER":
+			return "🗣 " + L10n.t("警长选发言侧")
+		"DAY_MEETING":
+			return "☀️ " + L10n.t("白天会议")
+		"SHERIFF_NOMINATION":
+			return "🗣 " + L10n.t("警长归票")
+		"FREE_ACTIVITY":
+			return "🚶 " + L10n.t("自由活动")
+		"VOTE":
+			return "🗳 " + L10n.t("投票阶段")
+		"BADGE_TRANSFER":
+			return "🎖 " + L10n.t("移交警徽")
+		"GAME_OVER":
+			return "🏁 " + L10n.t("游戏结束")
+		_:
+			return phase
+
+
+func _render_spectate_view(data: Dictionary) -> void:
+	spectate_phase_label.text = _spectate_phase_label(str(data.get("phase", "")))
+	spectate_day_label.text = L10n.t("第 ") + str(data.get("day", 0)) + L10n.t(" 天")
+	var winner := str(data.get("winner", ""))
+	spectate_winner_label.text = (
+		L10n.t("好人胜利")
+		if winner == "good"
+		else (L10n.t("狼人胜利") if winner == "werewolf" else "")
+	)
+
+	_clear_control_children(spectate_character_grid)
+	var characters: Array = data.get("characters", [])
+	if typeof(characters) == TYPE_ARRAY:
+		for character in characters:
+			if typeof(character) == TYPE_DICTIONARY:
+				spectate_character_grid.add_child(_build_spectate_character_card(character))
+
+	_clear_control_children(spectate_timeline_list)
+	var rows: Array[String] = []
+	var timeline: Dictionary = data.get("public_evidence_timeline", {})
+	var timeline_items: Variant = timeline.get("items", [])
+	if typeof(timeline_items) == TYPE_ARRAY:
+		for item in timeline_items:
+			if typeof(item) == TYPE_DICTIONARY and not str(item.get("display_text", "")).is_empty():
+				rows.append("◇ " + str(item.get("display_text", "")))
+	var intel: Array = data.get("public_intel", [])
+	if typeof(intel) == TYPE_ARRAY:
+		for claim in intel:
+			if typeof(claim) == TYPE_DICTIONARY and not str(claim.get("display_text", "")).is_empty():
+				rows.append("◆ " + str(claim.get("display_text", "")))
+	var logs: Array = data.get("public_logs", [])
+	if typeof(logs) == TYPE_ARRAY:
+		for log in logs:
+			rows.append("● " + str(log))
+	if rows.is_empty():
+		rows.append(L10n.t("暂无时间线。"))
+	for row in rows:
+		var label := Label.new()
+		label.text = row
+		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		spectate_timeline_list.add_child(label)
+
+
+func _build_spectate_character_card(character: Dictionary) -> Control:
+	var box := VBoxContainer.new()
+	var name_line := Label.new()
+	name_line.text = str(character.get("id", "?")) + L10n.t("号 ") + str(character.get("name", "?"))
+	var tags: Array[String] = []
+	if bool(character.get("is_player", false)):
+		tags.append(L10n.t("玩家"))
+	if bool(character.get("is_sheriff", false)):
+		tags.append(L10n.t("警长"))
+	if bool(character.get("idiot_flipped", false)):
+		tags.append(L10n.t("白痴翻牌"))
+	if not tags.is_empty():
+		name_line.text += " [" + ", ".join(tags) + "]"
+	if not bool(character.get("alive", true)):
+		name_line.add_theme_color_override("font_color", Color(0.55, 0.6, 0.68))
+	box.add_child(name_line)
+	var meta := Label.new()
+	var status := L10n.t("存活") if bool(character.get("alive", true)) else L10n.t("已出局")
+	var claimed_role := str(character.get("claimed_role", ""))
+	if not claimed_role.is_empty():
+		status += " · " + L10n.t("声明：") + _role_display_name(claimed_role)
+	meta.text = status
+	meta.add_theme_font_size_override("font_size", 12)
+	box.add_child(meta)
+	return box
+
+
 func _on_archive_button_pressed() -> void:
 	_hide_menu_overlay()
 	archive_overlay.visible = true
@@ -3788,14 +4025,14 @@ func _build_highlights(summary: Dictionary) -> Array[String]:
 	return highlights
 
 
-func _compute_achievements(stats: Dictionary) -> Array[String]:
-	var achievements: Array[String] = []
+func _achievement_entries(stats: Dictionary) -> Array:
+	var entries: Array = []
 	var games: Array = stats.get("games", [])
 	var total := games.size()
 	if total >= 1:
-		achievements.append("✅ 初来乍到：完成 1 局")
+		entries.append({"key": "first_game", "label": "✅ 初来乍到：完成 1 局"})
 	if total >= 10:
-		achievements.append("✅ 十局老兵：完成 10 局")
+		entries.append({"key": "veteran_10", "label": "✅ 十局老兵：完成 10 局"})
 	var wins := 0
 	var best_streak := 0
 	var streak := 0
@@ -3823,24 +4060,126 @@ func _compute_achievements(stats: Dictionary) -> Array[String]:
 		):
 			player_mvp += 1
 	if wins >= 1:
-		achievements.append("✅ 首胜")
+		entries.append({"key": "first_win", "label": "✅ 首胜"})
 	if best_streak >= 3:
-		achievements.append("✅ 常胜将军：连胜 3 局")
+		entries.append({"key": "streak_3", "label": "✅ 常胜将军：连胜 3 局"})
 	if int(role_wins.get("seer", 0)) >= 1:
-		achievements.append("✅ 预言家之光")
+		entries.append({"key": "seer_win", "label": "✅ 预言家之光"})
 	if int(role_wins.get("witch", 0)) >= 1:
-		achievements.append("✅ 女巫救世")
+		entries.append({"key": "witch_win", "label": "✅ 女巫救世"})
 	if int(role_wins.get("werewolf", 0)) >= 1:
-		achievements.append("✅ 狼王加冕")
+		entries.append({"key": "wolf_win", "label": "✅ 狼王加冕"})
 	if player_mvp >= 1:
-		achievements.append("✅ 关键先生：成为本局 MVP")
+		entries.append({"key": "mvp", "label": "✅ 关键先生：成为本局 MVP"})
 	if wolf_checks >= 3:
-		achievements.append("✅ 火眼金睛：累计验到 3 名狼人")
+		entries.append({"key": "seer_checks_3", "label": "✅ 火眼金睛：累计验到 3 名狼人"})
 	if votes_on_wolves >= 10:
-		achievements.append("✅ 放逐大师：累计 10 次放逐票命中狼人")
+		entries.append({"key": "exile_votes_10", "label": "✅ 放逐大师：累计 10 次放逐票命中狼人"})
+	return entries
+
+
+func _compute_achievements(stats: Dictionary) -> Array[String]:
+	var achievements: Array[String] = []
+	for entry in _achievement_entries(stats):
+		achievements.append(str(entry.get("label", "")))
 	if achievements.is_empty():
 		achievements.append("🔒 完成第一局解锁成就")
 	return achievements
+
+
+func _load_unlocked_achievements() -> Dictionary:
+	var unlocked := {}
+	var config := ConfigFile.new()
+	if config.load(ACHIEVEMENTS_PATH) == OK:
+		var keys: Variant = config.get_value(ACHIEVEMENTS_SECTION, "unlocked", [])
+		if typeof(keys) == TYPE_ARRAY:
+			for key in keys:
+				unlocked[str(key)] = true
+	return unlocked
+
+
+func _save_unlocked_achievements(keys: Array) -> void:
+	var config := ConfigFile.new()
+	config.load(ACHIEVEMENTS_PATH)
+	config.set_value(ACHIEVEMENTS_SECTION, "unlocked", keys)
+	config.save(ACHIEVEMENTS_PATH)
+
+
+func _check_new_achievements() -> void:
+	var stats := _load_game_stats()
+	var unlocked := _load_unlocked_achievements()
+	var entries := _achievement_entries(stats)
+	var all_keys: Array = []
+	var new_labels: Array[String] = []
+	for entry in entries:
+		var key := str(entry.get("key", ""))
+		all_keys.append(key)
+		if not key.is_empty() and not unlocked.has(key):
+			new_labels.append(str(entry.get("label", "")))
+	if new_labels.is_empty():
+		return
+	_save_unlocked_achievements(all_keys)
+	for label in new_labels:
+		_achievement_toast_queue.append(label)
+	_show_next_achievement_toast()
+
+
+func _show_next_achievement_toast() -> void:
+	if _achievement_toast_queue.is_empty():
+		return
+	achievement_toast_label.text = _achievement_toast_queue.pop_front()
+	achievement_toast.pivot_offset = achievement_toast.size / 2.0
+	achievement_toast.visible = true
+	achievement_toast.modulate.a = 1.0
+	achievement_toast.position = Vector2(achievement_toast.position.x, -90.0)
+	achievement_toast.scale = Vector2(0.82, 0.82)
+	_play_achievement_chime()
+	var tween := create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(achievement_toast, "position:y", 10.0, 0.30).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.tween_property(achievement_toast, "scale", Vector2(1.0, 1.0), 0.30).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.chain().tween_interval(2.6)
+	tween.chain().tween_property(achievement_toast, "modulate:a", 0.0, 0.5)
+	tween.chain().tween_callback(func() -> void:
+		achievement_toast.visible = false
+		_show_next_achievement_toast()
+	)
+
+
+func _build_achievement_chime() -> AudioStreamWAV:
+	var mix_rate := 22050
+	var sample_count := int(mix_rate * 1.1)
+	var data := PackedByteArray()
+	data.resize(sample_count * 2)
+	var notes := [523.25, 659.25, 783.99, 1046.5]
+	var note_samples := int(mix_rate * 0.22)
+	var index := 0
+	for note_index in range(notes.size()):
+		var freq := float(notes[note_index])
+		for i in range(note_samples):
+			if index >= sample_count:
+				break
+			var t := float(i) / mix_rate
+			var decay := exp(-3.0 * t)
+			var envelope := minf(1.0, float(note_samples - i) / (note_samples * 0.2))
+			var sample_value := sin(TAU * freq * t) * envelope * decay * 0.42
+			data.encode_s16(index * 2, int(clampf(sample_value, -1.0, 1.0) * 32767.0))
+			index += 1
+	var wav := AudioStreamWAV.new()
+	wav.format = AudioStreamWAV.FORMAT_16_BITS
+	wav.mix_rate = mix_rate
+	wav.stereo = false
+	wav.data = data
+	return wav
+
+
+func _play_achievement_chime() -> void:
+	if not _sound_enabled or _audio_sfx == null:
+		return
+	if _achievement_chime == null:
+		_achievement_chime = _build_achievement_chime()
+	_audio_sfx.stream = _achievement_chime
+	_audio_sfx.play()
 
 
 func _export_text_file(path_name: String, content: String) -> String:
