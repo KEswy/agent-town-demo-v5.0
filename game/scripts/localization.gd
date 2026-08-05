@@ -14,6 +14,19 @@ const DEFAULT_LANGUAGE := "zh"
 
 var language := DEFAULT_LANGUAGE
 
+## Reverse mapping so `t()` is fully reversible: switching zh -> en -> zh must
+## restore the original Chinese strings.  A few English values are shared by
+## more than one Chinese source ("Intel" -> 情报 / 对局情报); those get an
+## explicit override, and the UI walker additionally keeps per-node source
+## metadata so ambiguous values still round-trip exactly.
+const ENGLISH_REVERSE_OVERRIDES := {
+	"Intel": "情报",
+	"Player name": "玩家名",
+	"Free activity": "自由活动",
+	"Replay": "重播",
+}
+var ENGLISH_REVERSE: Dictionary = {}
+
 const ENGLISH := {
 	"上一步": "Back",
 	"下一步": "Next",
@@ -259,6 +272,13 @@ const ENGLISH := {
 }
 
 
+func _init() -> void:
+	for source in ENGLISH:
+		ENGLISH_REVERSE[ENGLISH[source]] = source
+	for translated in ENGLISH_REVERSE_OVERRIDES:
+		ENGLISH_REVERSE[translated] = ENGLISH_REVERSE_OVERRIDES[translated]
+
+
 func set_language(language_code: String) -> void:
 	var normalized := language_code.strip_edges().to_lower()
 	if not SUPPORTED_LANGUAGES.has(normalized):
@@ -269,8 +289,8 @@ func set_language(language_code: String) -> void:
 	language_changed.emit(language)
 
 
-func t(source: String) -> String:
-	if language == "zh" or source.is_empty():
+func english_of(source: String) -> String:
+	if source.is_empty():
 		return source
 	var translated: String = ENGLISH.get(source, "")
 	if not translated.is_empty():
@@ -280,3 +300,28 @@ func t(source: String) -> String:
 	if source.begins_with("记忆次数：第 ") and source.ends_with(" 次对话"):
 		return "Memory: " + source.trim_prefix("记忆次数：第 ").trim_suffix(" 次对话") + " conversation(s)"
 	return source
+
+
+func t(source: String) -> String:
+	if source.is_empty():
+		return source
+	if language == "zh":
+		if source.begins_with("Backend: "):
+			return "后端状态：" + source.trim_prefix("Backend: ")
+		var chinese: String = ENGLISH_REVERSE.get(source, "")
+		if not chinese.is_empty():
+			return chinese
+		return source
+	return english_of(source)
+
+
+## Recover the canonical Chinese source for a control whose text may already
+## hold the English translation (e.g. after a code path re-assigns it while
+## the UI language is English).  Non-English input is returned unchanged.
+func reverse_t(source: String) -> String:
+	if source.is_empty():
+		return source
+	if source.begins_with("Backend: "):
+		return "后端状态：" + source.trim_prefix("Backend: ")
+	var chinese: String = ENGLISH_REVERSE.get(source, "")
+	return chinese if not chinese.is_empty() else source

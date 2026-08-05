@@ -837,11 +837,41 @@ func _translate_control_tree(node: Node) -> void:
 	for child in node.get_children():
 		_translate_control_tree(child)
 	if node is LineEdit:
-		node.placeholder_text = L10n.t(node.placeholder_text)
+		var placeholder_source: String = str(node.get_meta("l10n_placeholder_source", ""))
+		if (
+			placeholder_source.is_empty()
+			or (
+				node.placeholder_text != placeholder_source
+				and node.placeholder_text != L10n.english_of(placeholder_source)
+			)
+		):
+			placeholder_source = L10n.reverse_t(node.placeholder_text)
+			node.set_meta("l10n_placeholder_source", placeholder_source)
+		node.placeholder_text = L10n.t(placeholder_source)
 	elif (node is BaseButton or node is Label) and not (node is OptionButton):
-		node.text = L10n.t(node.text)
+		var text_source: String = str(node.get_meta("l10n_text_source", ""))
+		if (
+			text_source.is_empty()
+			or (
+				node.text != text_source
+				and node.text != L10n.english_of(text_source)
+			)
+		):
+			text_source = L10n.reverse_t(node.text)
+			node.set_meta("l10n_text_source", text_source)
+		node.text = L10n.t(text_source)
 	if node is Control and not node.tooltip_text.is_empty():
-		node.tooltip_text = L10n.t(node.tooltip_text)
+		var tooltip_source: String = str(node.get_meta("l10n_tooltip_source", ""))
+		if (
+			tooltip_source.is_empty()
+			or (
+				node.tooltip_text != tooltip_source
+				and node.tooltip_text != L10n.english_of(tooltip_source)
+			)
+		):
+			tooltip_source = L10n.reverse_t(node.tooltip_text)
+			node.set_meta("l10n_tooltip_source", tooltip_source)
+		node.tooltip_text = L10n.t(tooltip_source)
 
 
 func _hide_game_setup(restore_focus: bool = true) -> void:
