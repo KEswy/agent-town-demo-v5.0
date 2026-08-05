@@ -339,7 +339,8 @@ backend/.venv/bin/python backend/training/analyze_policy_disagreements.py \
 
 ## 目录约定
 
-- 原始外部文件：放在项目外或 `backend/training/inbox/`，不要自动提交
+- 原始外部文件：放在项目外或 `backend/training/inbox/`，不要自动提交；唯一例外是
+  `codex_smart_audit.jsonl`——它是 CI 离线契约依赖的生成夹具，已提交进仓库
 - 规范化数据：`backend/training/datasets/`
 - 可加载模型：`backend/policy_artifacts/good_policy_v1/` 和
   `wolf_policy_v1/`

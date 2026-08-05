@@ -5,7 +5,8 @@ game/.godot/
 dist/
 backend/.venv/
 backend/data/
-backend/training/inbox/
+backend/training/inbox/*
+!backend/training/inbox/codex_smart_audit.jsonl
 *.sqlite3
 *.db
 chroma_db/
