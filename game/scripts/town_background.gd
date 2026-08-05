@@ -7,6 +7,8 @@ const WORLD_RECT := Rect2(-2000, -1500, 4000, 3000)
 const MEETING_CENTER := Vector2(350, 0)
 const POND_CENTER := Vector2(-250, 255)
 
+const VENUE_MAP = preload("res://scripts/venue_map.gd")
+
 const TREE_POSITIONS := [
 	Vector2(-880, -470), Vector2(-710, -590), Vector2(-500, -420),
 	Vector2(-195, -300), Vector2(-55, -360), Vector2(770, -310),
@@ -83,11 +85,36 @@ func _draw() -> void:
 	_draw_paths()
 	_draw_pond()
 	_draw_buildings()
+	_draw_venues()
 	_draw_meeting_square()
 	_draw_gardens()
 	_draw_trees()
 	_draw_square_furniture()
 	_draw_night_details()
+
+
+func _draw_venues() -> void:
+	var font := ThemeDB.fallback_font
+	for venue in [VENUE_MAP.VENUES, VENUE_MAP.MINI_VENUES]:
+		for venue_name in venue:
+			var data: Dictionary = venue[venue_name]
+			var center: Vector2 = data["center"]
+			var radius: float = data["radius"]
+			draw_circle(center, radius, data["fill"])
+			draw_arc(center, radius + 4.0, 0.0, TAU, 48, data["ring"], 3.0)
+			draw_string(
+				font,
+				center + Vector2(-radius * 0.55, 5.0),
+				str(data["label"]),
+				HORIZONTAL_ALIGNMENT_CENTER,
+				radius * 1.1,
+				14,
+				Color(1, 1, 1, 0.98),
+				TextServer.JUSTIFICATION_NONE,
+				TextServer.DIRECTION_AUTO,
+				TextServer.ORIENTATION_HORIZONTAL,
+				6,
+			)
 
 
 func _draw_ground() -> void:

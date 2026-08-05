@@ -192,6 +192,10 @@ class PokerTable:
         self.winner_seat: Optional[int] = None
         self.result_message = ""
         self.hand_history: list[str] = []
+        self.hand_start_stacks: dict[int, int] = {}
+        self.last_showdown: Optional[dict[str, object]] = None
+        self.street_raise_count = 0
+        self.last_raise_seat: Optional[int] = None
 
     def _deck(self) -> list[tuple[int, str]]:
         deck = build_deck()
@@ -202,6 +206,16 @@ class PokerTable:
         """Deal a fresh hand: rotate the button, post blinds, deal hole cards."""
 
         self.hand_number += 1
+        # Busted players are permanently out of the game.
+        for player in self.players:
+            if player.stack <= 0:
+                player.folded = True
+        self.last_showdown = None
+        self.street_raise_count = 0
+        self.last_raise_seat = None
+        self.hand_start_stacks = {
+            player.seat: player.stack for player in self.players
+        }
         self.community = []
         self.pot = 0
         self.phase = "preflop"
@@ -217,9 +231,19 @@ class PokerTable:
 
         self.dealer_seat = (self.dealer_seat + 1) % len(self.players)
         active_seats = [player.seat for player in self.players if player.stack > 0]
+        player = self.players[0] if self.players else None
+        if player is not None and player.stack <= 0:
+            self.phase = "finished"
+            self.result_message = "你已输光筹码，扑克对局结束。"
+            self.current_actor = None
+            return
         if len(active_seats) < 2:
             self.phase = "finished"
-            self.result_message = "牌桌不足两人，对局结束。"
+            self.result_message = (
+                "🎉 你横扫全场，赢光了所有 NPC！"
+                if player is not None and player.stack > 0
+                else "牌桌不足两人，对局结束。"
+            )
             return
 
         deck = self._deck()
@@ -317,6 +341,7 @@ class PokerTable:
             self.winner_seat = winner.seat
             self.result_message = f"{winner.name} 赢得底池 {self.pot}（其余玩家弃牌）。"
             self.pot = 0
+            self.last_showdown = self._build_showdown_record()
             return
 
         # Side-pot settlement: build contribution tiers from every player who
@@ -371,6 +396,30 @@ class PokerTable:
                 f"{best.name} 赢得底池 {pot_size}（" + CATEGORY_NAMES[best_hand[0]] + "）。"
             )
         self.pot = 0
+        self.last_showdown = self._build_showdown_record()
+
+    def _build_showdown_record(self) -> dict[str, object]:
+        player = self.players[0] if self.players else None
+        start_stack = self.hand_start_stacks.get(0, 0)
+        player_net = (player.stack - start_stack) if player is not None else 0
+        category = -1
+        player_category = -1
+        if self.phase == "showdown" and self.winner_seat is not None:
+            winner = self.players[self.winner_seat]
+            category = evaluate_hand(
+                list(winner.hole_cards or []) + list(self.community)
+            )[0]
+        if player is not None and not player.folded and player.hole_cards:
+            combined = list(player.hole_cards or []) + list(self.community)
+            if len(combined) >= 5:
+                player_category = evaluate_hand(combined)[0]
+        return {
+            "winner_seat": self.winner_seat,
+            "category": category,
+            "player_won": bool(player is not None and self.winner_seat == 0),
+            "player_net": player_net,
+            "player_category": player_category,
+        }
 
     def player_can_act(self, seat: int) -> bool:
         return (
@@ -427,6 +476,8 @@ class PokerTable:
             self.current_bet = total_commit
             self.min_raise = max(self.min_raise, amount)
             self.last_aggressor = seat
+            self.street_raise_count += 1
+            self.last_raise_seat = seat
             if player.stack == 0:
                 player.all_in = True
             self._sync_history(
@@ -449,11 +500,14 @@ class PokerTable:
             self.pot = 0
             self.phase = "finished"
             self.current_actor = None
+            self.last_showdown = self._build_showdown_record()
             return
 
         if self._street_actions_complete():
             for player in self.players:
                 player.street_bet = 0
+            self.street_raise_count = 0
+            self.last_raise_seat = None
             if self.phase == "preflop":
                 self._deal_street(3)
                 self.current_bet = 0
@@ -502,9 +556,12 @@ class PokerTable:
             "current_bet": self.current_bet,
             "min_raise": self.min_raise,
             "current_actor": self.current_actor,
+            "street_raise_count": self.street_raise_count,
+            "last_raise_seat": self.last_raise_seat,
             "winner_seat": self.winner_seat,
             "result_message": self.result_message,
             "hand_history": list(self.hand_history),
+            "last_showdown": self.last_showdown,
             "players": [
                 {
                     "seat": player.seat,
@@ -530,7 +587,8 @@ def build_ai_decision(
     table: PokerTable,
     seat: int,
 ) -> tuple[str, int]:
-    """Return the NPC's (action, amount) using personality + hand strength."""
+    """Return the NPC's (action, amount) using personality, position, and
+    street raise history (two-round raise reads)."""
 
     player = table.players[seat]
     personality = player.personality or {}
@@ -544,12 +602,23 @@ def build_ai_decision(
     all_cards = list(hole) + list(board)
     to_call = table.current_bet - player.street_bet
     pot_odds = (to_call / (table.pot + to_call)) if (table.pot + to_call) > 0 else 0.0
+    position_distance = (seat - table.dealer_seat) % len(table.players)
+    player_count = len(table.players)
+    street_raises = table.street_raise_count
+    aggressor_aggression = 0.5
+    if table.last_raise_seat is not None and table.last_raise_seat != seat:
+        aggressor_personality = (
+            table.players[table.last_raise_seat].personality or {}
+        )
+        aggressor_aggression = float(
+            aggressor_personality.get("aggressiveness", 0.5)
+        )
 
     if len(all_cards) >= 5:
         strength = evaluate_hand(all_cards)[0] / 8.0
     else:
-        # Preflop starting-hand heuristic.
-        strength = _preflop_strength(hole)
+        # Preflop starting-hand heuristic adjusted by table position.
+        strength = _preflop_strength(hole, position_distance, player_count)
 
     # Draw potential: count flush and open-ended straight outs on the turn/river.
     draw_bonus = _draw_bonus(hole, board)
@@ -561,20 +630,48 @@ def build_ai_decision(
     bluff_chance = 0.04 + deception * 0.10
     noise = (table.rng.random() - 0.5) * variance * 0.18
     score = effective + noise + looseness * 0.05
+    # Raise reads: a re-raise (or 3-bet) forces weak hands out, and facing an
+    # aggressive aggressor tightens the call range further.
+    raise_pressure = min(1.0, street_raises * 0.5)
+    fold_floor = (
+        0.32
+        + raise_pressure * 0.06
+        + (0.04 if aggressor_aggression > 0.62 else 0.0)
+    )
 
     # Fold weak hands facing a meaningful bet unless the pot is very cheap.
-    if to_call > 0 and score < 0.32 and to_call > table.big_blind:
+    if to_call > 0 and score < fold_floor and to_call > table.big_blind:
         if table.rng.random() > bluff_chance:
             return ("fold", 0)
 
     if to_call == 0:
-        if score > 0.58 + (1.0 - aggression) * 0.12:
+        # Late position (button/small blind in heads-up) can steal a cheap pot.
+        late_steal = (
+            position_distance <= 2
+            and score < 0.62
+            and table.rng.random() < 0.35 * aggression
+        )
+        if (
+            score > 0.58 + (1.0 - aggression) * 0.12
+            or late_steal
+        ):
             return ("raise", _choose_raise(table, player, seat, score, aggression))
         return ("check", 0)
 
     # Facing a bet: call if pot odds or hand justify it.
     if score > pot_odds + 0.18:
-        if score > 0.66 + (1.0 - aggression) * 0.10 or table.rng.random() < bluff_chance:
+        strong_raise = (
+            0.66
+            + (1.0 - aggression) * 0.10
+            + raise_pressure * 0.06
+        )
+        if street_raises >= 2:
+            # Re-raise pressure: medium hands just call; only strong hands
+            # 4-bet, and a conservative aggressor makes the 4-bet more likely.
+            strong_raise = 0.74 + raise_pressure * 0.10
+            if aggressor_aggression < 0.42:
+                strong_raise -= 0.06
+        if score > strong_raise or table.rng.random() < bluff_chance:
             return ("raise", _choose_raise(table, player, seat, score, aggression))
         return ("call", 0)
     if table.rng.random() < bluff_chance:
@@ -582,7 +679,11 @@ def build_ai_decision(
     return ("fold", 0)
 
 
-def _preflop_strength(hole: list[tuple[int, str]]) -> float:
+def _preflop_strength(
+    hole: list[tuple[int, str]],
+    position_distance: int,
+    player_count: int,
+) -> float:
     if len(hole) != 2:
         return 0.3
     r1, s1 = hole[0]
@@ -596,7 +697,17 @@ def _preflop_strength(hole: list[tuple[int, str]]) -> float:
         score += 0.08
     if s1 == s2:
         score += 0.05
-    return min(1.0, score)
+    if player_count == 2:
+        score += 0.10
+    elif position_distance == 0:
+        score += 0.08  # button
+    elif position_distance >= player_count - 2:
+        score += 0.05  # late positions (CO/HJ)
+    elif position_distance == 2:
+        score -= 0.02  # big blind defends a bit wider
+    elif position_distance == 1:
+        score -= 0.05  # small blind out of position
+    return min(1.0, max(0.0, score))
 
 
 def _draw_bonus(

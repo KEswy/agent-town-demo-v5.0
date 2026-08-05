@@ -136,5 +136,18 @@ theme_override_font_sizes/font_size = 13
 text = "Guide"
 horizontal_alignment = 1
 
+[node name="PokerIndicator" type="Label" parent="."]
+visible = false
+offset_left = -56.0
+offset_top = 8.0
+offset_right = 56.0
+offset_bottom = 34.0
+theme_override_colors/font_color = Color(0.1, 0.3, 0.25, 1)
+theme_override_colors/font_outline_color = Color(0.98, 0.94, 0.72, 0.96)
+theme_override_constants/outline_size = 4
+theme_override_font_sizes/font_size = 13
+text = "牌局中"
+horizontal_alignment = 1
+
 [node name="InteractionRange" type="CollisionShape2D" parent="."]
 shape = SubResource("CircleShape2D_interaction")

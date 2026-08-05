@@ -22,12 +22,25 @@ const SKIN_PATHS := {
 	"坏坏": "res://assets/characters/huaihuai.svg",
 	"然然": "res://assets/characters/ranran.svg",
 }
+const VENUE_MAP = preload("res://scripts/venue_map.gd")
 
 var _player_nearby := false
 var _alive := true
 var _is_current_speaker := false
 var _is_sheriff := false
 var _campaign_status := ""
+var _roaming_enabled := true
+var _move_state := "idle"
+var _move_target := Vector2.ZERO
+var _stay_until_ms := 0
+var _walk_speed := 46.0
+var _stay_seconds := 2.5
+var _walk_phase := 0.0
+var _ring_position := Vector2.ZERO
+var _locked := false
+var _facing_right := true
+var _poker_indicator_visible := false
+var _rng := RandomNumberGenerator.new()
 
 @onready var body_shape: Polygon2D = $Body
 @onready var character_sprite: Sprite2D = $CharacterSprite
@@ -38,6 +51,7 @@ var _campaign_status := ""
 @onready var turn_indicator: Polygon2D = $TurnIndicator
 @onready var speech_hint: Node2D = $SpeechHint
 @onready var name_label: Label = $NameLabel
+@onready var poker_indicator: Label = $PokerIndicator
 
 
 func _ready() -> void:
@@ -47,8 +61,10 @@ func _ready() -> void:
 	nearby_marker.visible = false
 	turn_indicator.visible = false
 	speech_hint.visible = false
+	poker_indicator.visible = false
 	body_shape.color = body_color
 	_load_character_skin()
+	_init_movement()
 	_update_visual_state()
 
 
@@ -125,6 +141,108 @@ func _update_visual_state() -> void:
 func _process(_delta: float) -> void:
 	if turn_indicator.visible:
 		turn_indicator.position.y = -56.0 + sin(Time.get_ticks_msec() / 180.0) * 4.0
+	_process_movement(_delta)
+
+
+func _init_movement() -> void:
+	_ring_position = position
+	_rng.randomize()
+	var personality: Dictionary = _npc_personality()
+	var aggressiveness := float(personality.get("aggressiveness", 0.5))
+	var cautiousness := float(personality.get("cautiousness", 0.5))
+	_walk_speed = 34.0 + aggressiveness * 46.0
+	_stay_seconds = 1.8 + cautiousness * 2.4
+	_choose_walk_target(true)
+
+
+func _npc_personality() -> Dictionary:
+	return VENUE_MAP.NPC_PERSONALITIES.get(npc_name, {})
+
+
+func _process_movement(delta: float) -> void:
+	if not _roaming_enabled and not _locked:
+		return
+	if _move_state == "walk_to":
+		var offset := _move_target - position
+		var distance := offset.length()
+		if distance < 4.0:
+			position = _move_target
+			_move_state = "stay"
+			if _locked:
+				return
+			_stay_until_ms = Time.get_ticks_msec() + int(_stay_seconds * 1000.0)
+			body_shape.position.y = 0.0
+			return
+		var direction := offset.normalized()
+		position += direction * _walk_speed * delta
+		position.x = clampf(
+			position.x,
+			VENUE_MAP.WORLD_RECT.position.x + 30.0,
+			VENUE_MAP.WORLD_RECT.end.x - 30.0,
+		)
+		position.y = clampf(
+			position.y,
+			VENUE_MAP.WORLD_RECT.position.y + 30.0,
+			VENUE_MAP.WORLD_RECT.end.y - 30.0,
+		)
+		var facing_right := direction.x >= 0.0
+		if facing_right != _facing_right:
+			_facing_right = facing_right
+			body_shape.scale.x = 1.0 if facing_right else -1.0
+		_walk_phase += delta * _walk_speed
+		body_shape.position.y = -abs(sin(_walk_phase * 0.18)) * 2.5
+	elif _move_state == "stay":
+		if _locked:
+			return
+		if Time.get_ticks_msec() >= _stay_until_ms:
+			_choose_walk_target()
+
+
+func _choose_walk_target(initial: bool = false) -> void:
+	if not _roaming_enabled:
+		return
+	var home_venue := VENUE_MAP.home_venue(npc_name)
+	var home_center := VENUE_MAP.venue_center(home_venue)
+	var roll := _rng.randf()
+	if roll < 0.58 or initial:
+		_move_target = home_center
+	else:
+		var targets: Array = VENUE_MAP.interest_targets(npc_name)
+		_move_target = targets[_rng.randi_range(0, targets.size() - 1)]
+	_move_state = "walk_to"
+
+
+func lock_to_ring() -> void:
+	_locked = true
+	_move_target = _ring_position
+	_move_state = "walk_to"
+
+
+func lock_to_position(target: Vector2) -> void:
+	_locked = true
+	_move_target = target
+	_move_state = "walk_to"
+
+
+func unlock_roaming() -> void:
+	if not _locked and _roaming_enabled:
+		return
+	_locked = false
+	_roaming_enabled = true
+	_choose_walk_target(true)
+
+
+func set_roaming_enabled(enabled: bool) -> void:
+	_roaming_enabled = enabled
+	if not enabled:
+		_move_state = "idle"
+	elif not _locked:
+		_choose_walk_target(true)
+
+
+func set_poker_indicator(visible: bool) -> void:
+	_poker_indicator_visible = visible
+	poker_indicator.visible = visible
 
 
 func _on_body_entered(body: Node) -> void:

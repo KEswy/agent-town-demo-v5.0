@@ -483,6 +483,7 @@ var _achievement_chime: AudioStreamWAV
 var _poker_table_id := ""
 var _poker_requesting := false
 var _poker_state: Dictionary = {}
+var _poker_recorded_hand_number := 0
 var _recovered_game_ids: Array[String] = []
 var _sound_enabled := true
 var _bgm_volume := 70.0
@@ -732,6 +733,7 @@ func _ready() -> void:
 	_set_intel_panel_open(false)
 	_show_game_setup()
 	_request_recovery_status()
+	call_deferred("_update_npc_roaming")
 
 
 func _on_wolf_menu_toggle_button_pressed() -> void:
@@ -3341,7 +3343,9 @@ func _render_stats_overlay() -> void:
 	var stats := _load_game_stats()
 	var games: Array = stats.get("games", [])
 	if games.is_empty():
-		_append_stats_line("还没有完成的游戏记录。玩完一局（游戏结束后）会自动记录。", false)
+		_append_stats_line("还没有狼人杀对局记录。", false)
+		_append_stats_line("", false)
+		_render_poker_stats_section(stats)
 		return
 	var total := games.size()
 	var wins := 0
@@ -3406,6 +3410,60 @@ func _render_stats_overlay() -> void:
 	_append_stats_line("成就：", true)
 	for achievement in _compute_achievements(stats):
 		_append_stats_line(achievement, false)
+	_append_stats_line("", false)
+	_render_poker_stats_section(stats)
+
+
+func _render_poker_stats_section(stats: Dictionary) -> void:
+	var poker: Dictionary = stats.get("poker", {})
+	_append_stats_line(L10n.t("德州扑克战绩："), true)
+	_append_stats_line(
+		L10n.t("完成 ")
+		+ str(poker.get("hands", 0))
+		+ L10n.t(" 手 | 净输赢 ")
+		+ str(poker.get("chips_net", 0))
+		+ L10n.t(" | 单手最大赢 ")
+		+ str(poker.get("biggest_win", 0)),
+		false,
+	)
+	_append_stats_line(
+		L10n.t("最佳牌型 ")
+		+ _poker_category_label(int(poker.get("best_category", -1)))
+		+ L10n.t(" | 顺子/同花/葫芦/四条/同花顺胜场 ")
+		+ str(poker.get("straight_wins", 0))
+		+ "/"
+		+ str(poker.get("flush_wins", 0))
+		+ "/"
+		+ str(poker.get("full_house_wins", 0))
+		+ "/"
+		+ str(poker.get("quads_wins", 0))
+		+ "/"
+		+ str(poker.get("straight_flush_wins", 0)),
+		false,
+	)
+	_append_stats_line(
+		L10n.t("横扫全场 ")
+		+ str(poker.get("sweeps", 0))
+		+ L10n.t(" 次 | 单手 500+ ")
+		+ str(poker.get("big_wins", 0))
+		+ L10n.t(" 次"),
+		false,
+	)
+
+
+func _poker_category_label(category: int) -> String:
+	match category:
+		0: return L10n.t("高牌")
+		1: return L10n.t("一对")
+		2: return L10n.t("两对")
+		3: return L10n.t("三条")
+		4: return L10n.t("顺子")
+		5: return L10n.t("同花")
+		6: return L10n.t("葫芦")
+		7: return L10n.t("四条")
+		8: return L10n.t("同花顺")
+		_:
+			return L10n.t("暂无")
 
 
 func _role_display_name(role: String) -> String:
@@ -3976,9 +4034,12 @@ func _close_secondary_overlays() -> void:
 
 
 func _on_poker_close_button_pressed() -> void:
+	_poker_table_id = ""
+	_poker_state = {}
 	poker_overlay.visible = false
 	poker_overlay.remove_from_group("dialog_open")
 	poker_close_button.release_focus()
+	_update_npc_roaming()
 	_release_focus_to_world()
 
 
@@ -4050,6 +4111,7 @@ func _on_poker_request_completed(
 	else:
 		_poker_state = data
 	_render_poker_state(_poker_state)
+	_update_npc_roaming()
 
 
 func _poker_player_dict(state: Dictionary) -> Dictionary:
@@ -4097,6 +4159,67 @@ func _render_poker_state(state: Dictionary) -> void:
 			continue
 		poker_players_list.add_child(_build_poker_player_row(player, current_actor, phase))
 	_set_poker_controls_from_state(state)
+	_record_poker_result(state)
+
+
+func _record_poker_result(state: Dictionary) -> void:
+	var showdown: Variant = state.get("last_showdown", null)
+	if typeof(showdown) != TYPE_DICTIONARY:
+		return
+	var hand_number := int(state.get("hand_number", 0))
+	if hand_number == _poker_recorded_hand_number:
+		return
+	_poker_recorded_hand_number = hand_number
+	var player_won := bool(showdown.get("player_won", false))
+	var player_net := int(showdown.get("player_net", 0))
+	var category := int(showdown.get("category", -1))
+	var player_category := int(showdown.get("player_category", -1))
+	var stats := _load_game_stats()
+	var poker: Dictionary = stats.get("poker", {})
+	poker["hands"] = int(poker.get("hands", 0)) + 1
+	poker["chips_net"] = int(poker.get("chips_net", 0)) + player_net
+	poker["wins"] = int(poker.get("wins", 0)) + (1 if player_won else 0)
+	poker["biggest_win"] = maxi(int(poker.get("biggest_win", 0)), maxi(0, player_net))
+	poker["best_category"] = maxi(
+		int(poker.get("best_category", -1)),
+		maxi(player_category, category if player_won else -1),
+	)
+	if player_won:
+		if category >= 4:
+			poker["straight_wins"] = int(poker.get("straight_wins", 0)) + 1
+		if category >= 5:
+			poker["flush_wins"] = int(poker.get("flush_wins", 0)) + 1
+		if category >= 6:
+			poker["full_house_wins"] = int(poker.get("full_house_wins", 0)) + 1
+		if category >= 7:
+			poker["quads_wins"] = int(poker.get("quads_wins", 0)) + 1
+		if category >= 8:
+			poker["straight_flush_wins"] = int(poker.get("straight_flush_wins", 0)) + 1
+		if _poker_sweep(state):
+			poker["sweeps"] = int(poker.get("sweeps", 0)) + 1
+		if player_net >= 500:
+			poker["big_wins"] = int(poker.get("big_wins", 0)) + 1
+	var history: Array = poker.get("history", [])
+	history.append({
+		"hand": hand_number,
+		"net": player_net,
+		"won": player_won,
+		"category": player_category,
+	})
+	if history.size() > 20:
+		history = history.slice(history.size() - 20, history.size())
+	poker["history"] = history
+	stats["poker"] = poker
+	_write_game_stats(stats)
+	_check_new_achievements()
+
+
+func _poker_sweep(state: Dictionary) -> bool:
+	for player in state.get("players", []):
+		if typeof(player) == TYPE_DICTIONARY and not bool(player.get("is_player", false)):
+			if int(player.get("stack", 0)) > 0:
+				return false
+	return true
 
 
 func _build_poker_player_row(player: Dictionary, current_actor: int, phase: String) -> Control:
@@ -4373,6 +4496,27 @@ func _achievement_entries(stats: Dictionary) -> Array:
 		entries.append({"key": "seer_checks_3", "label": "✅ 火眼金睛：累计验到 3 名狼人"})
 	if votes_on_wolves >= 10:
 		entries.append({"key": "exile_votes_10", "label": "✅ 放逐大师：累计 10 次放逐票命中狼人"})
+	var poker: Dictionary = stats.get("poker", {})
+	if int(poker.get("hands", 0)) >= 1:
+		entries.append({"key": "poker_first_hand", "label": "🃏 第一手牌：完成 1 手扑克"})
+	if int(poker.get("hands", 0)) >= 100:
+		entries.append({"key": "poker_100_hands", "label": "🃏 百手老手：累计 100 手扑克"})
+	if int(poker.get("wins", 0)) >= 1:
+		entries.append({"key": "poker_first_win", "label": "🃏 扑克首胜"})
+	if int(poker.get("straight_wins", 0)) >= 1:
+		entries.append({"key": "poker_straight_win", "label": "♠️ 顺子赢家：用顺子及以上赢下一手"})
+	if int(poker.get("flush_wins", 0)) >= 1:
+		entries.append({"key": "poker_flush_win", "label": "♥️ 同花赢家"})
+	if int(poker.get("full_house_wins", 0)) >= 1:
+		entries.append({"key": "poker_full_house_win", "label": "🂡 葫芦赢家"})
+	if int(poker.get("quads_wins", 0)) >= 1:
+		entries.append({"key": "poker_quads_win", "label": "🃏 四条赢家"})
+	if int(poker.get("straight_flush_wins", 0)) >= 1:
+		entries.append({"key": "poker_straight_flush_win", "label": "✨ 同花顺赢家"})
+	if int(poker.get("sweeps", 0)) >= 1:
+		entries.append({"key": "poker_sweep", "label": "💰 横扫全场：单局赢光所有 NPC"})
+	if int(poker.get("big_wins", 0)) >= 1:
+		entries.append({"key": "poker_big_win", "label": "💎 筹码大亨：单手净赢 500+"})
 	return entries
 
 
@@ -5223,6 +5367,7 @@ func _render_wolf_game(game_data: Dictionary) -> void:
 	_update_vote_controls(game_data)
 	_update_contextual_panel_visibility()
 	_update_wolf_menu_summary()
+	_update_npc_roaming()
 	if phase_changed:
 		if _current_wolf_phase in [
 			"SHERIFF_SIGNUP", "SHERIFF_SPEECH", "SHERIFF_WITHDRAWAL",
@@ -5432,6 +5577,41 @@ func _update_player_identity_display(game_data: Dictionary) -> void:
 				):
 					teammate_parts.append(str(character.get("id", "?")) + "号 " + str(character.get("name", "未知")))
 	wolf_teammates_label.text = "仅你可见 · 狼队友：" + ("、".join(teammate_parts) if not teammate_parts.is_empty() else "等待状态同步")
+
+
+func _update_npc_roaming() -> void:
+	# Wolf games lock everyone to the meeting ring; an open poker session moves
+	# its five participants to the poker hall; otherwise NPCs roam their venues.
+	var wolf_locked := (
+		not _current_wolf_game_id.is_empty()
+		and _current_wolf_phase != "GAME_OVER"
+	)
+	var poker_names: Array = _poker_npc_names()
+	for npc in get_tree().get_nodes_in_group("npc"):
+		var npc_name := str(npc.get("npc_name"))
+		if wolf_locked:
+			npc.call("lock_to_ring")
+			npc.call("set_poker_indicator", false)
+		elif not poker_names.is_empty() and poker_names.has(npc_name):
+			npc.call("lock_to_position", _poker_spot_for(poker_names.find(npc_name)))
+			npc.call("set_poker_indicator", true)
+		else:
+			npc.call("unlock_roaming")
+			npc.call("set_poker_indicator", false)
+
+
+func _poker_npc_names() -> Array:
+	var names: Array = []
+	if not _poker_state.is_empty():
+		for player in _poker_state.get("players", []):
+			if typeof(player) == TYPE_DICTIONARY and not bool(player.get("is_player", false)):
+				names.append(str(player.get("name", "")))
+	return names
+
+
+func _poker_spot_for(index: int) -> Vector2:
+	# A small arc in front of the poker hall door.
+	return Vector2(900, -260) + Vector2((index - 2) * 48.0, 96.0)
 
 
 func _update_player_action_history(game_data: Dictionary) -> void:
