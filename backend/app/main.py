@@ -6277,7 +6277,14 @@ def chat(request: ChatRequest) -> ChatResponse:
 
     memory_meta = MEMORY_META_STORE.get(memory_key, {})
     expected_memory_count = len(memory_snapshot) + 1
-    if profile.use_llm_for_chat:
+    # Free-roam town chat always uses the LLM when configured, so every NPC
+    # can answer in character; this flag lives in code (not npc_profiles.json)
+    # so the config fingerprint and existing saves stay stable.
+    use_llm_for_chat = profile.use_llm_for_chat or (
+        request.game_phase.strip().upper() == "TOWN"
+        and request.npc_name in NPC_NAMES
+    )
+    if use_llm_for_chat:
         fallback_reply = build_resident_fallback_reply(
             profile,
             request.message,
@@ -6529,6 +6536,15 @@ def generate_resident_chat_reply(
     memory_meta: Optional[dict[str, object]] = None,
 ) -> LLMGeneration:
     recent_memories = memories[-RESIDENT_CHAT_MEMORY_LIMIT:]
+    town_mode = current_phase == "TOWN"
+    personality_text = profile.personality
+    if town_mode:
+        # In free-roam the character is just living in town, not playing
+        # werewolf, so drop the game-strategy tail from the persona.
+        game_tail = "作为狼人时"
+        game_tail_index = personality_text.find(game_tail)
+        if game_tail_index != -1:
+            personality_text = personality_text[:game_tail_index].strip()
     context = {
         "schema_version": RESIDENT_CHAT_CONTEXT_SCHEMA_VERSION,
         "task": "resident_chat",
@@ -6536,11 +6552,13 @@ def generate_resident_chat_reply(
         "resident": {
             "name": profile.npc_name,
             "role": profile.role,
-            "personality": profile.personality,
+            "personality": personality_text,
             "speech_style": profile.speech_style,
             "catchphrases": profile.catchphrases,
+            "easter_eggs": profile.easter_eggs,
             "non_player_character": True,
             "participates_in_werewolf_game": False,
+            "town_mode": town_mode,
         },
         "relationship": {
             "conversation_number": memory_count,
@@ -6589,6 +6607,13 @@ def generate_resident_chat_reply(
         "可以适度追问，不能只说‘没什么信息，过吧’。不要输出思考过程。"
         "只返回严格 JSON 对象 {\"text\": \"...\"}，不得增加其他字段。"
     )
+    if town_mode:
+        system_prompt = (
+            "现在是小镇的闲逛时间，你没有在进行狼人杀对局。"
+            "请以你在小镇日常的性格和说话方式轻松自然地与玩家聊天，"
+            "可以自然提到你正在做的日常活动（如踢球、唱歌、看书、练剑、野餐等），"
+            "但不要编造你拥有身份、技能或隐藏信息，也不要自称在玩狼人杀。"
+        ) + system_prompt
     result = LLM_CLIENT.generate_json_text(
         system_prompt,
         context,

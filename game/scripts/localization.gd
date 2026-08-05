@@ -253,6 +253,7 @@ const ENGLISH := {
 	"过牌 / 跟注": "Check / Call",
 	"加注": "Raise",
 	"德州扑克馆": "Poker Hall",
+	"随时都可以聊！配置了 DeepSeek 时我会以我的性格和你对话，失败时也会安全回退。": "Chat anytime! With DeepSeek configured, I'll talk in character, and fall back safely if it fails.",
 	"德州扑克战绩：": "Poker stats: ",
 	"完成 ": "Hands: ",
 	" 手 | 净输赢 ": " | Net ",

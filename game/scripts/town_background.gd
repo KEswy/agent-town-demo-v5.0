@@ -84,7 +84,6 @@ func _draw() -> void:
 	_draw_ground()
 	_draw_paths()
 	_draw_pond()
-	_draw_buildings()
 	_draw_venues()
 	_draw_meeting_square()
 	_draw_gardens()
@@ -550,16 +549,6 @@ func _draw_pond() -> void:
 		draw_line(lily_position, lily_position + Vector2(9, -5), Color(0.18, 0.48, 0.27, 1), 2.0)
 
 
-func _draw_buildings() -> void:
-	_draw_house(Vector2(-820, -620), Vector2(240, 160), Color(1, 0.88, 0.55, 1), Color(0.36, 0.58, 0.72, 1))
-	_draw_house(Vector2(1010, -570), Vector2(250, 165), Color(0.72, 0.9, 0.97, 1), Color(0.85, 0.42, 0.32, 1))
-	_draw_house(Vector2(-920, 520), Vector2(230, 155), Color(0.74, 0.9, 0.98, 1), Color(0.94, 0.67, 0.24, 1))
-	_draw_house(Vector2(1010, 485), Vector2(250, 165), Color(1, 0.9, 0.62, 1), Color(0.31, 0.55, 0.7, 1))
-	_draw_house(Vector2(250, -760), Vector2(205, 145), Color(0.96, 0.83, 0.53, 1), Color(0.76, 0.34, 0.3, 1))
-	_draw_market_stall(Vector2(830, 245), Color(0.96, 0.72, 0.2, 1), Color(0.42, 0.7, 0.82, 1))
-	_draw_market_stall(Vector2(-670, -205), Color(0.4, 0.7, 0.82, 1), Color(1, 0.75, 0.28, 1))
-
-
 func _draw_house(origin: Vector2, size: Vector2, wall_color: Color, roof_color: Color) -> void:
 	draw_rect(Rect2(origin + Vector2(10, 12), size), Color(0.18, 0.25, 0.22, 0.22))
 	draw_rect(Rect2(origin, size), wall_color)
@@ -578,16 +567,6 @@ func _draw_house(origin: Vector2, size: Vector2, wall_color: Color, roof_color: 
 		draw_rect(window_rect, Color(0.65, 0.9, 1, 1))
 		draw_line(window_rect.position + Vector2(16, 0), window_rect.position + Vector2(16, 30), Color(0.31, 0.52, 0.62, 1), 2.0)
 		draw_line(window_rect.position + Vector2(0, 15), window_rect.position + Vector2(32, 15), Color(0.31, 0.52, 0.62, 1), 2.0)
-
-
-func _draw_market_stall(origin: Vector2, canopy_color: Color, stripe_color: Color) -> void:
-	draw_rect(Rect2(origin + Vector2(8, 9), Vector2(126, 76)), Color(0.17, 0.24, 0.21, 0.2))
-	draw_rect(Rect2(origin + Vector2(6, 26), Vector2(6, 62)), Color(0.4, 0.28, 0.17, 1))
-	draw_rect(Rect2(origin + Vector2(116, 26), Vector2(6, 62)), Color(0.4, 0.28, 0.17, 1))
-	draw_rect(Rect2(origin, Vector2(128, 30)), canopy_color)
-	for stripe_x in range(0, 128, 32):
-		draw_rect(Rect2(origin + Vector2(float(stripe_x), 0), Vector2(16, 30)), stripe_color)
-	draw_rect(Rect2(origin + Vector2(10, 62), Vector2(108, 24)), Color(0.64, 0.42, 0.2, 1))
 
 
 func _draw_meeting_square() -> void:

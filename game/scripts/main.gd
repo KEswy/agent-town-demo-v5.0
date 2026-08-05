@@ -1905,9 +1905,7 @@ func _on_npc_dialog_requested(npc_name: String, dialog_text: String, wolf_charac
 	_current_npc_character_id = wolf_character_id
 
 	if _current_wolf_game_id.is_empty() or wolf_character_id <= 0:
-		var prompt_text := "想问什么？输入问题后发送，后端会根据问题检索知识库。"
-		if npc_name in ["坏坏", "然然"]:
-			prompt_text = "随时都可以来聊。配置了 DeepSeek 时我会结合自己的记忆回答，失败时也会安全回退。"
+		var prompt_text := "随时都可以聊！配置了 DeepSeek 时我会以我的性格和你对话，失败时也会安全回退。"
 		dialog_box.call("show_prompt", npc_name, prompt_text)
 		return
 
@@ -5620,7 +5618,7 @@ func _poker_npc_names() -> Array:
 
 func _poker_spot_for(index: int) -> Vector2:
 	# A row in front of the poker hall entrance.
-	return Vector2(1420, -290) + Vector2((index - 2) * 48.0, 0.0)
+	return Vector2(1800, -500) + Vector2((index - 2) * 48.0, 0.0)
 
 
 func _update_player_action_history(game_data: Dictionary) -> void:

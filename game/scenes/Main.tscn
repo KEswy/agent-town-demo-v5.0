@@ -252,98 +252,98 @@ script = ExtResource("9_venue_props")
 position = Vector2(350, 0)
 
 [node name="Messi" parent="." instance=ExtResource("3_npc_scene")]
-position = Vector2(1060, -160)
+position = Vector2(1510, -200)
 npc_name = "梅西"
 dialog_text = "我是梅西。没有进行狼人杀时，我们也可以聊聊小镇。"
 wolf_character_id = 2
 body_color = Color(0.32, 0.65, 0.92, 1)
 
 [node name="Ronaldo" parent="." instance=ExtResource("3_npc_scene")]
-position = Vector2(1240, -160)
+position = Vector2(1690, -200)
 npc_name = "C罗"
 dialog_text = "我是C罗。开始游戏后，会议轮到我时再来听我的判断。"
 wolf_character_id = 3
 body_color = Color(0.86, 0.24, 0.2, 1)
 
 [node name="ZhouShen" parent="." instance=ExtResource("3_npc_scene")]
-position = Vector2(560, -565)
+position = Vector2(650, -955)
 npc_name = "周深"
 dialog_text = "我是周深。我会留意每个人说话时细微的变化。"
 wolf_character_id = 4
 body_color = Color(0.3, 0.78, 0.62, 1)
 
 [node name="MeiChangsu" parent="." instance=ExtResource("3_npc_scene")]
-position = Vector2(-660, -80)
+position = Vector2(-890, -200)
 npc_name = "梅长苏"
 dialog_text = "我是梅长苏。发言顺序本身，也可能是一条线索。"
 wolf_character_id = 5
 body_color = Color(0.48, 0.32, 0.7, 1)
 
 [node name="Zelda" parent="." instance=ExtResource("3_npc_scene")]
-position = Vector2(1240, 258)
+position = Vector2(1040, 558)
 npc_name = "塞尔达"
 dialog_text = "我是塞尔达。我更相信行动和经得住验证的信息。"
 wolf_character_id = 6
 body_color = Color(0.92, 0.72, 0.22, 1)
 
 [node name="LittleKnight" parent="." instance=ExtResource("3_npc_scene")]
-position = Vector2(700, 560)
+position = Vector2(560, 920)
 npc_name = "小骑士"
 dialog_text = "我是小骑士。我更相信行动和投票，而不是空泛的争论。"
 wolf_character_id = 7
 body_color = Color(0.18, 0.24, 0.34, 1)
 
 [node name="Hornet" parent="." instance=ExtResource("3_npc_scene")]
-position = Vector2(-420, 680)
+position = Vector2(-780, 820)
 npc_name = "大黄蜂"
 dialog_text = "我是大黄蜂。我会用连续的问题检验你的判断。"
 wolf_character_id = 8
 body_color = Color(0.94, 0.42, 0.16, 1)
 
 [node name="PleasantGoat" parent="." instance=ExtResource("3_npc_scene")]
-position = Vector2(0, -560)
+position = Vector2(-140, -1050)
 npc_name = "喜羊羊"
 dialog_text = "我是喜羊羊。我喜欢把分散的信息整理成可以验证的方案。"
 wolf_character_id = 9
 body_color = Color(0.32, 0.72, 0.88, 1)
 
 [node name="LazyGoat" parent="." instance=ExtResource("3_npc_scene")]
-position = Vector2(120, -560)
+position = Vector2(20, -1050)
 npc_name = "懒羊羊"
 dialog_text = "我是懒羊羊。我不爱争论，但我会记住谁的态度突然变了。"
 wolf_character_id = 10
 body_color = Color(0.84, 0.72, 0.92, 1)
 
 [node name="Luoluo" parent="." instance=ExtResource("3_npc_scene")]
-position = Vector2(350, 640)
+position = Vector2(180, 1000)
 npc_name = "洛洛"
 dialog_text = "我是洛洛。我会从行动顺序和投票结构中寻找规律。"
 wolf_character_id = 11
 body_color = Color(0.22, 0.58, 0.74, 1)
 
 [node name="DoctorStrange" parent="." instance=ExtResource("3_npc_scene")]
-position = Vector2(-1180, -300)
+position = Vector2(-1650, -500)
 npc_name = "奇异博士"
 dialog_text = "我是奇异博士。我会同时保留多种可能，直到证据排除它们。"
 wolf_character_id = 12
 body_color = Color(0.68, 0.18, 0.32, 1)
 
 [node name="HuaiHuai" parent="." instance=ExtResource("3_npc_scene")]
-position = Vector2(-80, 590)
+position = Vector2(-250, 720)
 npc_name = "坏坏"
 dialog_text = "我是坏坏，点心屋的小恐龙。别怕，我的小尖牙只咬饼干；开心的、别扭的事都可以告诉我。"
 wolf_character_id = 0
 body_color = Color(0.49, 0.74, 0.4, 1)
 
 [node name="RanRan" parent="." instance=ExtResource("3_npc_scene")]
-position = Vector2(1440, 80)
+position = Vector2(1470, 180)
 npc_name = "然然"
 dialog_text = "我是然然，心情邮局的熊猫邮差。想寄存一个故事，或者整理一个小计划，都可以来找我。"
 wolf_character_id = 0
 body_color = Color(0.95, 0.93, 0.86, 1)
 
 [node name="PokerHallDoor" parent="." instance=ExtResource("7_poker_door_scene")]
-position = Vector2(1420, -340)
+position = Vector2(1800, -550)
 
 [node name="BoardGameDoor" parent="." instance=ExtResource("8_board_game_door_scene")]
 position = Vector2(350, 235)

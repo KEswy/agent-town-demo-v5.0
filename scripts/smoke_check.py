@@ -15804,8 +15804,8 @@ def check_godot_ui_layout() -> None:
         '[node name="DoctorStrange" parent="." instance=ExtResource("3_npc_scene")]',
         '[node name="HuaiHuai" parent="." instance=ExtResource("3_npc_scene")]',
         '[node name="RanRan" parent="." instance=ExtResource("3_npc_scene")]',
-        'position = Vector2(-80, 590)',
-        'position = Vector2(1440, 80)',
+        'position = Vector2(-250, 720)',
+        'position = Vector2(1470, 180)',
         '[node name="NightActionOption" type="OptionButton"',
         '[node name="HunterActionRow" type="HBoxContainer"',
         '[node name="HunterShotRequest" type="HTTPRequest"',
@@ -15837,9 +15837,9 @@ def check_godot_ui_layout() -> None:
         'text = "确认提交"',
         '[node name="PlayerSpeechPreviewRequest" type="HTTPRequest"',
         '[node name="SheriffOverviewLabel" type="Label"',
-        'position = Vector2(1060, -160)',
-        'position = Vector2(-660, -80)',
-        'position = Vector2(-1180, -300)',
+        'position = Vector2(1510, -200)',
+        'position = Vector2(-890, -200)',
+        'position = Vector2(-1650, -500)',
     ]
     for fragment in required_scene_fragments:
         if fragment not in scene_text:
@@ -15931,7 +15931,7 @@ def check_godot_ui_layout() -> None:
         'func set_night(enabled: bool, immediate: bool = false) -> void:',
         '_transition_tween = create_tween()',
         'func _draw_pond() -> void:',
-        'func _draw_buildings() -> void:',
+        'func _draw_venues() -> void:',
         'func _draw_meeting_square() -> void:',
         'func _draw_gardens() -> void:',
         'func _draw_trees() -> void:',

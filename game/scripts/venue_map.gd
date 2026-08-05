@@ -9,31 +9,31 @@ const POKER_DOOR_POSITION := Vector2(900, -260)
 
 const VENUES := {
 	"球场": {
-		"center": Vector2(1150, -160),
+		"center": Vector2(1600, -200),
 		"radius": 300.0,
 		"label": "球场",
 		"kind": "football_field",
 	},
 	"至圣所": {
-		"center": Vector2(-980, -300),
+		"center": Vector2(-1450, -500),
 		"radius": 210.0,
 		"label": "至圣所",
 		"kind": "sanctum",
 	},
 	"点心屋": {
-		"center": Vector2(-80, 420),
+		"center": Vector2(-250, 550),
 		"radius": 190.0,
 		"label": "点心屋",
 		"kind": "snack_house",
 	},
 	"心情邮局": {
-		"center": Vector2(1250, 80),
+		"center": Vector2(1280, 180),
 		"radius": 190.0,
 		"label": "心情邮局",
 		"kind": "post_office",
 	},
 	"德州扑克馆": {
-		"center": Vector2(1420, -450),
+		"center": Vector2(1800, -700),
 		"radius": 220.0,
 		"label": "德州扑克馆",
 		"kind": "poker_hall",
@@ -41,13 +41,13 @@ const VENUES := {
 }
 
 const MINI_VENUES := {
-	"练歌台": {"center": Vector2(560, -560), "radius": 150.0, "label": "练歌台", "kind": "stage"},
-	"书房": {"center": Vector2(-820, -80), "radius": 160.0, "label": "书房", "kind": "study"},
-	"钟楼": {"center": Vector2(350, 520), "radius": 150.0, "label": "钟楼", "kind": "clock_tower"},
-	"训练场": {"center": Vector2(760, 520), "radius": 170.0, "label": "训练场", "kind": "training"},
-	"工坊": {"center": Vector2(-420, 500), "radius": 160.0, "label": "工坊", "kind": "workshop"},
-	"瞭望台": {"center": Vector2(1250, 320), "radius": 170.0, "label": "瞭望台", "kind": "lookout"},
-	"野餐点": {"center": Vector2(60, -560), "radius": 170.0, "label": "野餐点", "kind": "picnic"},
+	"练歌台": {"center": Vector2(650, -950), "radius": 150.0, "label": "练歌台", "kind": "stage"},
+	"书房": {"center": Vector2(-1050, -200), "radius": 160.0, "label": "书房", "kind": "study"},
+	"钟楼": {"center": Vector2(180, 880), "radius": 150.0, "label": "钟楼", "kind": "clock_tower"},
+	"训练场": {"center": Vector2(620, 880), "radius": 170.0, "label": "训练场", "kind": "training"},
+	"工坊": {"center": Vector2(-700, 700), "radius": 160.0, "label": "工坊", "kind": "workshop"},
+	"瞭望台": {"center": Vector2(1050, 620), "radius": 170.0, "label": "瞭望台", "kind": "lookout"},
+	"野餐点": {"center": Vector2(-80, -1050), "radius": 170.0, "label": "野餐点", "kind": "picnic"},
 }
 
 ## Render scale per venue kind (drawers are scaled around the venue center).
