@@ -1519,9 +1519,9 @@ anchor_top = 0.5
 anchor_right = 0.5
 anchor_bottom = 0.5
 offset_left = -220.0
-offset_top = -240.0
+offset_top = -285.0
 offset_right = 220.0
-offset_bottom = 240.0
+offset_bottom = 285.0
 grow_horizontal = 2
 grow_vertical = 2
 theme_override_styles/panel = SubResource("StyleBoxFlat_setup")
@@ -1551,6 +1551,31 @@ text = "菜单"
 layout_mode = 2
 text = "关闭"
 
+[node name="GameSectionLabel" type="Label" parent="UI/MenuOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "对局"
+
+[node name="SaveButton" type="Button" parent="UI/MenuOverlay/Panel/Margin/VBox"]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+text = "存盘"
+
+[node name="LoadButton" type="Button" parent="UI/MenuOverlay/Panel/Margin/VBox"]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+text = "读档"
+
+[node name="ReviewButton" type="Button" parent="UI/MenuOverlay/Panel/Margin/VBox"]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+text = "本局复盘"
+
+[node name="ResourcesSectionLabel" type="Label" parent="UI/MenuOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "资料"
+
 [node name="RuleButton" type="Button" parent="UI/MenuOverlay/Panel/Margin/VBox"]
 custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
@@ -1566,15 +1591,10 @@ custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 text = "我的战绩"
 
-[node name="SaveButton" type="Button" parent="UI/MenuOverlay/Panel/Margin/VBox"]
-custom_minimum_size = Vector2(0, 40)
+[node name="UtilitySectionLabel" type="Label" parent="UI/MenuOverlay/Panel/Margin/VBox"]
 layout_mode = 2
-text = "存盘"
-
-[node name="ReviewButton" type="Button" parent="UI/MenuOverlay/Panel/Margin/VBox"]
-custom_minimum_size = Vector2(0, 40)
-layout_mode = 2
-text = "本局复盘"
+theme_override_font_sizes/font_size = 12
+text = "辅助"
 
 [node name="GuideButton" type="Button" parent="UI/MenuOverlay/Panel/Margin/VBox"]
 custom_minimum_size = Vector2(0, 40)
@@ -1585,6 +1605,138 @@ text = "新手引导"
 custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 text = "刷新状态"
+
+[node name="LoadOverlay" type="Control" parent="UI"]
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+theme = SubResource("Theme_light_ui")
+
+[node name="Shade" type="ColorRect" parent="UI/LoadOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.08, 0.22, 0.31, 0.58)
+
+[node name="Panel" type="PanelContainer" parent="UI/LoadOverlay"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -300.0
+offset_top = -220.0
+offset_right = 300.0
+offset_bottom = 220.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_setup")
+
+[node name="Margin" type="MarginContainer" parent="UI/LoadOverlay/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 24
+theme_override_constants/margin_top = 20
+theme_override_constants/margin_right = 24
+theme_override_constants/margin_bottom = 20
+
+[node name="VBox" type="VBoxContainer" parent="UI/LoadOverlay/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="HeaderRow" type="HBoxContainer" parent="UI/LoadOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+
+[node name="TitleLabel" type="Label" parent="UI/LoadOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 20
+text = "读档"
+
+[node name="CloseButton" type="Button" parent="UI/LoadOverlay/Panel/Margin/VBox/HeaderRow"]
+layout_mode = 2
+text = "关闭"
+
+[node name="Slot1Row" type="HBoxContainer" parent="UI/LoadOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="SlotLabel" type="Label" parent="UI/LoadOverlay/Panel/Margin/VBox/Slot1Row"]
+custom_minimum_size = Vector2(72, 0)
+layout_mode = 2
+text = "槽位 1"
+vertical_alignment = 1
+
+[node name="SlotInfoLabel" type="Label" parent="UI/LoadOverlay/Panel/Margin/VBox/Slot1Row"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "空"
+vertical_alignment = 1
+text_overrun_behavior = 3
+
+[node name="LoadSlotButton" type="Button" parent="UI/LoadOverlay/Panel/Margin/VBox/Slot1Row"]
+custom_minimum_size = Vector2(72, 36)
+layout_mode = 2
+text = "载入"
+
+[node name="Slot2Row" type="HBoxContainer" parent="UI/LoadOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="SlotLabel" type="Label" parent="UI/LoadOverlay/Panel/Margin/VBox/Slot2Row"]
+custom_minimum_size = Vector2(72, 0)
+layout_mode = 2
+text = "槽位 2"
+vertical_alignment = 1
+
+[node name="SlotInfoLabel" type="Label" parent="UI/LoadOverlay/Panel/Margin/VBox/Slot2Row"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "空"
+vertical_alignment = 1
+text_overrun_behavior = 3
+
+[node name="LoadSlotButton" type="Button" parent="UI/LoadOverlay/Panel/Margin/VBox/Slot2Row"]
+custom_minimum_size = Vector2(72, 36)
+layout_mode = 2
+text = "载入"
+
+[node name="Slot3Row" type="HBoxContainer" parent="UI/LoadOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="SlotLabel" type="Label" parent="UI/LoadOverlay/Panel/Margin/VBox/Slot3Row"]
+custom_minimum_size = Vector2(72, 0)
+layout_mode = 2
+text = "槽位 3"
+vertical_alignment = 1
+
+[node name="SlotInfoLabel" type="Label" parent="UI/LoadOverlay/Panel/Margin/VBox/Slot3Row"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "空"
+vertical_alignment = 1
+text_overrun_behavior = 3
+
+[node name="LoadSlotButton" type="Button" parent="UI/LoadOverlay/Panel/Margin/VBox/Slot3Row"]
+custom_minimum_size = Vector2(72, 36)
+layout_mode = 2
+text = "载入"
+
+[node name="HintLabel" type="Label" parent="UI/LoadOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "提示：也可在“新对局”弹窗选择存档槽位后点击“继续上局”恢复。"
+autowrap_mode = 3
 
 [node name="ArchiveOverlay" type="Control" parent="UI"]
 visible = false

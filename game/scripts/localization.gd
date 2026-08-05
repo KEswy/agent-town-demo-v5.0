@@ -24,6 +24,7 @@ const ENGLISH_REVERSE_OVERRIDES := {
 	"Player name": "玩家名",
 	"Free activity": "自由活动",
 	"Replay": "重播",
+	"Load": "读档",
 }
 var ENGLISH_REVERSE: Dictionary = {}
 
@@ -104,6 +105,18 @@ const ENGLISH := {
 	"槽位 1": "Slot 1",
 	"槽位 2": "Slot 2",
 	"槽位 3": "Slot 3",
+	"读档": "Load",
+	"载入": "Load",
+	"空": "Empty",
+	"对局": "Game",
+	"资料": "Resources",
+	"辅助": "Utilities",
+	"这个存档槽位是空的": "This save slot is empty",
+	"正在恢复上局...": "Resuming last game...",
+	"进度已保存到本地存档。": "Progress saved to local storage.",
+	"游戏结束后才能查看复盘": "The review is available after the game ends",
+	"游戏结束后才能查看复盘。": "The review is available after the game ends.",
+	"提示：也可在“新对局”弹窗选择存档槽位后点击“继续上局”恢复。": "Tip: you can also pick a slot in the “New Game” dialog and press “Continue last game”.",
 	"正在读取对局结果...": "Reading game result...",
 	"测试身份": "Test identity",
 	"猎人开枪：出局后可用": "Hunter shot: available after elimination",

@@ -327,6 +327,19 @@ const CHARACTER_SKIN_PATHS := {
 @onready var archive_status_label: Label = $UI/ArchiveOverlay/Panel/Margin/VBox/StatusLabel
 @onready var archive_list_box: VBoxContainer = $UI/ArchiveOverlay/Panel/Margin/VBox/ListScroll/ListBox
 @onready var archive_request: HTTPRequest = $ArchiveRequest
+@onready var load_button: Button = $UI/MenuOverlay/Panel/Margin/VBox/LoadButton
+@onready var load_overlay: Control = $UI/LoadOverlay
+@onready var load_close_button: Button = $UI/LoadOverlay/Panel/Margin/VBox/HeaderRow/CloseButton
+@onready var load_slot_info_labels: Array = [
+	$UI/LoadOverlay/Panel/Margin/VBox/Slot1Row/SlotInfoLabel,
+	$UI/LoadOverlay/Panel/Margin/VBox/Slot2Row/SlotInfoLabel,
+	$UI/LoadOverlay/Panel/Margin/VBox/Slot3Row/SlotInfoLabel,
+]
+@onready var load_slot_buttons: Array = [
+	$UI/LoadOverlay/Panel/Margin/VBox/Slot1Row/LoadSlotButton,
+	$UI/LoadOverlay/Panel/Margin/VBox/Slot2Row/LoadSlotButton,
+	$UI/LoadOverlay/Panel/Margin/VBox/Slot3Row/LoadSlotButton,
+]
 @onready var highlights_label: Label = $UI/GameSummaryOverlay/Panel/Margin/VBox/HighlightsLabel
 @onready var export_review_button: Button = $UI/GameSummaryOverlay/Panel/Margin/VBox/HeaderRow/ExportReviewButton
 @onready var export_stats_button: Button = $UI/StatsOverlay/Panel/Margin/VBox/HeaderRow/ExportStatsButton
@@ -605,6 +618,10 @@ func _ready() -> void:
 	menu_button.pressed.connect(_on_menu_button_pressed)
 	menu_close_button.pressed.connect(_on_menu_close_button_pressed)
 	archive_button.pressed.connect(_on_archive_button_pressed)
+	load_button.pressed.connect(_on_load_button_pressed)
+	load_close_button.pressed.connect(_on_load_close_button_pressed)
+	for slot_index in range(load_slot_buttons.size()):
+		load_slot_buttons[slot_index].pressed.connect(_on_load_slot_pressed.bind(slot_index + 1))
 	archive_close_button.pressed.connect(_on_archive_close_button_pressed)
 	archive_request.request_completed.connect(_on_archive_request_completed)
 	export_review_button.pressed.connect(_on_export_review_pressed)
@@ -747,6 +764,7 @@ func _on_intel_close_button_pressed() -> void:
 
 
 func _on_guide_button_pressed() -> void:
+	_hide_menu_overlay()
 	_show_manual_onboarding()
 
 
@@ -2006,14 +2024,19 @@ func _on_refresh_state_button_pressed() -> void:
 		wolf_status_label.text = "后端状态：还没有可刷新的游戏"
 		return
 
+	_hide_menu_overlay()
 	_request_wolf_game_state()
 
 
 func _on_review_game_button_pressed() -> void:
+	_hide_menu_overlay()
 	if not _game_summary_data.is_empty():
 		_show_game_summary()
 	elif _current_wolf_phase == "GAME_OVER":
 		_request_game_summary()
+	else:
+		wolf_status_label.text = L10n.t("后端状态：") + L10n.t("游戏结束后才能查看复盘")
+		dialog_box.call("show_notice", L10n.t("本局复盘"), L10n.t("游戏结束后才能查看复盘。"))
 
 
 func _on_submit_night_action_button_pressed() -> void:
@@ -2904,6 +2927,7 @@ func _on_continue_game_button_pressed() -> void:
 
 
 func _on_knowledge_button_pressed() -> void:
+	_hide_menu_overlay()
 	knowledge_overlay.visible = true
 	knowledge_overlay.add_to_group("dialog_open")
 	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
@@ -3005,6 +3029,7 @@ func _clear_knowledge_results() -> void:
 
 
 func _on_stats_button_pressed() -> void:
+	_hide_menu_overlay()
 	stats_overlay.visible = true
 	stats_overlay.add_to_group("dialog_open")
 	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
@@ -3463,6 +3488,8 @@ func _on_save_game_request_completed(
 		wolf_status_label.text = "后端状态：保存失败"
 		return
 	wolf_status_label.text = "后端状态：已保存到本地存档"
+	_hide_menu_overlay()
+	dialog_box.call("show_notice", L10n.t("存盘"), L10n.t("进度已保存到本地存档。"))
 
 
 func _on_bgm_volume_changed(value: float) -> void:
@@ -3500,7 +3527,76 @@ func _on_menu_close_button_pressed() -> void:
 	_release_focus_to_world()
 
 
+func _hide_menu_overlay() -> void:
+	if menu_overlay.visible:
+		_on_menu_close_button_pressed()
+
+
+func _on_load_button_pressed() -> void:
+	_hide_menu_overlay()
+	_render_load_slots()
+	load_overlay.visible = true
+	load_overlay.add_to_group("dialog_open")
+	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
+	call_deferred("_focus_control_if_available", load_close_button)
+
+
+func _on_load_close_button_pressed() -> void:
+	load_overlay.visible = false
+	load_overlay.remove_from_group("dialog_open")
+	load_close_button.release_focus()
+	_release_focus_to_world()
+
+
+func _render_load_slots() -> void:
+	var config := ConfigFile.new()
+	config.load(SESSION_SETTINGS_PATH)
+	for slot_index in range(load_slot_info_labels.size()):
+		var game_id: Variant = config.get_value(
+			SESSION_SETTINGS_SECTION,
+			"slot_" + str(slot_index + 1) + "_game_id",
+			"",
+		)
+		var player_name: Variant = config.get_value(
+			SESSION_SETTINGS_SECTION,
+			"slot_" + str(slot_index + 1) + "_player_name",
+			"",
+		)
+		var game_id_text := (
+			str(game_id)
+			if typeof(game_id) == TYPE_STRING and not str(game_id).is_empty()
+			else ""
+		)
+		var has_save := not game_id_text.is_empty()
+		var info := L10n.t("空") if not has_save else game_id_text
+		var name_text := (
+			str(player_name)
+			if typeof(player_name) == TYPE_STRING and not str(player_name).is_empty()
+			else ""
+		)
+		if has_save and not name_text.is_empty():
+			info += " · " + name_text
+		load_slot_info_labels[slot_index].text = info
+		load_slot_buttons[slot_index].disabled = not has_save
+
+
+func _on_load_slot_pressed(slot_index: int) -> void:
+	if _is_starting_wolf_game or _is_loading_wolf_state:
+		return
+	_session_slot = slot_index
+	var config := ConfigFile.new()
+	config.load(SESSION_SETTINGS_PATH)
+	_apply_session_slot(config)
+	_save_session_preferences()
+	_on_load_close_button_pressed()
+	if _current_wolf_game_id.is_empty():
+		wolf_status_label.text = L10n.t("后端状态：") + L10n.t("这个存档槽位是空的")
+		return
+	_on_continue_game_button_pressed()
+
+
 func _on_archive_button_pressed() -> void:
+	_hide_menu_overlay()
 	archive_overlay.visible = true
 	archive_overlay.add_to_group("dialog_open")
 	_set_ui_focus_scope(UI_FOCUS_SCOPE_MODAL)
