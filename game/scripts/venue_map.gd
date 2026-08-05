@@ -10,44 +10,76 @@ const POKER_DOOR_POSITION := Vector2(900, -260)
 const VENUES := {
 	"球场": {
 		"center": Vector2(1150, -160),
-		"radius": 150.0,
+		"radius": 300.0,
 		"label": "球场",
 		"kind": "football_field",
 	},
 	"至圣所": {
 		"center": Vector2(-980, -300),
-		"radius": 130.0,
+		"radius": 210.0,
 		"label": "至圣所",
 		"kind": "sanctum",
 	},
 	"点心屋": {
 		"center": Vector2(-80, 420),
-		"radius": 120.0,
+		"radius": 190.0,
 		"label": "点心屋",
 		"kind": "snack_house",
 	},
 	"心情邮局": {
 		"center": Vector2(1250, 80),
-		"radius": 120.0,
+		"radius": 190.0,
 		"label": "心情邮局",
 		"kind": "post_office",
 	},
 	"德州扑克馆": {
 		"center": Vector2(1420, -450),
-		"radius": 140.0,
+		"radius": 220.0,
 		"label": "德州扑克馆",
 		"kind": "poker_hall",
 	},
 }
 
 const MINI_VENUES := {
-	"练歌台": {"center": Vector2(560, -560), "radius": 90.0, "label": "练歌台", "kind": "stage"},
-	"书房": {"center": Vector2(-820, -80), "radius": 90.0, "label": "书房", "kind": "study"},
-	"钟楼": {"center": Vector2(350, 520), "radius": 100.0, "label": "钟楼", "kind": "clock_tower"},
-	"训练场": {"center": Vector2(760, 520), "radius": 105.0, "label": "训练场", "kind": "training"},
-	"工坊": {"center": Vector2(-420, 500), "radius": 90.0, "label": "工坊", "kind": "workshop"},
-	"瞭望台": {"center": Vector2(1250, 320), "radius": 90.0, "label": "瞭望台", "kind": "lookout"},
-	"野餐点": {"center": Vector2(60, -560), "radius": 100.0, "label": "野餐点", "kind": "picnic"},
+	"练歌台": {"center": Vector2(560, -560), "radius": 150.0, "label": "练歌台", "kind": "stage"},
+	"书房": {"center": Vector2(-820, -80), "radius": 160.0, "label": "书房", "kind": "study"},
+	"钟楼": {"center": Vector2(350, 520), "radius": 150.0, "label": "钟楼", "kind": "clock_tower"},
+	"训练场": {"center": Vector2(760, 520), "radius": 170.0, "label": "训练场", "kind": "training"},
+	"工坊": {"center": Vector2(-420, 500), "radius": 160.0, "label": "工坊", "kind": "workshop"},
+	"瞭望台": {"center": Vector2(1250, 320), "radius": 170.0, "label": "瞭望台", "kind": "lookout"},
+	"野餐点": {"center": Vector2(60, -560), "radius": 170.0, "label": "野餐点", "kind": "picnic"},
+}
+
+## Render scale per venue kind (drawers are scaled around the venue center).
+const VENUE_SCALES := {
+	"football_field": 1.45,
+	"picnic": 1.45,
+	"stage": 1.4,
+	"clock_tower": 1.35,
+	"poker_hall": 1.35,
+	"sanctum": 1.35,
+	"snack_house": 1.35,
+	"post_office": 1.35,
+	"study": 1.35,
+	"training": 1.35,
+	"workshop": 1.35,
+	"lookout": 1.35,
+}
+
+## Ground footprint half-extent per venue kind (so NPCs walk around, never on).
+const FOOTPRINTS := {
+	"football_field": 130.0,
+	"sanctum": 115.0,
+	"snack_house": 95.0,
+	"post_office": 95.0,
+	"poker_hall": 125.0,
+	"stage": 100.0,
+	"study": 100.0,
+	"clock_tower": 60.0,
+	"training": 110.0,
+	"workshop": 100.0,
+	"lookout": 95.0,
+	"picnic": 105.0,
 }
 
 const NPC_HOMES := {

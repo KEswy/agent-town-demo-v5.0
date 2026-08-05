@@ -246,15 +246,25 @@ func _choose_walk_target(initial: bool = false) -> void:
 		return
 	var home_venue := VENUE_MAP.home_venue(npc_name)
 	var home_center := VENUE_MAP.venue_center(home_venue)
-	var radius := float(VENUE_MAP.VENUES.get(home_venue, {}).get("radius", 90.0))
+	var kind := str(VENUE_MAP.VENUES.get(home_venue, {}).get("kind", ""))
+	var radius := float(VENUE_MAP.VENUES.get(home_venue, {}).get("radius", 150.0))
 	if VENUE_MAP.MINI_VENUES.has(home_venue):
-		radius = float(VENUE_MAP.MINI_VENUES[home_venue].get("radius", 90.0))
-	# Stay around the home venue building; never wander back to the meeting
-	# square. During a wolf game they are locked to the ring instead.
-	_move_target = home_center + Vector2(
-		(_rng.randf() - 0.5) * radius * 0.9,
-		(_rng.randf() - 0.5) * radius * 0.9,
-	)
+		kind = str(VENUE_MAP.MINI_VENUES[home_venue].get("kind", ""))
+		radius = float(VENUE_MAP.MINI_VENUES[home_venue].get("radius", 150.0))
+	var scale := float(VENUE_MAP.VENUE_SCALES.get(kind, 1.35))
+	var footprint := float(VENUE_MAP.FOOTPRINTS.get(kind, 90.0))
+	# Wander in a ring around the building footprint, never on top of it.
+	var min_distance := footprint * scale * 1.25
+	var max_distance := maxf(min_distance + 40.0, radius * scale * 0.95)
+	var offset_from_center := position - home_center
+	var base_angle := offset_from_center.angle()
+	if offset_from_center.length() < 5.0:
+		base_angle = _rng.randf() * TAU
+	# Stay on roughly the same side of the building so the walking path never
+	# cuts through the venue structure.
+	var angle := base_angle + (_rng.randf() - 0.5) * 2.2
+	var distance := min_distance + _rng.randf() * (max_distance - min_distance)
+	_move_target = home_center + Vector2(cos(angle), sin(angle)) * distance
 	_move_state = "walk_to"
 
 

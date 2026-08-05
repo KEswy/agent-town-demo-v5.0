@@ -5618,7 +5618,7 @@ func _poker_npc_names() -> Array:
 
 func _poker_spot_for(index: int) -> Vector2:
 	# A row in front of the poker hall entrance.
-	return Vector2(1420, -300) + Vector2((index - 2) * 48.0, 0.0)
+	return Vector2(1420, -290) + Vector2((index - 2) * 48.0, 0.0)
 
 
 func _update_player_action_history(game_data: Dictionary) -> void:

@@ -104,6 +104,8 @@ func _draw_venues() -> void:
 
 
 func _draw_venue_building(kind: String, center: Vector2) -> void:
+	var scale := float(VENUE_MAP.VENUE_SCALES.get(kind, 1.35))
+	draw_set_transform(center * (1.0 - scale), 0.0, Vector2(scale, scale))
 	match kind:
 		"football_field":
 			_draw_football_field(center)
@@ -129,6 +131,7 @@ func _draw_venue_building(kind: String, center: Vector2) -> void:
 			_draw_lookout(center)
 		"picnic":
 			_draw_picnic(center)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
 func _draw_venue_label(center: Vector2, label: String, kind: String) -> void:
