@@ -294,6 +294,13 @@ func unlock_roaming() -> void:
 		return
 	_locked = false
 	_roaming_enabled = true
+	if _stationary:
+		# Stationary NPCs go straight back to their fixed venue spot instead
+		# of staying wherever a poker session locked them.
+		var home_center := VENUE_MAP.venue_center(VENUE_MAP.home_venue(npc_name))
+		position = home_center + VENUE_MAP.STATIONARY_SPOTS[npc_name]
+		_move_state = "idle"
+		return
 	_choose_walk_target(true)
 
 

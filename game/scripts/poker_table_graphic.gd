@@ -1,7 +1,7 @@
 extends Node2D
 
-const TABLE_RADIUS := 215.0
-const RIM_WIDTH := 16.0
+const TABLE_RADIUS := 150.0
+const RIM_WIDTH := 12.0
 
 
 func _draw() -> void:
@@ -17,8 +17,8 @@ func _draw() -> void:
 		Color(0.2, 0.52, 0.3, 0.8),
 		2.0,
 	)
-	draw_circle(Vector2(0, -14), 48.0, Color(0.1, 0.3, 0.18, 0.95))
-	draw_arc(Vector2(0, -14), 48.0, 0.0, TAU, 44, Color(0.9, 0.75, 0.4, 0.85), 3.0)
+	draw_circle(Vector2(0, -6), 40.0, Color(0.1, 0.3, 0.18, 0.95))
+	draw_arc(Vector2(0, -6), 40.0, 0.0, TAU, 40, Color(0.9, 0.75, 0.4, 0.85), 3.0)
 	for marker_i in range(8):
 		var angle := TAU * float(marker_i) / 8.0
 		draw_line(

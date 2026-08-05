@@ -4260,19 +4260,20 @@ func _poker_ensure_table_built(state: Dictionary) -> void:
 		_poker_seats.append(seat)
 
 		var cards: Array = []
-		var cards_pos: Vector2 = positions[i] + dir * 58.0
-		for c in range(2):
-			var card := _poker_card_panel()
-			card.position = cards_pos + Vector2(c * 44.0 - 22.0, -26.0)
-			poker_table_area.add_child(card)
-			cards.append(card)
+		if not bool(players[i].get("is_player", false)):
+			var cards_pos: Vector2 = positions[i] + dir * 46.0
+			for c in range(2):
+				var card := _poker_card_panel_small()
+				card.position = cards_pos + Vector2(c * 32.0 - 16.0, -20.0)
+				poker_table_area.add_child(card)
+				cards.append(card)
 		_poker_seat_cards.append(cards)
 
 		var bet_label := Label.new()
-		bet_label.position = positions[i] + dir * 26.0 - Vector2(44, 10)
-		bet_label.size = Vector2(88, 20)
+		bet_label.position = positions[i] + dir * 24.0 - Vector2(36, 10)
+		bet_label.size = Vector2(72, 20)
 		bet_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		bet_label.add_theme_font_size_override("font_size", 13)
+		bet_label.add_theme_font_size_override("font_size", 12)
 		bet_label.add_theme_color_override("font_color", Color(0.75, 0.45, 0.15, 1))
 		poker_table_area.add_child(bet_label)
 		_poker_seat_bet_labels.append(bet_label)
@@ -4280,14 +4281,15 @@ func _poker_ensure_table_built(state: Dictionary) -> void:
 	# Community card slots.
 	for i in range(5):
 		var card := _poker_card_panel()
-		card.position = center + Vector2(float(i - 2) * 56.0 - 21.0, -142.0)
+		card.position = center + Vector2(float(i - 2) * 54.0 - 22.0, -88.0)
 		poker_table_area.add_child(card)
 		_poker_community_nodes.append(card)
 
-	# Player hole cards (large, face up, bottom center).
+	# Player hole cards (large, face up, bottom center; shown once).
 	for c in range(2):
 		var card := _poker_card_panel()
-		card.position = center + Vector2(float(c) * 58.0 - 57.0, 116.0)
+		card.position = center + Vector2(float(c) * 56.0 - 56.0, 96.0)
+		card.custom_minimum_size = Vector2(50, 72)
 		poker_table_area.add_child(card)
 		_poker_hole_nodes.append(card)
 
@@ -4296,7 +4298,7 @@ func _poker_ensure_table_built(state: Dictionary) -> void:
 
 func _poker_seat_positions(count: int, center: Vector2) -> Array:
 	var positions: Array = []
-	var radius := 178.0
+	var radius := 185.0
 	for i in range(count):
 		var angle := PI / 2.0 + TAU * float(i) / float(count)
 		positions.append(center + Vector2(cos(angle), sin(angle)) * radius)
@@ -4340,6 +4342,12 @@ func _poker_card_panel() -> PanelContainer:
 	return card
 
 
+func _poker_card_panel_small() -> PanelContainer:
+	var card := _poker_card_panel()
+	card.custom_minimum_size = Vector2(28, 40)
+	return card
+
+
 func _set_poker_card_face(card: PanelContainer, text: String) -> void:
 	var label: Label = card.get_child(0)
 	label.text = text
@@ -4361,8 +4369,8 @@ func _set_poker_card_face(card: PanelContainer, text: String) -> void:
 
 func _build_poker_seat(player: Dictionary, pos: Vector2, is_player: bool, _dir: Vector2) -> Control:
 	var seat := Control.new()
-	seat.custom_minimum_size = Vector2(150, 178)
-	seat.position = pos - Vector2(75, 89)
+	seat.custom_minimum_size = Vector2(96, 108)
+	seat.position = pos - Vector2(48, 54)
 
 	var highlight := PanelContainer.new()
 	highlight.name = "Highlight"
@@ -4388,33 +4396,34 @@ func _build_poker_seat(player: Dictionary, pos: Vector2, is_player: bool, _dir: 
 	var portrait_path := _poker_portrait_path(str(player.get("name", "")), is_player)
 	if ResourceLoader.exists(portrait_path):
 		portrait.texture = load(portrait_path)
-	portrait.position = Vector2(75, 56)
-	portrait.scale = Vector2(0.9, 0.9)
+	portrait.position = Vector2(48, 36)
+	portrait.scale = Vector2(0.72, 0.72)
 	seat.add_child(portrait)
 
 	var name_label := Label.new()
 	name_label.text = (L10n.t("玩家") if is_player else str(player.get("name", "?")))
-	name_label.position = Vector2(0, 128)
-	name_label.size = Vector2(150, 22)
+	name_label.position = Vector2(0, 74)
+	name_label.size = Vector2(96, 18)
 	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_label.add_theme_font_size_override("font_size", 12)
 	seat.add_child(name_label)
 
 	var stack_label := Label.new()
 	stack_label.name = "StackLabel"
 	stack_label.text = L10n.t("筹码：") + str(player.get("stack", 0))
-	stack_label.position = Vector2(0, 150)
-	stack_label.size = Vector2(150, 20)
+	stack_label.position = Vector2(0, 91)
+	stack_label.size = Vector2(96, 16)
 	stack_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	stack_label.add_theme_font_size_override("font_size", 12)
+	stack_label.add_theme_font_size_override("font_size", 10)
 	seat.add_child(stack_label)
 
 	var win_label := Label.new()
 	win_label.name = "WinLabel"
 	win_label.text = "🏆"
-	win_label.position = Vector2(0, 84)
-	win_label.size = Vector2(150, 24)
+	win_label.position = Vector2(0, 48)
+	win_label.size = Vector2(96, 24)
 	win_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	win_label.add_theme_font_size_override("font_size", 20)
+	win_label.add_theme_font_size_override("font_size", 16)
 	win_label.visible = false
 	seat.add_child(win_label)
 
@@ -4454,17 +4463,12 @@ func _update_poker_seat(index: int, player: Dictionary, acting: bool, phase: Str
 			bob.kill()
 			seat.remove_meta("bob_tween")
 			var portrait: Sprite2D = seat.get_node("Portrait")
-			portrait.position.y = float(seat.get_meta("portrait_base_y", 56.0))
+			portrait.position.y = float(seat.get_meta("portrait_base_y", 36.0))
 
-	# Seat cards: backs for NPCs, faces for the player (set later for player).
+	# Seat cards: face-down backs for NPCs only.
 	if index < _poker_seat_cards.size():
 		for card in _poker_seat_cards[index]:
 			card.modulate.a = 0.35 if bool(player.get("folded", false)) else 1.0
-		if bool(player.get("is_player", false)):
-			var hole: Array = player.get("hole_cards", [])
-			for c in range(_poker_seat_cards[index].size()):
-				if c < hole.size() and not str(hole[c]).is_empty():
-					_set_poker_card_face(_poker_seat_cards[index][c], str(hole[c]))
 
 	if index < _poker_seat_bet_labels.size():
 		var bet := int(player.get("street_bet", 0))
