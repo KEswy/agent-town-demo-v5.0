@@ -1,4 +1,4 @@
-[gd_scene load_steps=21 format=3]
+[gd_scene load_steps=22 format=3]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1_main_script"]
 [ext_resource type="PackedScene" path="res://scenes/Player.tscn" id="2_player_scene"]
@@ -7,6 +7,7 @@
 [ext_resource type="FontFile" path="res://assets/fonts/NotoSansSC-Variable.ttf" id="5_main_font"]
 [ext_resource type="PackedScene" path="res://scenes/TownBackground.tscn" id="6_town_background"]
 [ext_resource type="PackedScene" path="res://scenes/PokerHallDoor.tscn" id="7_poker_door_scene"]
+[ext_resource type="PackedScene" path="res://scenes/BoardGameDoor.tscn" id="8_board_game_door_scene"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_wolf_panel"]
 bg_color = Color(1, 0.925, 0.58, 0.97)
@@ -338,7 +339,10 @@ wolf_character_id = 0
 body_color = Color(0.95, 0.93, 0.86, 1)
 
 [node name="PokerHallDoor" parent="." instance=ExtResource("7_poker_door_scene")]
-position = Vector2(900, -260)
+position = Vector2(900, -195)
+
+[node name="BoardGameDoor" parent="." instance=ExtResource("8_board_game_door_scene")]
+position = Vector2(350, 235)
 
 [node name="UI" type="CanvasLayer" parent="."]
 

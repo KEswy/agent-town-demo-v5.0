@@ -7,6 +7,7 @@ size = Vector2(96, 96)
 
 [node name="PokerHallDoor" type="Area2D"]
 script = ExtResource("1_door")
+door_kind = "poker"
 
 [node name="DoorBody" type="Polygon2D" parent="."]
 polygon = PackedVector2Array(-38, -52, 38, -52, 38, 46, -38, 46)

@@ -1,6 +1,8 @@
 extends Area2D
 
-signal door_requested
+signal door_requested(door_kind: String)
+
+@export var door_kind: String = "poker"
 
 var _player_nearby := false
 
@@ -8,7 +10,7 @@ var _player_nearby := false
 
 
 func _ready() -> void:
-	add_to_group("poker_door")
+	add_to_group("venue_door")
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
 	nearby_marker.visible = false
@@ -20,7 +22,7 @@ func is_player_nearby() -> bool:
 
 func request_entry() -> void:
 	if _player_nearby:
-		door_requested.emit()
+		door_requested.emit(door_kind)
 
 
 func _on_body_entered(_body: Node) -> void:

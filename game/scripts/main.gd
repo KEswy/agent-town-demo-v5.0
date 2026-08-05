@@ -378,6 +378,7 @@ const CHARACTER_SKIN_PATHS := {
 @onready var poker_next_hand_button: Button = $UI/PokerTableOverlay/Panel/Margin/VBox/NextHandButton
 @onready var poker_request: HTTPRequest = $PokerRequest
 @onready var poker_hall_door: Area2D = $PokerHallDoor
+@onready var board_game_door: Area2D = $BoardGameDoor
 @onready var highlights_label: Label = $UI/GameSummaryOverlay/Panel/Margin/VBox/HighlightsLabel
 @onready var export_review_button: Button = $UI/GameSummaryOverlay/Panel/Margin/VBox/HeaderRow/ExportReviewButton
 @onready var export_stats_button: Button = $UI/StatsOverlay/Panel/Margin/VBox/HeaderRow/ExportStatsButton
@@ -684,7 +685,8 @@ func _ready() -> void:
 	poker_raise_slider.value_changed.connect(_on_poker_raise_slider_changed)
 	poker_next_hand_button.pressed.connect(_on_poker_next_hand_pressed)
 	poker_request.request_completed.connect(_on_poker_request_completed)
-	poker_hall_door.door_requested.connect(_on_poker_door_requested)
+	poker_hall_door.door_requested.connect(_on_venue_door_requested)
+	board_game_door.door_requested.connect(_on_venue_door_requested)
 	archive_close_button.pressed.connect(_on_archive_close_button_pressed)
 	archive_request.request_completed.connect(_on_archive_request_completed)
 	export_review_button.pressed.connect(_on_export_review_pressed)
@@ -731,7 +733,6 @@ func _ready() -> void:
 	_set_wolf_menu_expanded(false, false)
 	_set_key_info_expanded(false, false)
 	_set_intel_panel_open(false)
-	_show_game_setup()
 	_request_recovery_status()
 	call_deferred("_update_npc_roaming")
 
@@ -1866,7 +1867,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 
-	var nearby_door = _get_nearby_poker_door()
+	var nearby_door = _get_nearby_venue_door()
 	if nearby_door != null:
 		nearby_door.call("request_entry")
 		get_viewport().set_input_as_handled()
@@ -1878,8 +1879,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
-func _get_nearby_poker_door():
-	for door in get_tree().get_nodes_in_group("poker_door"):
+func _get_nearby_venue_door():
+	for door in get_tree().get_nodes_in_group("venue_door"):
 		if door.call("is_player_nearby"):
 			return door
 	return null
@@ -3985,8 +3986,11 @@ func _build_spectate_character_card(character: Dictionary) -> Control:
 	return box
 
 
-func _on_poker_door_requested() -> void:
-	_open_poker_table()
+func _on_venue_door_requested(door_kind: String) -> void:
+	if door_kind == "boardgame":
+		_show_game_setup()
+	else:
+		_open_poker_table()
 
 
 func _open_poker_table() -> void:
@@ -5610,8 +5614,8 @@ func _poker_npc_names() -> Array:
 
 
 func _poker_spot_for(index: int) -> Vector2:
-	# A small arc in front of the poker hall door.
-	return Vector2(900, -260) + Vector2((index - 2) * 48.0, 96.0)
+	# A row in front of the poker hall entrance.
+	return Vector2(900, -140) + Vector2((index - 2) * 48.0, 0.0)
 
 
 func _update_player_action_history(game_data: Dictionary) -> void:

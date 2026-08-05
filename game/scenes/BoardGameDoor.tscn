@@ -1,0 +1,41 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/poker_door.gd" id="1_door"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_board"]
+size = Vector2(96, 96)
+
+[node name="BoardGameDoor" type="Area2D"]
+script = ExtResource("1_door")
+door_kind = "boardgame"
+
+[node name="Counter" type="Polygon2D" parent="."]
+polygon = PackedVector2Array(-46, 18, 46, 18, 52, -22, -52, -22)
+color = Color(0.66, 0.5, 0.3, 1)
+
+[node name="CounterTop" type="Polygon2D" parent="."]
+position = Vector2(0, -22)
+polygon = PackedVector2Array(-52, -12, 52, -12, 56, -24, -56, -24)
+color = Color(0.76, 0.6, 0.38, 1)
+
+[node name="Sign" type="Polygon2D" parent="."]
+position = Vector2(0, -46)
+polygon = PackedVector2Array(-40, -16, 40, -16, 40, 16, -40, 16)
+color = Color(0.42, 0.3, 0.55, 1)
+
+[node name="NameLabel" type="Label" parent="."]
+offset_left = -44.0
+offset_top = -62.0
+offset_right = 44.0
+offset_bottom = -40.0
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_font_sizes/font_size = 13
+text = "桌游馆"
+horizontal_alignment = 1
+
+[node name="NearbyMarker" type="Polygon2D" parent="."]
+polygon = PackedVector2Array(-58, -70, 58, -70, 58, 62, -58, 62)
+color = Color(1, 0.9, 0.32, 0.22)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("RectangleShape2D_board")

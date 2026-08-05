@@ -94,27 +94,316 @@ func _draw() -> void:
 
 
 func _draw_venues() -> void:
-	var font := ThemeDB.fallback_font
 	for venue in [VENUE_MAP.VENUES, VENUE_MAP.MINI_VENUES]:
 		for venue_name in venue:
 			var data: Dictionary = venue[venue_name]
 			var center: Vector2 = data["center"]
-			var radius: float = data["radius"]
-			draw_circle(center, radius, data["fill"])
-			draw_arc(center, radius + 4.0, 0.0, TAU, 48, data["ring"], 3.0)
-			draw_string(
-				font,
-				center + Vector2(-radius * 0.55, 5.0),
-				str(data["label"]),
-				HORIZONTAL_ALIGNMENT_CENTER,
-				radius * 1.1,
-				14,
-				Color(1, 1, 1, 0.98),
-				TextServer.JUSTIFICATION_NONE,
-				TextServer.DIRECTION_AUTO,
-				TextServer.ORIENTATION_HORIZONTAL,
-				6,
-			)
+			var kind := str(data["kind"])
+			_draw_venue_building(kind, center)
+			_draw_venue_label(center, str(data["label"]), kind)
+
+
+func _draw_venue_building(kind: String, center: Vector2) -> void:
+	match kind:
+		"football_field":
+			_draw_football_field(center)
+		"sanctum":
+			_draw_sanctum(center)
+		"snack_house":
+			_draw_snack_house(center)
+		"post_office":
+			_draw_post_office(center)
+		"poker_hall":
+			_draw_poker_hall(center)
+		"stage":
+			_draw_stage(center)
+		"study":
+			_draw_study(center)
+		"clock_tower":
+			_draw_clock_tower(center)
+		"training":
+			_draw_training(center)
+		"workshop":
+			_draw_workshop(center)
+		"lookout":
+			_draw_lookout(center)
+		"picnic":
+			_draw_picnic(center)
+
+
+func _draw_venue_label(center: Vector2, label: String, kind: String) -> void:
+	var font := ThemeDB.fallback_font
+	var label_offset := 52.0
+	match kind:
+		"football_field":
+			label_offset = 64.0
+		"clock_tower":
+			label_offset = 84.0
+		"stage":
+			label_offset = 44.0
+		"picnic":
+			label_offset = 52.0
+	draw_string(
+		font,
+		center + Vector2(-34.0, label_offset),
+		label,
+		HORIZONTAL_ALIGNMENT_CENTER,
+		68.0,
+		13,
+		Color(1, 1, 1, 0.96),
+		TextServer.JUSTIFICATION_NONE,
+		TextServer.DIRECTION_AUTO,
+		TextServer.ORIENTATION_HORIZONTAL,
+		6,
+	)
+
+
+func _draw_shadow(center: Vector2, width: float, height: float) -> void:
+	draw_rect(
+		Rect2(center + Vector2(-width * 0.5 + 6.0, -height * 0.5 + 9.0), Vector2(width, height)),
+		Color(0.1, 0.2, 0.16, 0.2),
+	)
+
+
+func _draw_football_field(center: Vector2) -> void:
+	var pitch := Rect2(center + Vector2(-82, -54), Vector2(164, 108))
+	_draw_shadow(center, 180, 124)
+	draw_rect(pitch, Color(0.36, 0.62, 0.32, 1))
+	draw_rect(pitch, Color(0.94, 0.96, 0.9, 0.95), false, 3.0)
+	draw_line(
+		center + Vector2(0, -54),
+		center + Vector2(0, 54),
+		Color(0.94, 0.96, 0.9, 0.9),
+		2.0,
+	)
+	draw_arc(center, 20.0, 0.0, TAU, 32, Color(0.94, 0.96, 0.9, 0.9), 2.0)
+	for side in [-1.0, 1.0]:
+		draw_rect(
+			Rect2(center + Vector2(side * 82.0 - (6.0 if side < 0 else 0.0), -20), Vector2(6, 40)),
+			Color(0.94, 0.96, 0.9, 0.9),
+		)
+		draw_rect(
+			Rect2(center + Vector2(side * 58.0 - (6.0 if side < 0 else 0.0), -34), Vector2(6, 68)),
+			Color(0.94, 0.96, 0.9, 0.9),
+		)
+
+
+func _draw_sanctum(center: Vector2) -> void:
+	_draw_shadow(center, 176, 116)
+	var wall_color := Color(0.28, 0.25, 0.55, 1)
+	var gold := Color(0.88, 0.66, 0.26, 1)
+	draw_rect(Rect2(center + Vector2(-80, -48), Vector2(160, 96)), wall_color)
+	draw_colored_polygon(
+		PackedVector2Array([
+			center + Vector2(-96, -48),
+			center + Vector2(-38, -88),
+			center + Vector2(38, -88),
+			center + Vector2(96, -48),
+		]),
+		gold,
+	)
+	draw_rect(Rect2(center + Vector2(-82, -50), Vector2(164, 5)), gold)
+	draw_arc(center + Vector2(0, -8), 30.0, 0.0, TAU, 40, gold, 4.0)
+	draw_circle(center + Vector2(0, -8), 24.0, Color(0.68, 0.82, 1, 1))
+	for spoke in range(6):
+		var angle := TAU * float(spoke) / 6.0
+		draw_line(
+			center + Vector2(0, -8) + Vector2(cos(angle), sin(angle)) * 7.0,
+			center + Vector2(0, -8) + Vector2(cos(angle), sin(angle)) * 22.0,
+			gold,
+			2.0,
+		)
+	draw_rect(Rect2(center + Vector2(-20, 12), Vector2(40, 36)), Color(0.12, 0.1, 0.2, 1))
+	draw_arc(center + Vector2(0, 30), 20.0, 0.0, PI, 24, gold, 3.0)
+	draw_rect(Rect2(center + Vector2(-88, -8), Vector2(8, 40)), gold)
+	draw_rect(Rect2(center + Vector2(80, -8), Vector2(8, 40)), gold)
+	draw_circle(center + Vector2(0, -102), 7.0, gold)
+
+
+func _draw_snack_house(center: Vector2) -> void:
+	_draw_house_at(
+		center,
+		150.0,
+		104.0,
+		Color(0.98, 0.86, 0.62, 1),
+		Color(0.78, 0.34, 0.3, 1),
+	)
+	var counter_y := center.y + 52.0
+	draw_rect(Rect2(center + Vector2(-56, counter_y - 16), Vector2(112, 14)), Color(0.78, 0.58, 0.3, 1))
+	for stripe_x in range(-56, 56, 28):
+		draw_rect(
+			Rect2(center + Vector2(float(stripe_x), counter_y - 30), Vector2(14, 14)),
+			Color(0.95, 0.75, 0.3, 1) if (stripe_x / 28) % 2 == 0 else Color(0.85, 0.45, 0.4, 1),
+		)
+	draw_rect(Rect2(center + Vector2(-46, counter_y - 40), Vector2(92, 10)), Color(0.6, 0.42, 0.22, 1))
+
+
+func _draw_post_office(center: Vector2) -> void:
+	_draw_house_at(
+		center,
+		150.0,
+		104.0,
+		Color(0.72, 0.88, 0.96, 1),
+		Color(0.28, 0.42, 0.62, 1),
+	)
+	var mailbox := center + Vector2(62, 20)
+	draw_line(mailbox + Vector2(0, 26), mailbox + Vector2(0, -6), Color(0.42, 0.3, 0.18, 1), 5.0)
+	draw_rect(Rect2(mailbox + Vector2(-16, -26), Vector2(32, 22)), Color(0.22, 0.4, 0.7, 1))
+	draw_rect(Rect2(mailbox + Vector2(-16, -26), Vector2(32, 4)), Color(0.9, 0.9, 0.95, 1))
+	draw_rect(Rect2(mailbox + Vector2(10, -32), Vector2(6, 10)), Color(0.8, 0.3, 0.25, 1))
+
+
+func _draw_poker_hall(center: Vector2) -> void:
+	_draw_shadow(center, 190, 128)
+	var navy := Color(0.3, 0.4, 0.52, 1)
+	var gold := Color(0.95, 0.78, 0.25, 1)
+	draw_rect(Rect2(center + Vector2(-86, -54), Vector2(172, 104)), navy)
+	draw_colored_polygon(
+		PackedVector2Array([
+			center + Vector2(-100, -54),
+			center + Vector2(-44, -90),
+			center + Vector2(44, -90),
+			center + Vector2(100, -54),
+		]),
+		gold,
+	)
+	draw_rect(Rect2(center + Vector2(-88, -56), Vector2(176, 5)), Color(0.98, 0.9, 0.6, 1))
+	for chip_y in [-118.0, -104.0, -90.0]:
+		draw_circle(center + Vector2(0, chip_y), 14.0, Color(0.82, 0.3, 0.28, 1))
+		draw_arc(center + Vector2(0, chip_y), 14.0, 0.0, TAU, 24, Color(0.98, 0.9, 0.6, 1), 2.5)
+	draw_rect(Rect2(center + Vector2(-20, 22), Vector2(40, 30)), Color(0.14, 0.18, 0.24, 1))
+	draw_rect(Rect2(center + Vector2(-24, 14), Vector2(48, 10)), Color(0.9, 0.82, 0.62, 1))
+
+
+func _draw_stage(center: Vector2) -> void:
+	_draw_shadow(center, 160, 52)
+	draw_rect(Rect2(center + Vector2(-76, -14), Vector2(152, 26)), Color(0.68, 0.5, 0.3, 1))
+	draw_rect(Rect2(center + Vector2(-76, -14), Vector2(152, 6)), Color(0.78, 0.6, 0.36, 1))
+	for rail_x in range(-76, 76, 38):
+		draw_rect(Rect2(center + Vector2(float(rail_x), 12), Vector2(5, 16)), Color(0.45, 0.33, 0.2, 1))
+	draw_line(center + Vector2(-30, -14), center + Vector2(-30, -68), Color(0.5, 0.38, 0.22, 1), 4.0)
+	draw_circle(center + Vector2(-30, -72), 6.0, Color(0.2, 0.22, 0.28, 1))
+	draw_line(center + Vector2(-30, -76), center + Vector2(-30, -80), Color(0.2, 0.22, 0.28, 1), 2.0)
+	draw_rect(Rect2(center + Vector2(38, -8), Vector2(22, 20)), Color(0.28, 0.3, 0.34, 1))
+	draw_circle(center + Vector2(49, -14), 8.0, Color(0.28, 0.3, 0.34, 1))
+
+
+func _draw_study(center: Vector2) -> void:
+	_draw_house_at(
+		center,
+		140.0,
+		100.0,
+		Color(0.93, 0.87, 0.72, 1),
+		Color(0.34, 0.55, 0.38, 1),
+	)
+	var window_rect := Rect2(center + Vector2(30, -14), Vector2(44, 46))
+	draw_rect(window_rect, Color(0.72, 0.85, 0.92, 1))
+	draw_rect(Rect2(center + Vector2(24, -20), Vector2(56, 4)), Color(0.5, 0.4, 0.26, 1))
+	for shelf in range(3):
+		var y := window_rect.position.y + 8.0 + float(shelf) * 14.0
+		draw_rect(Rect2(window_rect.position + Vector2(6, y), Vector2(32, 5)), Color(0.5 + shelf * 0.12, 0.3 + shelf * 0.1, 0.4, 1))
+
+
+func _draw_clock_tower(center: Vector2) -> void:
+	_draw_shadow(center, 110, 150)
+	draw_rect(Rect2(center + Vector2(-46, -6), Vector2(92, 78)), Color(0.8, 0.76, 0.68, 1))
+	draw_rect(Rect2(center + Vector2(-34, -86), Vector2(68, 80)), Color(0.86, 0.82, 0.74, 1))
+	draw_arc(center + Vector2(0, -58), 24.0, 0.0, TAU, 36, Color(0.4, 0.35, 0.3, 1), 3.0)
+	draw_circle(center + Vector2(0, -58), 19.0, Color(0.96, 0.94, 0.86, 1))
+	draw_line(center + Vector2(0, -58), center + Vector2(0, -46), Color(0.3, 0.28, 0.26, 1), 2.5)
+	draw_line(center + Vector2(0, -58), center + Vector2(10, -58), Color(0.3, 0.28, 0.26, 1), 2.5)
+	draw_colored_polygon(
+		PackedVector2Array([
+			center + Vector2(-52, -86),
+			center + Vector2(0, -138),
+			center + Vector2(52, -86),
+		]),
+		Color(0.72, 0.36, 0.32, 1),
+	)
+	draw_rect(Rect2(center + Vector2(-14, 44), Vector2(28, 28)), Color(0.42, 0.3, 0.2, 1))
+
+
+func _draw_training(center: Vector2) -> void:
+	_draw_shadow(center, 130, 104)
+	draw_rect(Rect2(center + Vector2(-62, -48), Vector2(124, 96)), Color(0.6, 0.55, 0.44, 1))
+	for corner in [Vector2(-62, -48), Vector2(62, -48), Vector2(-62, 48), Vector2(62, 48)]:
+		draw_rect(Rect2(center + corner - Vector2(4, 4), Vector2(8, 8)), Color(0.4, 0.34, 0.26, 1))
+	draw_line(center + Vector2(-62, -34), center + Vector2(62, -34), Color(0.5, 0.44, 0.34, 1), 4.0)
+	draw_line(center + Vector2(-62, 34), center + Vector2(62, 34), Color(0.5, 0.44, 0.34, 1), 4.0)
+	var dummy := center + Vector2(0, 10)
+	draw_line(dummy + Vector2(0, 32), dummy + Vector2(0, -14), Color(0.52, 0.4, 0.26, 1), 6.0)
+	draw_rect(Rect2(dummy + Vector2(-14, -18), Vector2(28, 30)), Color(0.78, 0.7, 0.55, 1))
+	draw_circle(dummy + Vector2(0, -30), 9.0, Color(0.68, 0.5, 0.32, 1))
+	draw_line(dummy + Vector2(-12, -10), dummy + Vector2(-26, 8), Color(0.52, 0.4, 0.26, 1), 4.0)
+	draw_line(dummy + Vector2(12, -10), dummy + Vector2(26, 8), Color(0.52, 0.4, 0.26, 1), 4.0)
+
+
+func _draw_workshop(center: Vector2) -> void:
+	_draw_house_at(
+		center,
+		140.0,
+		100.0,
+		Color(0.76, 0.72, 0.66, 1),
+		Color(0.5, 0.38, 0.26, 1),
+	)
+	draw_rect(Rect2(center + Vector2(-58, -74), Vector2(20, 30)), Color(0.4, 0.32, 0.24, 1))
+	for puff_y in [-86.0, -98.0, -108.0]:
+		draw_circle(center + Vector2(-48, puff_y), 7.0, Color(0.85, 0.83, 0.78, 0.7))
+
+
+func _draw_lookout(center: Vector2) -> void:
+	_draw_shadow(center, 120, 96)
+	draw_rect(Rect2(center + Vector2(-52, 18), Vector2(8, 30)), Color(0.45, 0.33, 0.2, 1))
+	draw_rect(Rect2(center + Vector2(44, 18), Vector2(8, 30)), Color(0.45, 0.33, 0.2, 1))
+	draw_rect(Rect2(center + Vector2(-58, -24), Vector2(116, 10)), Color(0.66, 0.5, 0.3, 1))
+	draw_line(center + Vector2(-58, -18), center + Vector2(-58, 10), Color(0.5, 0.38, 0.24, 1), 3.0)
+	draw_line(center + Vector2(58, -18), center + Vector2(58, 10), Color(0.5, 0.38, 0.24, 1), 3.0)
+	draw_line(center + Vector2(-58, -18), center + Vector2(58, -18), Color(0.55, 0.42, 0.26, 1), 3.0)
+	draw_colored_polygon(
+		PackedVector2Array([
+			center + Vector2(-46, -24),
+			center + Vector2(0, -58),
+			center + Vector2(46, -24),
+		]),
+		Color(0.72, 0.46, 0.3, 1),
+	)
+
+
+func _draw_picnic(center: Vector2) -> void:
+	_draw_shadow(center, 130, 78)
+	draw_rect(Rect2(center + Vector2(-60, -34), Vector2(120, 68)), Color(0.85, 0.55, 0.5, 1))
+	draw_rect(Rect2(center + Vector2(-60, -34), Vector2(60, 34)), Color(0.92, 0.84, 0.68, 1))
+	draw_rect(Rect2(center + Vector2(0, 0), Vector2(60, 34)), Color(0.92, 0.84, 0.68, 1))
+	draw_line(center + Vector2(-60, -17), center + Vector2(60, -17), Color(0.8, 0.7, 0.56, 1), 2.0)
+	draw_line(center + Vector2(-30, -34), center + Vector2(-30, 34), Color(0.8, 0.7, 0.56, 1), 2.0)
+	draw_line(center + Vector2(30, -34), center + Vector2(30, 34), Color(0.8, 0.7, 0.56, 1), 2.0)
+	var basket := center + Vector2(30, 4)
+	draw_colored_polygon(
+		PackedVector2Array([
+			basket + Vector2(-20, -14),
+			basket + Vector2(20, -14),
+			basket + Vector2(14, 6),
+			basket + Vector2(-14, 6),
+		]),
+		Color(0.72, 0.5, 0.28, 1),
+	)
+	draw_arc(basket + Vector2(0, -14), 12.0, PI, TAU, 12, Color(0.55, 0.38, 0.22, 1), 3.0)
+
+
+func _draw_house_at(
+	center: Vector2,
+	width: float,
+	height: float,
+	wall_color: Color,
+	roof_color: Color,
+) -> void:
+	_draw_shadow(center, width, height)
+	_draw_house(
+		center - Vector2(width * 0.5, height * 0.5),
+		Vector2(width, height),
+		wall_color,
+		roof_color,
+	)
 
 
 func _draw_ground() -> void:

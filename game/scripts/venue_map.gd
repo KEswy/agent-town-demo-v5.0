@@ -9,11 +9,12 @@ const POKER_DOOR_POSITION := Vector2(900, -260)
 
 const VENUES := {
 	"球场": {
-		"center": Vector2(880, 130),
+		"center": Vector2(880, 165),
 		"radius": 92.0,
 		"fill": Color(0.45, 0.7, 0.38, 0.8),
 		"ring": Color(1, 1, 1, 0.85),
 		"label": "球场",
+		"kind": "football_field",
 	},
 	"至圣所": {
 		"center": Vector2(-430, -140),
@@ -21,6 +22,7 @@ const VENUES := {
 		"fill": Color(0.24, 0.21, 0.45, 0.85),
 		"ring": Color(0.88, 0.66, 0.26, 0.95),
 		"label": "至圣所",
+		"kind": "sanctum",
 	},
 	"点心屋": {
 		"center": Vector2(-170, 0),
@@ -28,13 +30,15 @@ const VENUES := {
 		"fill": Color(0.94, 0.8, 0.58, 0.88),
 		"ring": Color(0.78, 0.5, 0.28, 0.95),
 		"label": "点心屋",
+		"kind": "snack_house",
 	},
 	"心情邮局": {
-		"center": Vector2(870, 0),
+		"center": Vector2(870, -15),
 		"radius": 78.0,
 		"fill": Color(0.86, 0.72, 0.92, 0.88),
 		"ring": Color(0.52, 0.32, 0.62, 0.95),
 		"label": "心情邮局",
+		"kind": "post_office",
 	},
 	"德州扑克馆": {
 		"center": Vector2(900, -260),
@@ -42,17 +46,18 @@ const VENUES := {
 		"fill": Color(0.36, 0.46, 0.56, 0.88),
 		"ring": Color(0.95, 0.78, 0.25, 0.95),
 		"label": "德州扑克馆",
+		"kind": "poker_hall",
 	},
 }
 
 const MINI_VENUES := {
-	"练歌台": {"center": Vector2(60, -140), "radius": 42.0, "fill": Color(0.85, 0.76, 0.9, 0.72), "ring": Color(0.62, 0.52, 0.72, 0.85), "label": "练歌台"},
-	"书房": {"center": Vector2(180, 60), "radius": 42.0, "fill": Color(0.86, 0.8, 0.68, 0.72), "ring": Color(0.62, 0.55, 0.4, 0.85), "label": "书房"},
-	"钟楼": {"center": Vector2(60, 40), "radius": 42.0, "fill": Color(0.78, 0.84, 0.9, 0.72), "ring": Color(0.5, 0.6, 0.7, 0.85), "label": "钟楼"},
-	"训练场": {"center": Vector2(420, 150), "radius": 46.0, "fill": Color(0.72, 0.66, 0.58, 0.72), "ring": Color(0.55, 0.45, 0.35, 0.85), "label": "训练场"},
-	"工坊": {"center": Vector2(150, 120), "radius": 42.0, "fill": Color(0.8, 0.74, 0.6, 0.72), "ring": Color(0.55, 0.48, 0.35, 0.85), "label": "工坊"},
-	"瞭望台": {"center": Vector2(-120, 120), "radius": 42.0, "fill": Color(0.7, 0.78, 0.72, 0.72), "ring": Color(0.5, 0.6, 0.52, 0.85), "label": "瞭望台"},
-	"野餐点": {"center": Vector2(-60, -60), "radius": 44.0, "fill": Color(0.88, 0.82, 0.6, 0.72), "ring": Color(0.6, 0.55, 0.35, 0.85), "label": "野餐点"},
+	"练歌台": {"center": Vector2(632, -118), "radius": 46.0, "label": "练歌台", "kind": "stage"},
+	"书房": {"center": Vector2(657, 41), "radius": 46.0, "label": "书房", "kind": "study"},
+	"钟楼": {"center": Vector2(584, 187), "radius": 50.0, "label": "钟楼", "kind": "clock_tower"},
+	"训练场": {"center": Vector2(437, 273), "radius": 52.0, "label": "训练场", "kind": "training"},
+	"工坊": {"center": Vector2(263, 273), "radius": 46.0, "label": "工坊", "kind": "workshop"},
+	"瞭望台": {"center": Vector2(116, 187), "radius": 46.0, "label": "瞭望台", "kind": "lookout"},
+	"野餐点": {"center": Vector2(43, 41), "radius": 48.0, "label": "野餐点", "kind": "picnic"},
 }
 
 const NPC_HOMES := {
