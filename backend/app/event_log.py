@@ -183,6 +183,11 @@ def normalized_rule_state_payload(game_state: BaseModel) -> dict[str, object]:
                 and character.get("idiot_flipped", False) is False
             ):
                 character.pop("idiot_flipped", None)
+    # The wolf self-kill designation is a per-night derived decision.  An
+    # absent value (None) is inert and must not break the historic digest;
+    # a real designation (a character id) stays sealed.
+    if payload.get("wolf_self_kill_id") is None:
+        payload.pop("wolf_self_kill_id", None)
     return payload
 
 

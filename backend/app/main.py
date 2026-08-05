@@ -1038,6 +1038,7 @@ def load_validated_saved_game(
                 "npc_policy_mode",
                 "npc_policy_descriptors",
                 "npc_reasoning_states",
+                "wolf_self_kill_id",
             )
             if field not in envelope.state
         }
