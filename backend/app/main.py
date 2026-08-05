@@ -191,6 +191,9 @@ async def app_lifespan(_app: FastAPI):
 
 app = FastAPI(title="Agent Town Backend", lifespan=app_lifespan)
 SPECTATE_HTML_FILE = Path(__file__).resolve().parent.parent / "spectate.html"
+from .poker_api import router as poker_router  # noqa: E402
+
+app.include_router(poker_router)
 from .config import (
     BADGE_FLOW_REASON_LABELS,
     CAMP_BY_ROLE,
