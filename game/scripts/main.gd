@@ -5586,9 +5586,12 @@ func _update_player_identity_display(game_data: Dictionary) -> void:
 func _update_npc_roaming() -> void:
 	# Wolf games lock everyone to the meeting ring; an open poker session moves
 	# its five participants to the poker hall; otherwise NPCs roam their venues.
+	# A saved slot's game id alone must NOT lock anyone: the game has to be
+	# actually loaded (state rendered) for the ring to activate.
 	var wolf_locked := (
 		not _current_wolf_game_id.is_empty()
 		and _current_wolf_phase != "GAME_OVER"
+		and not _latest_wolf_game_data.is_empty()
 	)
 	var poker_names: Array = _poker_npc_names()
 	for npc in get_tree().get_nodes_in_group("npc"):
