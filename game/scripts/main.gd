@@ -1904,7 +1904,11 @@ func _on_npc_dialog_requested(npc_name: String, dialog_text: String, wolf_charac
 	_current_npc_name = npc_name
 	_current_npc_character_id = wolf_character_id
 
-	if _current_wolf_game_id.is_empty() or wolf_character_id <= 0:
+	if (
+		_current_wolf_game_id.is_empty()
+		or wolf_character_id <= 0
+		or _latest_wolf_game_data.is_empty()
+	):
 		var prompt_text := "随时都可以聊！配置了 DeepSeek 时我会以我的性格和你对话，失败时也会安全回退。"
 		dialog_box.call("show_prompt", npc_name, prompt_text)
 		return
