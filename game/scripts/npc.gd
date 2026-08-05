@@ -41,6 +41,9 @@ var _locked := false
 var _facing_right := true
 var _poker_indicator_visible := false
 var _rng := RandomNumberGenerator.new()
+var _activity_lines: Array = []
+var _next_bubble_at := 0
+var _bubble_visible_until := 0
 
 @onready var body_shape: Polygon2D = $Body
 @onready var character_sprite: Sprite2D = $CharacterSprite
@@ -52,6 +55,7 @@ var _rng := RandomNumberGenerator.new()
 @onready var speech_hint: Node2D = $SpeechHint
 @onready var name_label: Label = $NameLabel
 @onready var poker_indicator: Label = $PokerIndicator
+@onready var activity_bubble: Label = $ActivityBubble
 
 
 func _ready() -> void:
@@ -62,9 +66,11 @@ func _ready() -> void:
 	turn_indicator.visible = false
 	speech_hint.visible = false
 	poker_indicator.visible = false
+	activity_bubble.visible = false
 	body_shape.color = body_color
 	_load_character_skin()
 	_init_movement()
+	_setup_activity_bubble()
 	_update_visual_state()
 
 
@@ -142,6 +148,43 @@ func _process(_delta: float) -> void:
 	if turn_indicator.visible:
 		turn_indicator.position.y = -56.0 + sin(Time.get_ticks_msec() / 180.0) * 4.0
 	_process_movement(_delta)
+	_process_activity_bubble()
+
+
+func _setup_activity_bubble() -> void:
+	_activity_lines = VENUE_MAP.NPC_ACTIVITIES.get(npc_name, {}).get("lines", [])
+	var bubble_style := StyleBoxFlat.new()
+	bubble_style.bg_color = Color(1, 0.98, 0.9, 0.96)
+	bubble_style.corner_radius_top_left = 9
+	bubble_style.corner_radius_top_right = 9
+	bubble_style.corner_radius_bottom_right = 9
+	bubble_style.corner_radius_bottom_left = 9
+	bubble_style.border_width_left = 1
+	bubble_style.border_width_top = 1
+	bubble_style.border_width_right = 1
+	bubble_style.border_width_bottom = 1
+	bubble_style.border_color = Color(0.25, 0.2, 0.12, 0.7)
+	activity_bubble.add_theme_stylebox_override("normal", bubble_style)
+	_next_bubble_at = Time.get_ticks_msec() + _rng.randi_range(2500, 7000)
+
+
+func _process_activity_bubble() -> void:
+	var now := Time.get_ticks_msec()
+	if _locked or not _roaming_enabled or _activity_lines.is_empty():
+		if activity_bubble.visible:
+			activity_bubble.visible = false
+		return
+	if activity_bubble.visible:
+		if now >= _bubble_visible_until:
+			activity_bubble.visible = false
+		return
+	if now >= _next_bubble_at:
+		activity_bubble.text = str(
+			_activity_lines[_rng.randi_range(0, _activity_lines.size() - 1)]
+		)
+		activity_bubble.visible = true
+		_bubble_visible_until = now + 4200
+		_next_bubble_at = now + _rng.randi_range(9000, 20000)
 
 
 func _init_movement() -> void:
@@ -203,19 +246,15 @@ func _choose_walk_target(initial: bool = false) -> void:
 		return
 	var home_venue := VENUE_MAP.home_venue(npc_name)
 	var home_center := VENUE_MAP.venue_center(home_venue)
-	var roll := _rng.randf()
-	if roll < 0.58 or initial:
-		var radius := float(VENUE_MAP.VENUES.get(home_venue, {}).get("radius", 90.0))
-		if VENUE_MAP.MINI_VENUES.has(home_venue):
-			radius = float(VENUE_MAP.MINI_VENUES[home_venue].get("radius", 90.0))
-		# Walk around the building rather than standing on top of it.
-		_move_target = home_center + Vector2(
-			(_rng.randf() - 0.5) * radius * 1.7,
-			(_rng.randf() - 0.5) * radius * 1.7,
-		)
-	else:
-		var targets: Array = VENUE_MAP.interest_targets(npc_name)
-		_move_target = targets[_rng.randi_range(0, targets.size() - 1)]
+	var radius := float(VENUE_MAP.VENUES.get(home_venue, {}).get("radius", 90.0))
+	if VENUE_MAP.MINI_VENUES.has(home_venue):
+		radius = float(VENUE_MAP.MINI_VENUES[home_venue].get("radius", 90.0))
+	# Stay around the home venue building; never wander back to the meeting
+	# square. During a wolf game they are locked to the ring instead.
+	_move_target = home_center + Vector2(
+		(_rng.randf() - 0.5) * radius * 0.9,
+		(_rng.randf() - 0.5) * radius * 0.9,
+	)
 	_move_state = "walk_to"
 
 
