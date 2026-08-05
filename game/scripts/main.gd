@@ -4105,14 +4105,26 @@ func _on_poker_request_completed(
 ) -> void:
 	_poker_requesting = false
 	if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
-		poker_phase_label.text = L10n.t("后端未连接")
+		var detail := ""
+		var json := JSON.new()
+		if (
+			json.parse(body.get_string_from_utf8()) == OK
+			and typeof(json.data) == TYPE_DICTIONARY
+			and not str(json.data.get("detail", "")).is_empty()
+		):
+			detail = str(json.data.get("detail", ""))
+		poker_phase_label.text = (
+			L10n.t("操作失败：") + detail
+			if not detail.is_empty()
+			else L10n.t("后端未连接")
+		)
 		_set_poker_controls_from_state(_poker_state)
 		return
 	var json := JSON.new()
 	if json.parse(body.get_string_from_utf8()) != OK or typeof(json.data) != TYPE_DICTIONARY:
 		return
 	var data: Dictionary = json.data
-	if data.has("table_id"):
+	if data.has("state") and typeof(data.get("state")) == TYPE_DICTIONARY:
 		_poker_table_id = str(data.get("table_id", ""))
 		_poker_state = data.get("state", {})
 	else:
@@ -4159,7 +4171,7 @@ func _render_poker_state(state: Dictionary) -> void:
 		poker_community_label.text = L10n.t("公共牌：—")
 
 	_clear_control_children(poker_players_list)
-	var current_actor := int(state.get("current_actor", -1))
+	var current_actor := _safe_int(state.get("current_actor"), -1)
 	var phase := str(state.get("phase", ""))
 	for player in state.get("players", []):
 		if typeof(player) != TYPE_DICTIONARY:
@@ -4167,6 +4179,12 @@ func _render_poker_state(state: Dictionary) -> void:
 		poker_players_list.add_child(_build_poker_player_row(player, current_actor, phase))
 	_set_poker_controls_from_state(state)
 	_record_poker_result(state)
+
+
+func _safe_int(value: Variant, default_value: int) -> int:
+	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
+		return int(value)
+	return default_value
 
 
 func _record_poker_result(state: Dictionary) -> void:
@@ -4289,7 +4307,7 @@ func _set_poker_controls_from_state(state: Dictionary) -> void:
 		poker_next_hand_button.disabled = false
 		return
 	var player := _poker_player_dict(state)
-	var is_turn := int(state.get("current_actor", -1)) == int(player.get("seat", -1))
+	var is_turn := _safe_int(state.get("current_actor"), -1) == int(player.get("seat", -1))
 	var can_act := is_turn and not bool(player.get("folded", false)) and not bool(player.get("all_in", false))
 	poker_fold_button.disabled = not can_act
 	poker_check_call_button.disabled = not can_act
@@ -4303,11 +4321,13 @@ func _set_poker_controls_from_state(state: Dictionary) -> void:
 			poker_check_call_button.text = L10n.t("过牌")
 		else:
 			poker_check_call_button.text = L10n.t("跟注 ") + str(to_call)
-		var min_raise := maxi(20, int(state.get("min_raise", 20)))
+		var min_raise_size := maxi(20, int(state.get("min_raise", 20)))
+		var min_raise_total := int(state.get("current_bet", 0)) + min_raise_size
 		var max_raise := int(player.get("street_bet", 0)) + int(player.get("stack", 0))
-		poker_raise_slider.min_value = float(mini(min_raise, max_raise))
-		poker_raise_slider.max_value = float(maxi(min_raise, max_raise))
-		poker_raise_slider.value = float(mini(min_raise, max_raise))
+		var low := mini(min_raise_total, max_raise)
+		poker_raise_slider.min_value = float(low)
+		poker_raise_slider.max_value = float(maxi(low, max_raise))
+		poker_raise_slider.value = float(low)
 		poker_raise_value_label.text = L10n.t("加注到 ") + str(int(poker_raise_slider.value))
 
 

@@ -458,26 +458,27 @@ class PokerTable:
                 player.all_in = True
             self._sync_history(f"{player.name} 跟注 {real_call}。")
         elif action == "raise":
-            if (
-                amount < self.min_raise
-                and amount < player.stack + player.street_bet
-            ):
-                raise ValueError(
-                    f"加注不能低于最小加注额 {self.min_raise}"
-                )
+            previous_bet = self.current_bet
             total_commit = max(amount, to_call)
             if total_commit > player.stack + player.street_bet:
                 raise ValueError("筹码不足")
+            raise_size = total_commit - previous_bet
+            is_all_in = total_commit >= player.stack + player.street_bet
+            if raise_size < self.min_raise and not is_all_in:
+                raise ValueError(
+                    f"加注不能低于最小加注幅度 {self.min_raise}"
+                )
             additional = total_commit - player.street_bet
             player.stack -= additional
             player.street_bet = total_commit
             player.total_bet += additional
             self.pot += additional
-            self.current_bet = total_commit
-            self.min_raise = max(self.min_raise, amount)
-            self.last_aggressor = seat
-            self.street_raise_count += 1
-            self.last_raise_seat = seat
+            if total_commit > previous_bet:
+                self.current_bet = total_commit
+                self.min_raise = max(self.min_raise, raise_size)
+                self.last_aggressor = seat
+                self.street_raise_count += 1
+                self.last_raise_seat = seat
             if player.stack == 0:
                 player.all_in = True
             self._sync_history(
@@ -741,11 +742,11 @@ def _choose_raise(
     aggression: float,
 ) -> int:
     to_call = table.current_bet - player.street_bet
-    raise_size = int(
-        (2.0 + aggression * 2.0 + score * 1.6)
-        * table.big_blind
+    raise_size = max(
+        table.min_raise,
+        int((2.0 + aggression * 2.0 + score * 1.6) * table.big_blind),
     )
     total = player.street_bet + to_call + raise_size
     if total >= player.stack + player.street_bet:
         return player.stack + player.street_bet
-    return max(table.min_raise, total)
+    return total

@@ -216,6 +216,7 @@ const ENGLISH := {
 	"暂无进行中的对局": "No live games",
 	"后端未连接": "Backend not connected",
 	"读取失败": "Failed to load",
+	"操作失败：": "Action failed: ",
 	"好人胜利": "Good wins",
 	"狼人胜利": "Wolves win",
 	"存活": "Alive",
